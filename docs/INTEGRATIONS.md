@@ -1,95 +1,68 @@
-# 外部集成与适配器契约
+# 集成与运行边界
 
-## 1. 总体原则
+完整 API 契约见 [`docs/design/API_CONTRACTS.md`](./design/API_CONTRACTS.md)，Agent 契约见 [`docs/design/AGENT_PROTOCOL.md`](./design/AGENT_PROTOCOL.md)。
 
-外部系统通过适配器接入。领域层只使用内部模型，不直接依赖飞书、具体模型厂商或某个 Agent 平台的返回结构。
+## 1. 飞书适配器
 
-## 2. 飞书适配器
+负责：
 
-建议接口能力：
+- 机器人私聊、指定群聊和 @消息接入；
+- 事件幂等落库；
+- 线程上下文和附件；
+- 消息编辑、撤回和权限变化；
+- 断线重连和补偿同步；
+- 审核后消息发送和回执。
 
-```ts
-interface FeishuAdapter {
-  getAuthorizationState(): Promise<AuthorizationState>;
-  listAuthorizedChats(cursor?: string): Promise<Page<ChatRef>>;
-  syncMessages(input: SyncCursor): Promise<SyncBatch>;
-  getThreadContext(messageId: string, window: number): Promise<MessageRef[]>;
-  getFileMetadata(fileToken: string): Promise<FileRef>;
-  downloadAuthorizedFile(fileToken: string): Promise<BinaryReference>;
-  resolveUsers(userIds: string[]): Promise<Person[]>;
-  pauseSync(scope?: DataScope): Promise<void>;
-  revokeScope(scope: DataScope): Promise<void>;
-}
-```
+事件接收线程不得直接运行 Codex。
 
-必须处理：事件重复投递、消息编辑/撤回、机器人不可见消息、文件权限失效、用户离职、会话名称变化和 API 限流。
+## 2. Codex Runtime
 
-## 3. AI 识别服务
+Codex 是唯一 AI 执行核心。所有调用统一经过 `codex-runner`，负责：
 
-建议输出严格结构化结果：
+- AgentDefinition 和提示词版本；
+- 单次运行上下文和文件授权；
+- 工具权限；
+- 超时、重试和隔离；
+- JSON Schema 校验；
+- 日志和审计。
 
-```ts
-interface LegalMessageAnalysis {
-  decision:
-    | 'explicit_task'
-    | 'possible_task'
-    | 'for_information'
-    | 'waiting_for_others'
-    | 'not_legal'
-    | 'insufficient_information';
-  title?: string;
-  matterType?: string;
-  requester?: EntityCandidate;
-  owner?: EntityCandidate;
-  collaborators: EntityCandidate[];
-  deadline?: DateCandidate;
-  priority: Priority;
-  legalRisk: LegalRisk;
-  businessImpact: BusinessImpact;
-  requiredMaterials: MaterialCandidate[];
-  riskReasons: EvidenceBackedReason[];
-  evidenceRefs: string[];
-  confidence: number;
-  modelVersion: string;
-}
-```
+系统不建设其他模型提供方适配层，但业务服务仍不得直接调用 Codex CLI。
 
-服务端必须验证结构，不允许页面直接信任模型文本。原始提示词、模型版本和结果哈希应进入审计记录。
+## 3. 知识服务
 
-## 4. Agent 网关
+知识服务提供受控混合检索：
 
-```ts
-interface AgentGateway {
-  listDefinitions(): Promise<AgentDefinition[]>;
-  recommend(taskId: string): Promise<AgentRecommendation[]>;
-  requestRun(input: AgentRunRequest): Promise<AgentRun>;
-  approveRun(runId: string, decision: ApprovalDecision): Promise<AgentRun>;
-  cancelRun(runId: string): Promise<AgentRun>;
-  retryRun(runId: string): Promise<AgentRun>;
-  getRun(runId: string): Promise<AgentRun>;
-}
-```
+- PostgreSQL 元数据和全文检索；
+- Qdrant 向量召回；
+- 文件版本、生效状态、适用主体和保密等级过滤；
+- 正式制度、模板、历史事项和审核样例分域；
+- 引用定位和检索审计。
 
-Agent 请求至少包含任务快照版本、允许读取的数据引用、允许回写的位置和幂等键。Agent 不能自行扩大读取范围。
+Agent不能直接访问 Qdrant 或扫描整个本地目录。
+
+## 4. 外发门禁
+
+发送接口只接受已批准 ReviewRecord，不接受任意正文。服务端验证：
+
+- 审核决定；
+- 版本哈希；
+- 接收人和会话；
+- 幂等键；
+- 最新事实变化；
+- 飞书权限。
+
+没有审核记录时发送服务必须拒绝。
 
 ## 5. 前端配置
 
-`.env.example` 只保存公开运行配置。以下内容不得进入 Vite 前端环境变量：
+以下内容不得进入 Vite 前端环境变量：
 
 - 飞书 App Secret；
-- 模型 API Key；
+- Codex 凭证；
 - 数据库连接串；
-- 对象存储 Secret；
-- Agent 平台管理令牌。
+- Qdrant/Redis 密码；
+- 本地知识目录的敏感配置。
 
-## 6. Mock 与真实实现切换
+## 6. Mock 与真实实现
 
-建议通过依赖注入或适配器工厂切换：
-
-```ts
-const services = createServices({
-  mode: import.meta.env.VITE_APP_MODE,
-});
-```
-
-测试和本地演示默认使用 Mock。生产构建若缺少真实后端配置，应启动失败或显示明确的配置错误，不应静默回退到 Mock。
+前端演示允许 Mock；正式模式缺少后端或 Codex/飞书配置时必须显式报错，不得静默回退到 Mock。
