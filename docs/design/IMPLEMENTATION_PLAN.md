@@ -40,24 +40,37 @@ legal-workbench/
 
 验收：目录和配置可解析，Python源码可编译，Compose配置通过静态校验。
 
-## 阶段1：领域持久化
+## 阶段1：领域持久化（首个切片已完成）
 
-实现：
+已完成：
 
-- FeishuMessage、ContextSnapshot、MessageCandidate；
-- LegalMatter、WorkItem、Deadline、Dependency；
-- AuditEvent、OutboxEvent、IdempotencyRecord；
-- SQLAlchemy模型、Repository和Alembic迁移；
-- 乐观锁、唯一幂等键和事务测试。
+- ContextSnapshot、MessageCandidate、LegalMatter、WorkItem；
+- CandidateMatterLink、AuditEvent、OutboxEvent、IdempotencyRecord；
+- SQLAlchemy模型、Repository、Unit of Work和首批Alembic迁移；
+- `version`乐观锁、确认事务行锁和唯一幂等键；
+- Candidate确认创建Matter并批量创建WorkItem的应用用例。
+
+后续实现：
+
+- FeishuMessage原始事件和消息表；
+- Deadline、Dependency及事项状态聚合；
+- 真实并发压力测试；
+- Outbox发布Worker和死信处理。
 
 验收：空库可升级；重复请求不重复建单；version冲突返回409；Outbox与业务写入原子提交。
 
-## 阶段2：候选确认API与前端
+## 阶段2：候选确认API与前端（创建事项路径已完成）
 
-实现：
+已完成：
 
-- Candidate列表、详情和confirm接口；
-- 创建/关联/更新/知悉/忽略；
+- Candidate创建、列表、详情和`confirm-create`；
+- CI真实PostgreSQL迁移和HTTP端到端集成测试；
+- Matter列表、详情及WorkItem列表/新增；
+- 创建事项和新增WorkItem的幂等门禁。
+
+后续实现：
+
+- 关联/更新/知悉/忽略；
 - 一条Candidate生成多个WorkItem；
 - 优先级和完成时间确认；
 - 前端API查询层、Mock/Real切换和错误状态。

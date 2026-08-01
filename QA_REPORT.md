@@ -122,3 +122,27 @@ npm run dev
 - `docker compose config/up`：当前执行环境没有Docker命令。
 
 GitHub CI已配置在正常公网包源环境执行前端、后端和Compose检查。
+
+## 2026-08-01 首个后端垂直切片
+
+已实现并检查：
+
+- SQLAlchemy 2 正式映射：ContextSnapshot、MessageCandidate、LegalMatter、WorkItem；
+- CandidateMatterLink、AuditEvent、OutboxEvent、IdempotencyRecord；
+- Alembic `20260801_0002` 首批业务表迁移及完整降级顺序；
+- Candidate确认创建Matter和多个初始WorkItem的原子用例；
+- PostgreSQL行锁、事务级advisory幂等锁、SQLAlchemy乐观锁、审计和事务Outbox；
+- Candidate/Matter/WorkItem查询和写入API；
+- 应用层单元测试、幂等冲突测试、version冲突测试和ORM元数据测试；
+- CI中的真实PostgreSQL迁移及HTTP端到端集成测试。
+
+本地已执行：
+
+- `python -m compileall`：通过；
+- 核心垂直切片与ORM测试：12项通过；
+- PostgreSQL HTTP集成测试：已加入，当前本地环境按配置跳过；
+- `alembic upgrade head --sql`：通过，成功生成PostgreSQL离线DDL；
+- Python文件100字符行宽检查：通过；
+- `git diff --check`：通过。
+
+当前环境的内部Python包源仍缺少`structlog`、`redis`、`psycopg`等公开依赖，且没有Docker命令，因此未在本环境执行完整测试套件和真实PostgreSQL迁移。声明依赖完整的CI或本地Docker环境应继续执行Ruff、mypy、全量pytest及真实数据库升级/降级验证。

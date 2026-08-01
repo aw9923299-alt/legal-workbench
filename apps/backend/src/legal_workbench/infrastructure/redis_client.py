@@ -1,14 +1,27 @@
-from redis.asyncio import Redis
+from functools import lru_cache
+from typing import TYPE_CHECKING
 
 from legal_workbench.config import get_settings
 
+if TYPE_CHECKING:
+    from redis.asyncio import Redis
 
-settings = get_settings()
-redis_client = Redis.from_url(settings.redis_url, decode_responses=True)
+
+@lru_cache(maxsize=1)
+def get_redis_client() -> "Redis":
+    from redis.asyncio import Redis
+
+    return Redis.from_url(get_settings().redis_url, decode_responses=True)
 
 
 async def redis_is_ready() -> bool:
     try:
-        return bool(await redis_client.ping())
+        return bool(await get_redis_client().ping())
     except Exception:
         return False
+
+
+async def close_redis_client() -> None:
+    if get_redis_client.cache_info().currsize:
+        await get_redis_client().aclose()
+    get_redis_client.cache_clear()

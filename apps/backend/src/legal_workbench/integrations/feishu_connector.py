@@ -10,7 +10,10 @@ def main() -> None:
     if not settings.enable_real_feishu:
         logger.warning(
             "feishu_connector_disabled",
-            reason="The connector profile is scaffolding only; real event intake is not implemented.",
+            reason=(
+                "The connector profile is scaffolding only; "
+                "real event intake is not implemented."
+            ),
         )
         return
 

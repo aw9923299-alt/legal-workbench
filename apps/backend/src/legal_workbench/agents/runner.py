@@ -10,7 +10,10 @@ def main() -> None:
     if not settings.enable_real_codex:
         logger.warning(
             "codex_runner_disabled",
-            reason="Set LEGAL_WORKBENCH_ENABLE_REAL_CODEX=true only after runner implementation and review.",
+            reason=(
+                "Set LEGAL_WORKBENCH_ENABLE_REAL_CODEX=true only after "
+                "runner implementation and review."
+            ),
         )
         return
 

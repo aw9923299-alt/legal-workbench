@@ -4,13 +4,21 @@ from contextlib import asynccontextmanager
 import structlog
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm.exc import StaleDataError
 
+from legal_workbench.api.errors import (
+    domain_error_handler,
+    integrity_error_handler,
+    stale_data_handler,
+)
 from legal_workbench.api.middleware import CorrelationIdMiddleware
 from legal_workbench.api.router import api_router
 from legal_workbench.config import get_settings
-from legal_workbench.infrastructure.database import engine
+from legal_workbench.domain.errors import DomainError
+from legal_workbench.infrastructure.database import dispose_engine
 from legal_workbench.infrastructure.logging import configure_logging
-from legal_workbench.infrastructure.redis_client import redis_client
+from legal_workbench.infrastructure.redis_client import close_redis_client
 
 settings = get_settings()
 configure_logging(settings.log_level)
@@ -23,14 +31,14 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
-        await redis_client.aclose()
-        await engine.dispose()
+        await close_redis_client()
+        await dispose_engine()
         logger.info("application_stopped")
 
 
 app = FastAPI(
     title=settings.app_name,
-    version="0.2.0",
+    version="0.3.0",
     docs_url="/docs" if settings.environment != "production" else None,
     redoc_url=None,
     lifespan=lifespan,
@@ -43,4 +51,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_exception_handler(DomainError, domain_error_handler)
+app.add_exception_handler(StaleDataError, stale_data_handler)
+app.add_exception_handler(IntegrityError, integrity_error_handler)
 app.include_router(api_router, prefix=settings.api_prefix)
