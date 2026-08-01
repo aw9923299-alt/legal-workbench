@@ -32,6 +32,7 @@ def test_real_feishu_requires_verification_configuration() -> None:
     with pytest.raises(ValidationError, match="verification"):
         Settings(
             enable_real_feishu=True,
+            feishu_event_source="webhook",
             feishu_verification_token=None,
             feishu_encrypt_key=None,
             _env_file=None,
