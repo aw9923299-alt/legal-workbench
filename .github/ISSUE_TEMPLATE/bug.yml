@@ -1,0 +1,45 @@
+name: 缺陷报告
+about: 报告功能、交互、权限或数据问题
+title: "[缺陷] "
+labels: [bug]
+body:
+  - type: textarea
+    id: behavior
+    attributes:
+      label: 实际表现
+      description: 描述发生了什么，包括错误提示和数据状态。
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 预期表现
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: 复现步骤
+      description: 请使用脱敏或 Mock 数据。
+    validations:
+      required: true
+  - type: dropdown
+    id: impact
+    attributes:
+      label: 影响类型
+      options:
+        - 数据错误或丢失
+        - 权限或隐私
+        - AI 误判或错误回写
+        - 任务状态或提醒
+        - 页面或交互
+        - 构建或部署
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: 环境信息
+      description: 浏览器、分辨率、分支、Commit SHA 和运行模式。
+    validations:
+      required: true

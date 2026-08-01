@@ -488,6 +488,8 @@ npm run preview
 4. [`docs/DOMAIN_MODEL.md`](./docs/DOMAIN_MODEL.md)：任务状态机、字段来源和事项关联；
 5. [`docs/INTEGRATIONS.md`](./docs/INTEGRATIONS.md)：飞书、AI 与 Agent 适配器契约；
 6. [`docs/ROADMAP.md`](./docs/ROADMAP.md)：P0—P5 开发路线图；
-7. [`docs/TESTING.md`](./docs/TESTING.md)：测试层级、异常场景和验收清单。
+7. [`docs/TESTING.md`](./docs/TESTING.md)：测试层级、异常场景和验收清单；
+8. [`docs/CODEX_START_PROMPT.md`](./docs/CODEX_START_PROMPT.md)：可直接交给 Codex 的首轮开发指令；
+9. [`docs/GITHUB_WORKFLOW.md`](./docs/GITHUB_WORKFLOW.md)：分支保护、PR 和协作建议。
 
 首个建议任务是完成“AI 收件箱候选消息 → 人工确认 → 创建/关联任务 → 状态流转 → 审计记录”的本地闭环，再开始真实飞书接入。
