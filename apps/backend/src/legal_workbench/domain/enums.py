@@ -109,6 +109,52 @@ class PrioritySource(StrEnum):
     LEGAL_CONFIRMED = "legal_confirmed"
 
 
+class PriorityConfirmationStatus(StrEnum):
+    PENDING = "pending"
+    CONFIRMED = "confirmed"
+    SUPERSEDED = "superseded"
+
+
+class DeadlineType(StrEnum):
+    LEGAL = "legal"
+    PLATFORM = "platform"
+    CONTRACTUAL = "contractual"
+    BUSINESS = "business"
+    INTERNAL = "internal"
+    REMINDER = "reminder"
+
+
+class DeadlineSource(StrEnum):
+    MESSAGE_EXTRACTED = "message_extracted"
+    DOCUMENT_EXTRACTED = "document_extracted"
+    SYSTEM_RULE = "system_rule"
+    AGENT_SUGGESTED = "agent_suggested"
+    LEGAL_CONFIRMED = "legal_confirmed"
+
+
+class DeadlineStatus(StrEnum):
+    ACTIVE = "active"
+    SATISFIED = "satisfied"
+    MISSED = "missed"
+    CANCELLED = "cancelled"
+    SUPERSEDED = "superseded"
+
+
+class DependencyType(StrEnum):
+    FINISH_TO_START = "finish_to_start"
+    START_TO_START = "start_to_start"
+    EXTERNAL_INPUT = "external_input"
+    APPROVAL = "approval"
+    MATERIAL = "material"
+
+
+class DependencyStatus(StrEnum):
+    ACTIVE = "active"
+    SATISFIED = "satisfied"
+    WAIVED = "waived"
+    CANCELLED = "cancelled"
+
+
 class CandidateMatterRelation(StrEnum):
     CREATED = "created"
     LINKED = "linked"
@@ -125,6 +171,23 @@ class AgentRunStatus(StrEnum):
     DEAD_LETTER = "dead_letter"
 
 
+class ReviewPackageType(StrEnum):
+    EXTERNAL_MESSAGE = "external_message"
+    INTERNAL_MESSAGE = "internal_message"
+    LEGAL_ANALYSIS = "legal_analysis"
+    CONTRACT_REVIEW = "contract_review"
+    COPY_REVIEW = "copy_review"
+
+
+class ReviewPackageStatus(StrEnum):
+    DRAFT = "draft"
+    PENDING_REVIEW = "pending_review"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    NEEDS_INFORMATION = "needs_information"
+    SUPERSEDED = "superseded"
+
+
 class ReviewDecision(StrEnum):
     APPROVED = "approved"
     APPROVED_WITH_EDITS = "approved_with_edits"
@@ -132,11 +195,33 @@ class ReviewDecision(StrEnum):
     NEEDS_INFORMATION = "needs_information"
 
 
+class CommunicationChannel(StrEnum):
+    FEISHU = "feishu"
+
+
 class CommunicationStatus(StrEnum):
     DRAFT = "draft"
     PENDING_REVIEW = "pending_review"
     APPROVED = "approved"
+    QUEUED = "queued"
     SENDING = "sending"
     SENT = "sent"
     UNKNOWN = "unknown"
+    FAILED = "failed"
+    DEAD_LETTER = "dead_letter"
+
+
+class FeishuEventStatus(StrEnum):
+    RECEIVED = "received"
+    DUPLICATE = "duplicate"
+    PROCESSED = "processed"
+    IGNORED = "ignored"
+    FAILED = "failed"
+
+
+class FeishuMessageStatus(StrEnum):
+    RECEIVED = "received"
+    QUEUED_FOR_ANALYSIS = "queued_for_analysis"
+    ANALYZED = "analyzed"
+    IGNORED = "ignored"
     FAILED = "failed"

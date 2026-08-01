@@ -1,112 +1,320 @@
-import { Alert, Avatar, Button, Card, Descriptions, Divider, List, Progress, Space, Steps, Tabs, Tag, Timeline, Typography } from 'antd';
-import { ArrowLeftOutlined, CheckCircleOutlined, FileTextOutlined, RobotOutlined, SendOutlined } from '@ant-design/icons';
-import type { Task } from '../types/domain';
-import { ImpactTag, PriorityTag, RiskTag, StatusTag } from '../components/StatusTags';
+import {
+  Alert,
+  Button,
+  Card,
+  DatePicker,
+  Descriptions,
+  Empty,
+  Form,
+  Input,
+  List,
+  Modal,
+  Select,
+  Space,
+  Spin,
+  Tag,
+  Typography,
+  message,
+} from 'antd';
+import { ArrowLeftOutlined, CalendarOutlined, LinkOutlined, ReloadOutlined, RobotOutlined } from '@ant-design/icons';
+import dayjs, { type Dayjs } from 'dayjs';
+import { useCallback, useEffect, useState } from 'react';
+import { legalApi } from '../services/api';
+import { categoryLabels, priorityLabels, riskLabels, workStatusLabels } from '../services/apiLabels';
+import type { Deadline, LegalMatter, Priority, WorkItem, WorkItemDependency } from '../types/api';
 
 const { Title, Text, Paragraph } = Typography;
 
-export default function TaskDetailPage({ task, onBack }: { task: Task; onBack: () => void }) {
+type Dialog = { type: 'priority' | 'deadline' | 'dependency'; workItem: WorkItem } | undefined;
+
+interface PriorityValues { priority: Priority; completeAt?: Dayjs; reasons: string; overrideReason?: string }
+interface DeadlineValues { deadlineType: string; dueAt: Dayjs; isHard: boolean; sourceReference?: string }
+interface DependencyValues { dependencyType: string; dependsOnWorkItemId?: string; externalPartyId?: string; description?: string }
+interface ReviewPackageValues { title: string; background: string; reasoning: string; proposedContent: string; receiveId?: string; replyToMessageId?: string }
+
+export default function TaskDetailPage({ matterId, onBack }: { matterId: string; onBack: () => void }) {
+  const [matter, setMatter] = useState<LegalMatter>();
+  const [workItems, setWorkItems] = useState<WorkItem[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string>();
+  const [dialog, setDialog] = useState<Dialog>();
+  const [submitting, setSubmitting] = useState(false);
+  const [priorityForm] = Form.useForm<PriorityValues>();
+  const [deadlineForm] = Form.useForm<DeadlineValues>();
+  const [dependencyForm] = Form.useForm<DependencyValues>();
+  const [reviewForm] = Form.useForm<ReviewPackageValues>();
+  const [reviewOpen, setReviewOpen] = useState(false);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError(undefined);
+    try {
+      const [matterValue, workItemValues] = await Promise.all([
+        legalApi.getMatter(matterId),
+        legalApi.listWorkItems(matterId),
+      ]);
+      setMatter(matterValue);
+      setWorkItems(workItemValues);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '加载事项详情失败');
+    } finally {
+      setLoading(false);
+    }
+  }, [matterId]);
+
+  useEffect(() => { void load(); }, [load]);
+
+  const openPriority = (workItem: WorkItem) => {
+    priorityForm.setFieldsValue({
+      priority: workItem.priority,
+      completeAt: workItem.plannedCompleteAt ? dayjs(workItem.plannedCompleteAt) : undefined,
+      reasons: workItem.priorityReasons.join('\n'),
+      overrideReason: workItem.overrideReason ?? undefined,
+    });
+    setDialog({ type: 'priority', workItem });
+  };
+
+  const openDeadline = (workItem: WorkItem) => {
+    deadlineForm.setFieldsValue({ deadlineType: 'internal', dueAt: dayjs().add(1, 'day'), isHard: false });
+    setDialog({ type: 'deadline', workItem });
+  };
+
+  const openDependency = (workItem: WorkItem) => {
+    dependencyForm.setFieldsValue({ dependencyType: 'material' });
+    setDialog({ type: 'dependency', workItem });
+  };
+
+  const openReviewPackage = () => {
+    if (!matter) return;
+    reviewForm.setFieldsValue({
+      title: `${matter.title} - 外发回复审核`,
+      background: matter.summary ?? matter.title,
+      reasoning: '基于当前已确认事实和公司处理口径形成回复，所有外发内容须经法务审核。',
+      proposedContent: '',
+    });
+    setReviewOpen(true);
+  };
+
+  const createReviewPackage = async () => {
+    if (!matter) return;
+    const values = await reviewForm.validateFields();
+    if (!values.replyToMessageId?.trim() && !values.receiveId?.trim()) {
+      message.error('请填写回复原消息ID或收件人Open ID');
+      return;
+    }
+    setSubmitting(true);
+    try {
+      await legalApi.createReviewPackage({
+        matterId: matter.id,
+        workItemId: workItems[0]?.id,
+        packageType: 'external_message',
+        title: values.title,
+        background: values.background,
+        confirmedFacts: [],
+        unconfirmedFacts: [],
+        reasoning: values.reasoning,
+        risks: [],
+        alternatives: [],
+        citations: [],
+        proposedContent: values.proposedContent,
+        target: values.replyToMessageId
+          ? { replyToMessageId: values.replyToMessageId, messageType: 'text' }
+          : { receiveId: values.receiveId, receiveIdType: 'open_id', messageType: 'text' },
+        submitForReview: true,
+      });
+      message.success('审核包已创建并提交审核');
+      setReviewOpen(false);
+    } catch (reason) {
+      message.error(reason instanceof Error ? reason.message : '创建审核包失败');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const submitDialog = async () => {
+    if (!dialog) return;
+    setSubmitting(true);
+    try {
+      if (dialog.type === 'priority') {
+        const values = await priorityForm.validateFields();
+        await legalApi.confirmPriority(dialog.workItem.id, {
+          workItemVersion: dialog.workItem.version,
+          confirmedPriority: values.priority,
+          confirmedCompleteAt: values.completeAt?.toISOString(),
+          reasons: values.reasons.split('\n').map((value) => value.trim()).filter(Boolean),
+          overrideReason: values.overrideReason,
+        });
+        message.success('优先级和完成时间已确认');
+      } else if (dialog.type === 'deadline') {
+        const values = await deadlineForm.validateFields();
+        await legalApi.createDeadline(dialog.workItem.id, {
+          deadlineType: values.deadlineType,
+          source: 'legal_confirmed',
+          dueAt: values.dueAt.toISOString(),
+          timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Singapore',
+          isHard: values.isHard,
+          sourceReference: values.sourceReference,
+          reminderPolicy: { reminders: ['24h', '2h'] },
+        });
+        message.success('期限已创建');
+      } else {
+        const values = await dependencyForm.validateFields();
+        await legalApi.createDependency(dialog.workItem.id, values);
+        message.success('依赖关系已创建');
+      }
+      setDialog(undefined);
+      await load();
+    } catch (reason) {
+      message.error(reason instanceof Error ? reason.message : '操作失败');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
   return (
     <div className="page task-detail-page">
-      <Button type="text" icon={<ArrowLeftOutlined />} onClick={onBack}>返回任务中心</Button>
-      <div className="detail-header">
-        <div>
-          <div className="detail-id-row"><Text type="secondary">{task.id}</Text><Tag color="blue">AI 已关联 18 条消息</Tag></div>
-          <Title level={2}>{task.title}</Title>
-          <Space wrap><StatusTag value={task.status} /><PriorityTag value={task.priority} /><RiskTag value={task.legalRisk} /><ImpactTag value={task.businessImpact} /></Space>
-        </div>
-        <Space><Button>设置提醒</Button><Button icon={<RobotOutlined />}>调用 Agent</Button><Button type="primary" icon={<SendOutlined />}>发送进度</Button></Space>
-      </div>
+      <Button type="text" icon={<ArrowLeftOutlined />} onClick={onBack}>返回事项中心</Button>
+      {error && <Alert type="error" showIcon message={error} action={<Button onClick={() => void load()}>重试</Button>} />}
+      <Spin spinning={loading}>
+        {matter && (
+          <>
+            <div className="detail-header">
+              <div>
+                <Text type="secondary">{matter.matterNumber}</Text>
+                <Title level={2}>{matter.title}</Title>
+                <Space wrap>
+                  <Tag color="blue">{categoryLabels[matter.primaryCategory]}</Tag>
+                  <Tag color={matter.legalRisk === 'critical' ? 'red' : 'gold'}>{riskLabels[matter.legalRisk]}</Tag>
+                  <Tag>{matter.lifecycleStatus}</Tag><Tag>{matter.workStatus}</Tag>
+                </Space>
+              </div>
+              <Space><Button icon={<RobotOutlined />} onClick={openReviewPackage}>创建审核包</Button><Button icon={<ReloadOutlined />} onClick={() => void load()}>刷新</Button></Space>
+            </div>
+            <div className="detail-grid">
+              <main className="detail-main">
+                <Card bordered={false} title="事项背景与目标">
+                  <Paragraph>{matter.summary || '尚未填写事项背景。'}</Paragraph>
+                  <Text strong>处理目标</Text>
+                  <Paragraph>{matter.objective || '尚未填写处理目标。'}</Paragraph>
+                </Card>
+                <Card bordered={false} title={`行动任务（${workItems.length}）`}>
+                  {workItems.length === 0 ? <Empty description="暂无行动任务" /> : (
+                    <List
+                      dataSource={workItems}
+                      renderItem={(item) => (
+                        <WorkItemCard
+                          item={item}
+                          onPriority={() => openPriority(item)}
+                          onDeadline={() => openDeadline(item)}
+                          onDependency={() => openDependency(item)}
+                        />
+                      )}
+                    />
+                  )}
+                </Card>
+              </main>
+              <aside className="detail-sidebar">
+                <Card title="事项字段" bordered={false}>
+                  <Descriptions column={1} size="small" items={[
+                    { key: 'owner', label: '负责人', children: matter.ownerId },
+                    { key: 'risk', label: '法律风险', children: riskLabels[matter.legalRisk] },
+                    { key: 'impact', label: '业务影响', children: matter.businessImpact },
+                    { key: 'secret', label: '保密等级', children: matter.confidentiality },
+                    { key: 'opened', label: '开启时间', children: new Date(matter.openedAt).toLocaleString() },
+                    { key: 'version', label: '版本', children: matter.version },
+                  ]} />
+                </Card>
+              </aside>
+            </div>
+          </>
+        )}
+      </Spin>
 
-      <Alert type="warning" showIcon message={`下一步行动：${task.nextAction}`} description={`当前负责人：${task.owner.name}；${task.waitingFor ? `正在等待 ${task.waitingFor}` : '当前由你继续处理'}。截止时间：${task.deadline || '未设置'}。`} />
+      <Modal open={reviewOpen} title="创建外发审核包" width={760} confirmLoading={submitting} onCancel={() => setReviewOpen(false)} onOk={() => void createReviewPackage()}>
+        <Alert type="warning" showIcon message="创建后仅进入待审核状态，不会直接发送。审核通过后仍需执行外发入队操作。" style={{ marginBottom: 16 }} />
+        <Form form={reviewForm} layout="vertical">
+          <Form.Item name="title" label="审核包标题" rules={[{ required: true }]}><Input /></Form.Item>
+          <Form.Item name="background" label="事项背景" rules={[{ required: true }]}><Input.TextArea rows={3} /></Form.Item>
+          <Form.Item name="reasoning" label="为什么这样处理" rules={[{ required: true }]}><Input.TextArea rows={3} /></Form.Item>
+          <Form.Item name="proposedContent" label="拟发送内容" rules={[{ required: true }]}><Input.TextArea rows={7} /></Form.Item>
+          <Space align="start" wrap>
+            <Form.Item name="replyToMessageId" label="回复原消息ID"><Input style={{ width: 280 }} /></Form.Item>
+            <Form.Item name="receiveId" label="收件人Open ID"><Input style={{ width: 280 }} /></Form.Item>
+          </Space>
+        </Form>
+      </Modal>
 
-      <div className="detail-grid">
-        <main className="detail-main">
-          <Card className="ai-summary-card" bordered={false}>
-            <div className="ai-label"><RobotOutlined /> AI 任务摘要 · 未经人工确认</div>
-            <Paragraph>该事项由飞书消息自动识别并与历史沟通合并。当前核心目标是控制解约、停播和竞业限制争议风险，在业务决定前确认合同主体、违约事实、补偿支付及对外沟通口径。</Paragraph>
-            <div className="evidence-links"><button>消息 07-31 18:42</button><button>主播合作协议.pdf 第 12 条</button><button>结算表 2026H1.xlsx</button></div>
-          </Card>
+      <Modal open={dialog?.type === 'priority'} title="确认优先级与完成时间" confirmLoading={submitting} onCancel={() => setDialog(undefined)} onOk={() => void submitDialog()}>
+        <Form form={priorityForm} layout="vertical">
+          <Form.Item name="priority" label="确认优先级" rules={[{ required: true }]}><Select options={Object.entries(priorityLabels).map(([value, label]) => ({ value, label }))} /></Form.Item>
+          <Form.Item name="completeAt" label="计划完成时间"><DatePicker showTime style={{ width: '100%' }} /></Form.Item>
+          <Form.Item name="reasons" label="排序理由"><Input.TextArea rows={3} placeholder="每行一条理由" /></Form.Item>
+          <Form.Item name="overrideReason" label="覆盖AI建议原因"><Input.TextArea rows={2} /></Form.Item>
+        </Form>
+      </Modal>
 
-          <Card bordered={false}>
-            <Tabs items={[
-              { key: 'work', label: '处理工作区', children: <WorkArea task={task} /> },
-              { key: 'chat', label: '飞书上下文', children: <ChatContext /> },
-              { key: 'files', label: '文件与材料', children: <FileArea task={task} /> },
-              { key: 'ai', label: 'AI 分析记录', children: <AiRecords /> },
-              { key: 'decision', label: '决策与变更', children: <Timeline items={[{ children: '今天 11:18 人工确认法律风险为“严重”' }, { children: '今天 10:52 AI 将 3 个群聊线程合并至本任务' }, { children: '昨天 18:42 从 @消息创建待确认事项' }]} /> },
-            ]} />
-          </Card>
-        </main>
+      <Modal open={dialog?.type === 'deadline'} title="创建期限" confirmLoading={submitting} onCancel={() => setDialog(undefined)} onOk={() => void submitDialog()}>
+        <Form form={deadlineForm} layout="vertical">
+          <Form.Item name="deadlineType" label="期限类型" rules={[{ required: true }]}><Select options={[
+            ['legal', '法定期限'], ['platform', '平台期限'], ['contractual', '合同期限'], ['business', '业务期限'], ['internal', '内部期限'], ['reminder', '提醒节点'],
+          ].map(([value, label]) => ({ value, label }))} /></Form.Item>
+          <Form.Item name="dueAt" label="到期时间" rules={[{ required: true }]}><DatePicker showTime style={{ width: '100%' }} /></Form.Item>
+          <Form.Item name="isHard" label="是否硬期限"><Select options={[{ value: true, label: '是' }, { value: false, label: '否' }]} /></Form.Item>
+          <Form.Item name="sourceReference" label="期限来源"><Input placeholder="例如：法院通知、业务上线计划" /></Form.Item>
+        </Form>
+      </Modal>
 
-        <aside className="detail-sidebar">
-          <Card title="任务字段" bordered={false}>
-            <Descriptions column={1} size="small" items={[
-              { key: 'type', label: '事项类型', children: task.category },
-              { key: 'line', label: '业务线', children: task.businessLine },
-              { key: 'requester', label: '发起人', children: `${task.requester.name} / ${task.requester.department}` },
-              { key: 'owner', label: '负责人', children: task.owner.name },
-              { key: 'deadline', label: '截止时间', children: task.deadline },
-              { key: 'source', label: '来源', children: `${task.source} · ${task.sourceName}` },
-              { key: 'amount', label: '涉及金额', children: task.amount ? `¥${task.amount.toLocaleString()}` : '未填写' },
-              { key: 'secret', label: '保密等级', children: '机密' },
-            ]} />
-          </Card>
-          <Card title="AI 判断透明度" bordered={false}>
-            <Progress percent={Math.round(task.confidence * 100)} />
-            <Text type="secondary">基于消息明确交办、上下文主体、历史任务相似度与截止节点综合判断。</Text>
-            <Divider />
-            {task.riskReasons.map((reason) => <Tag key={reason} color="volcano">{reason}</Tag>)}
-          </Card>
-          <Card title="可调用 Agent" bordered={false}>
-            {['法律风险识别 Agent','合同条款提取 Agent','证据材料整理 Agent','文书起草 Agent'].map((name) => <button className="agent-call-row" key={name}><RobotOutlined /><span>{name}</span><em>调用</em></button>)}
-          </Card>
-        </aside>
-      </div>
+      <Modal open={dialog?.type === 'dependency'} title="创建任务依赖" confirmLoading={submitting} onCancel={() => setDialog(undefined)} onOk={() => void submitDialog()}>
+        <Form form={dependencyForm} layout="vertical">
+          <Form.Item name="dependencyType" label="依赖类型" rules={[{ required: true }]}><Select options={[
+            ['finish_to_start', '前置任务完成'], ['start_to_start', '同步开始'], ['external_input', '等待外部输入'], ['approval', '等待审批'], ['material', '等待材料'],
+          ].map(([value, label]) => ({ value, label }))} /></Form.Item>
+          <Form.Item name="dependsOnWorkItemId" label="前置任务ID"><Input /></Form.Item>
+          <Form.Item name="externalPartyId" label="等待对象"><Input /></Form.Item>
+          <Form.Item name="description" label="依赖说明"><Input.TextArea rows={3} /></Form.Item>
+        </Form>
+      </Modal>
     </div>
   );
 }
 
-function WorkArea({ task }: { task: Task }) {
-  const checklist = ['核实签约及收款主体', '整理违约事实和证据', '核对竞业补偿支付记录', '确认停播及结算业务影响', '形成内部风险意见'];
+function WorkItemCard({ item, onPriority, onDeadline, onDependency }: {
+  item: WorkItem;
+  onPriority: () => void;
+  onDeadline: () => void;
+  onDependency: () => void;
+}) {
+  const [deadlines, setDeadlines] = useState<Deadline[]>([]);
+  const [dependencies, setDependencies] = useState<WorkItemDependency[]>([]);
+
+  useEffect(() => {
+    void Promise.all([legalApi.listDeadlines(item.id), legalApi.listDependencies(item.id)])
+      .then(([deadlineValues, dependencyValues]) => { setDeadlines(deadlineValues); setDependencies(dependencyValues); })
+      .catch(() => undefined);
+  }, [item.id]);
+
   return (
-    <div className="work-area-grid">
-      <section>
-        <Title level={4}>当前处理目标</Title>
-        <Paragraph>在不影响核心直播业务连续性的前提下，明确公司可采取的解约或暂停合作路径，并形成可执行的沟通方案。</Paragraph>
-        <Title level={4}>子任务与检查清单</Title>
-        <List dataSource={checklist} renderItem={(item, index) => <List.Item><Space><CheckCircleOutlined className={index < 2 ? 'done-icon' : ''} /><span>{item}</span></Space><Text type="secondary">{index < 2 ? '已完成' : '待处理'}</Text></List.Item>} />
-      </section>
-      <section>
-        <Title level={4}>进度时间线</Title>
-        <Steps direction="vertical" size="small" current={2} items={[
-          { title: '识别并确认任务', description: '已合并 3 个群聊线程' },
-          { title: '材料与事实核查', description: '仍缺 2 项材料' },
-          { title: '法律分析与方案', description: '进行中' },
-          { title: '业务决策与沟通', description: '待开始' },
-          { title: '结案与复盘', description: '待开始' },
-        ]} />
-      </section>
-    </div>
+    <List.Item>
+      <Card size="small" style={{ width: '100%' }}>
+        <Space wrap>
+          <Tag>{workStatusLabels[item.status] ?? item.status}</Tag>
+          <Tag color={item.priority === 'urgent' ? 'red' : item.priority === 'high' ? 'orange' : 'blue'}>{priorityLabels[item.priority]}</Tag>
+          {item.priorityConfirmedBy && <Tag color="green">法务已确认</Tag>}
+          {item.isBlocked && <Tag color="red">阻塞</Tag>}
+        </Space>
+        <Title level={5} style={{ marginTop: 12 }}>{item.title}</Title>
+        <Paragraph>下一步：{item.nextAction}</Paragraph>
+        <Text type="secondary">负责人：{item.ownerId} · 计划完成：{item.plannedCompleteAt ? new Date(item.plannedCompleteAt).toLocaleString() : '待确认'}</Text>
+        <div style={{ marginTop: 12 }}>
+          {deadlines.map((value) => <Tag icon={<CalendarOutlined />} key={value.id} color={value.isHard ? 'red' : 'gold'}>{new Date(value.dueAt).toLocaleString()}</Tag>)}
+          {dependencies.map((value) => <Tag icon={<LinkOutlined />} key={value.id}>{value.dependencyType}: {value.description || value.externalPartyId || value.dependsOnWorkItemId}</Tag>)}
+        </div>
+        <Space style={{ marginTop: 14 }} wrap>
+          <Button onClick={onPriority}>确认优先级</Button>
+          <Button onClick={onDeadline}>添加期限</Button>
+          <Button onClick={onDependency}>添加依赖</Button>
+        </Space>
+      </Card>
+    </List.Item>
   );
-}
-
-function ChatContext() {
-  return <Timeline items={[
-    { color: 'blue', children: <><Text strong>今天 10:26 · 主播经纪管理群</Text><Paragraph>HR 提出暂停结算并评估终止合作，AI 判断为同一事项的新进展。</Paragraph></> },
-    { color: 'gray', children: <><Text strong>昨天 18:42 · 主播管理专项群</Text><Paragraph>@法务确认竞业条款、停播影响和解约通知安排。</Paragraph></> },
-    { color: 'gray', children: <><Text strong>07-29 15:10 · 私聊</Text><Paragraph>运营提供主播近三场缺播情况及业务影响。</Paragraph></> },
-  ]} />;
-}
-
-function FileArea({ task }: { task: Task }) {
-  return <div><List dataSource={['主播合作协议_最终版.pdf','2026H1主播结算明细.xlsx','直播排期与缺播记录.xlsx']} renderItem={(item) => <List.Item actions={[<Button key="open" type="link">打开</Button>]}><List.Item.Meta avatar={<Avatar icon={<FileTextOutlined />} />} title={item} description="AI 已提取关键信息，原文件权限继承自飞书" /></List.Item>} /><Divider /><Title level={5}>缺失材料</Title>{task.missingMaterials?.map((item) => <Tag key={item} color="gold">{item}</Tag>)}</div>;
-}
-
-function AiRecords() {
-  return <List dataSource={[
-    ['法律风险识别 Agent','识别 6 项高风险事实，置信度 92%，等待人工确认。'],
-    ['消息识别 Agent','将 18 条消息聚合为 1 个事项，排除 4 条重复通知。'],
-    ['合同条款提取 Agent','提取解约、违约、竞业和争议解决条款共 11 项。'],
-  ]} renderItem={([name, content]) => <List.Item><List.Item.Meta avatar={<Avatar icon={<RobotOutlined />} />} title={name} description={content} /></List.Item>} />;
 }

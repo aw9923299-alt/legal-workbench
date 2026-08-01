@@ -33,6 +33,8 @@ class Settings(BaseSettings):
     feishu_app_secret: str | None = None
     feishu_verification_token: str | None = None
     feishu_encrypt_key: str | None = None
+    feishu_api_base_url: str = "https://open.feishu.cn/open-apis"
+    feishu_request_timeout_seconds: int = 15
 
     knowledge_root: str = "/data/knowledge"
     codex_runs_root: str = "/data/codex-runs"
@@ -42,6 +44,13 @@ class Settings(BaseSettings):
     enable_real_feishu: bool = False
     enable_real_codex: bool = False
     enable_external_send: bool = False
+
+    outbox_batch_size: int = 50
+    outbox_lock_seconds: int = 60
+    outbox_max_attempts: int = 8
+    outbox_retry_base_seconds: int = 15
+    outbox_retry_max_seconds: int = 3600
+    outbox_worker_id: str = "local-outbox-worker"
 
 
 @lru_cache(maxsize=1)

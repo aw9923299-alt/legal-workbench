@@ -26,9 +26,18 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from legal_workbench.domain.enums import (
     BusinessImpact,
+    CommunicationChannel,
+    CommunicationStatus,
     CandidateMatterRelation,
     CandidateStatus,
     Confidentiality,
+    DeadlineSource,
+    DeadlineStatus,
+    DeadlineType,
+    DependencyStatus,
+    DependencyType,
+    FeishuEventStatus,
+    FeishuMessageStatus,
     LegalRelevance,
     LegalRisk,
     MatterCategory,
@@ -36,8 +45,12 @@ from legal_workbench.domain.enums import (
     MatterWorkStatus,
     MessageRole,
     Priority,
+    PriorityConfirmationStatus,
     PrioritySource,
     RecommendedAction,
+    ReviewDecision,
+    ReviewPackageStatus,
+    ReviewPackageType,
     WorkItemStatus,
 )
 from legal_workbench.infrastructure.database import Base
@@ -245,6 +258,8 @@ class WorkItemModel(UuidPrimaryKeyMixin, TimestampMixin, VersionedMixin, Base):
     planned_start_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     planned_complete_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    priority_confirmed_by: Mapped[str | None] = mapped_column(String(160))
+    priority_confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     sequence_order: Mapped[int] = mapped_column(
         Integer, nullable=False, default=0, server_default="0"
     )
@@ -314,6 +329,9 @@ class OutboxEventModel(UuidPrimaryKeyMixin, Base):
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     last_error: Mapped[str | None] = mapped_column(Text)
     locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    locked_by: Mapped[str | None] = mapped_column(String(120))
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    dead_lettered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class IdempotencyRecordModel(UuidPrimaryKeyMixin, Base):
@@ -330,3 +348,304 @@ class IdempotencyRecordModel(UuidPrimaryKeyMixin, Base):
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class PriorityConfirmationModel(UuidPrimaryKeyMixin, TimestampMixin, VersionedMixin, Base):
+    __tablename__ = "priority_confirmations"
+    __table_args__ = (
+        Index(
+            "ix_priority_confirmations_work_item_created",
+            "work_item_id",
+            "created_at",
+        ),
+    )
+
+    work_item_id: Mapped[UUID] = mapped_column(
+        ForeignKey("work_items.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    proposed_priority: Mapped[Priority] = mapped_column(
+        enum_type(Priority, name="proposed_priority", length=16), nullable=False
+    )
+    confirmed_priority: Mapped[Priority] = mapped_column(
+        enum_type(Priority, name="confirmed_priority", length=16), nullable=False
+    )
+    proposed_complete_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    confirmed_complete_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    reasons: Mapped[list[str]] = mapped_column(
+        JSONB, nullable=False, default=list, server_default=JSON_EMPTY_LIST
+    )
+    override_reason: Mapped[str | None] = mapped_column(Text)
+    confirmed_by: Mapped[str] = mapped_column(String(160), nullable=False)
+    confirmed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    status: Mapped[PriorityConfirmationStatus] = mapped_column(
+        enum_type(PriorityConfirmationStatus, name="priority_confirmation_status", length=20),
+        nullable=False,
+    )
+
+
+class DeadlineModel(UuidPrimaryKeyMixin, TimestampMixin, VersionedMixin, Base):
+    __tablename__ = "deadlines"
+    __table_args__ = (
+        CheckConstraint(
+            "(matter_id IS NOT NULL AND work_item_id IS NULL) OR "
+            "(matter_id IS NULL AND work_item_id IS NOT NULL)",
+            name="deadline_exactly_one_owner",
+        ),
+        CheckConstraint(
+            "confidence IS NULL OR (confidence >= 0 AND confidence <= 1)",
+            name="deadline_confidence_range",
+        ),
+        Index("ix_deadlines_active_due_at", "status", "due_at"),
+    )
+
+    matter_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("legal_matters.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    work_item_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("work_items.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    deadline_type: Mapped[DeadlineType] = mapped_column(
+        enum_type(DeadlineType, name="deadline_type", length=20), nullable=False
+    )
+    source: Mapped[DeadlineSource] = mapped_column(
+        enum_type(DeadlineSource, name="deadline_source", length=32), nullable=False
+    )
+    due_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    timezone: Mapped[str] = mapped_column(String(64), nullable=False)
+    is_hard: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=FALSE_DEFAULT)
+    status: Mapped[DeadlineStatus] = mapped_column(
+        enum_type(DeadlineStatus, name="deadline_status", length=20), nullable=False
+    )
+    source_reference: Mapped[str | None] = mapped_column(String(500))
+    confidence: Mapped[float | None] = mapped_column(Float)
+    reminder_policy: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=JSON_EMPTY_OBJECT
+    )
+    confirmed_by: Mapped[str | None] = mapped_column(String(160))
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class WorkItemDependencyModel(UuidPrimaryKeyMixin, TimestampMixin, VersionedMixin, Base):
+    __tablename__ = "work_item_dependencies"
+    __table_args__ = (
+        CheckConstraint(
+            "depends_on_work_item_id IS NULL OR depends_on_work_item_id <> work_item_id",
+            name="dependency_not_self",
+        ),
+        UniqueConstraint(
+            "work_item_id", "depends_on_work_item_id", "dependency_type",
+            name="uq_work_item_dependency",
+        ),
+        Index("ix_work_item_dependencies_active", "work_item_id", "status"),
+    )
+
+    work_item_id: Mapped[UUID] = mapped_column(
+        ForeignKey("work_items.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    depends_on_work_item_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("work_items.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
+    dependency_type: Mapped[DependencyType] = mapped_column(
+        enum_type(DependencyType, name="dependency_type", length=24), nullable=False
+    )
+    status: Mapped[DependencyStatus] = mapped_column(
+        enum_type(DependencyStatus, name="dependency_status", length=20), nullable=False
+    )
+    external_party_id: Mapped[str | None] = mapped_column(String(160))
+    description: Mapped[str | None] = mapped_column(Text)
+    satisfied_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    waived_by: Mapped[str | None] = mapped_column(String(160))
+    waived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class ReviewPackageModel(UuidPrimaryKeyMixin, TimestampMixin, VersionedMixin, Base):
+    __tablename__ = "review_packages"
+    __table_args__ = (Index("ix_review_packages_status_created", "status", "created_at"),)
+
+    matter_id: Mapped[UUID] = mapped_column(
+        ForeignKey("legal_matters.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    work_item_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("work_items.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    package_type: Mapped[ReviewPackageType] = mapped_column(
+        enum_type(ReviewPackageType, name="review_package_type", length=24), nullable=False
+    )
+    status: Mapped[ReviewPackageStatus] = mapped_column(
+        enum_type(ReviewPackageStatus, name="review_package_status", length=24), nullable=False
+    )
+    title: Mapped[str] = mapped_column(String(500), nullable=False)
+    background: Mapped[str] = mapped_column(Text, nullable=False)
+    confirmed_facts: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB, nullable=False, default=list, server_default=JSON_EMPTY_LIST
+    )
+    unconfirmed_facts: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB, nullable=False, default=list, server_default=JSON_EMPTY_LIST
+    )
+    reasoning: Mapped[str] = mapped_column(Text, nullable=False)
+    risks: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB, nullable=False, default=list, server_default=JSON_EMPTY_LIST
+    )
+    alternatives: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB, nullable=False, default=list, server_default=JSON_EMPTY_LIST
+    )
+    citations: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB, nullable=False, default=list, server_default=JSON_EMPTY_LIST
+    )
+    proposed_content: Mapped[str] = mapped_column(Text, nullable=False)
+    target: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=JSON_EMPTY_OBJECT
+    )
+    created_by: Mapped[str] = mapped_column(String(160), nullable=False)
+    submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    approved_content_hash: Mapped[str | None] = mapped_column(String(64))
+
+
+class ReviewRecordModel(UuidPrimaryKeyMixin, Base):
+    __tablename__ = "review_records"
+    __table_args__ = (
+        Index(
+            "ix_review_records_package_reviewed",
+            "review_package_id",
+            "reviewed_at",
+        ),
+    )
+
+    review_package_id: Mapped[UUID] = mapped_column(
+        ForeignKey("review_packages.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    reviewer_id: Mapped[str] = mapped_column(String(160), nullable=False)
+    decision: Mapped[ReviewDecision] = mapped_column(
+        enum_type(ReviewDecision, name="review_decision", length=24), nullable=False
+    )
+    comments: Mapped[str | None] = mapped_column(Text)
+    final_content: Mapped[str | None] = mapped_column(Text)
+    final_content_hash: Mapped[str | None] = mapped_column(String(64))
+    change_summary: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB, nullable=False, default=list, server_default=JSON_EMPTY_LIST
+    )
+    reusable_as_example: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=FALSE_DEFAULT
+    )
+    reviewed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class CommunicationModel(UuidPrimaryKeyMixin, TimestampMixin, VersionedMixin, Base):
+    __tablename__ = "communications"
+    __table_args__ = (
+        UniqueConstraint("review_record_id", name="uq_communications_review_record_id"),
+        Index("ix_communications_status_created", "status", "created_at"),
+    )
+
+    matter_id: Mapped[UUID] = mapped_column(
+        ForeignKey("legal_matters.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    work_item_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("work_items.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    review_package_id: Mapped[UUID] = mapped_column(
+        ForeignKey("review_packages.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    review_record_id: Mapped[UUID] = mapped_column(
+        ForeignKey("review_records.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    channel: Mapped[CommunicationChannel] = mapped_column(
+        enum_type(CommunicationChannel, name="communication_channel", length=16), nullable=False
+    )
+    target: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=JSON_EMPTY_OBJECT
+    )
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[CommunicationStatus] = mapped_column(
+        enum_type(CommunicationStatus, name="communication_status", length=20), nullable=False
+    )
+    requested_by: Mapped[str] = mapped_column(String(160), nullable=False)
+    correlation_id: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    external_message_id: Mapped[str | None] = mapped_column(String(160))
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    last_error: Mapped[str | None] = mapped_column(Text)
+    queued_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class FeishuEventModel(UuidPrimaryKeyMixin, Base):
+    __tablename__ = "feishu_events"
+    __table_args__ = (
+        UniqueConstraint("event_id", name="uq_feishu_events_event_id"),
+        Index("ix_feishu_events_status_received", "status", "received_at"),
+    )
+
+    event_id: Mapped[str] = mapped_column(String(160), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(160), nullable=False)
+    tenant_key: Mapped[str | None] = mapped_column(String(160))
+    app_id: Mapped[str | None] = mapped_column(String(160))
+    schema_version: Mapped[str | None] = mapped_column(String(24))
+    raw_payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    payload_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[FeishuEventStatus] = mapped_column(
+        enum_type(FeishuEventStatus, name="feishu_event_status", length=20), nullable=False
+    )
+    received_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_error: Mapped[str | None] = mapped_column(Text)
+
+
+class FeishuMessageModel(UuidPrimaryKeyMixin, TimestampMixin, Base):
+    __tablename__ = "feishu_messages"
+    __table_args__ = (
+        UniqueConstraint("tenant_key", "message_id", name="uq_feishu_messages_tenant_message"),
+        Index("ix_feishu_messages_chat_created", "chat_id", "create_time"),
+        Index("ix_feishu_messages_status_created", "status", "created_at"),
+    )
+
+    event_id: Mapped[UUID] = mapped_column(
+        ForeignKey("feishu_events.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    tenant_key: Mapped[str | None] = mapped_column(String(160))
+    message_id: Mapped[str] = mapped_column(String(160), nullable=False)
+    chat_id: Mapped[str | None] = mapped_column(String(160), index=True)
+    thread_id: Mapped[str | None] = mapped_column(String(160))
+    root_id: Mapped[str | None] = mapped_column(String(160))
+    parent_id: Mapped[str | None] = mapped_column(String(160))
+    sender_id: Mapped[str | None] = mapped_column(String(160), index=True)
+    sender_type: Mapped[str | None] = mapped_column(String(40))
+    message_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    content: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=JSON_EMPTY_OBJECT
+    )
+    mentions: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB, nullable=False, default=list, server_default=JSON_EMPTY_LIST
+    )
+    create_time: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    update_time: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    raw_message: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    status: Mapped[FeishuMessageStatus] = mapped_column(
+        enum_type(FeishuMessageStatus, name="feishu_message_status", length=24), nullable=False
+    )
+
+
+class OutboxDeadLetterModel(UuidPrimaryKeyMixin, Base):
+    __tablename__ = "outbox_dead_letters"
+    __table_args__ = (Index("ix_outbox_dead_letters_failed_at", "failed_at"),)
+
+    original_event_id: Mapped[UUID] = mapped_column(nullable=False, unique=True)
+    event_type: Mapped[str] = mapped_column(String(120), nullable=False)
+    aggregate_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    aggregate_id: Mapped[UUID] = mapped_column(nullable=False)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    correlation_id: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False)
+    last_error: Mapped[str] = mapped_column(Text, nullable=False)
+    failed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    requeued_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    requeued_event_id: Mapped[UUID | None] = mapped_column()

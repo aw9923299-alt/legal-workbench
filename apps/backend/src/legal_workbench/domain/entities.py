@@ -2,12 +2,22 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from hashlib import sha256
 from uuid import UUID, uuid4
 
 from legal_workbench.domain.enums import (
     BusinessImpact,
     CandidateStatus,
+    CommunicationChannel,
+    CommunicationStatus,
     Confidentiality,
+    DeadlineSource,
+    DeadlineStatus,
+    DeadlineType,
+    DependencyStatus,
+    DependencyType,
+    FeishuEventStatus,
+    FeishuMessageStatus,
     LegalRelevance,
     LegalRisk,
     MatterCategory,
@@ -15,8 +25,12 @@ from legal_workbench.domain.enums import (
     MatterWorkStatus,
     MessageRole,
     Priority,
+    PriorityConfirmationStatus,
     PrioritySource,
     RecommendedAction,
+    ReviewDecision,
+    ReviewPackageStatus,
+    ReviewPackageType,
     WorkItemStatus,
 )
 from legal_workbench.domain.errors import (
@@ -28,6 +42,15 @@ from legal_workbench.domain.errors import (
 
 def utc_now() -> datetime:
     return datetime.now(UTC)
+
+
+def text_hash(value: str) -> str:
+    return sha256(value.encode("utf-8")).hexdigest()
+
+
+def require_aware(value: datetime, *, field_name: str) -> None:
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise DomainValidationError(f"{field_name} must be timezone-aware.")
 
 
 @dataclass(slots=True)
@@ -219,6 +242,8 @@ class WorkItem:
     planned_complete_at: datetime | None = None
     completed_at: datetime | None = None
     sequence_order: int = 0
+    priority_confirmed_by: str | None = None
+    priority_confirmed_at: datetime | None = None
     version: int = 1
 
     @classmethod
@@ -251,6 +276,8 @@ class WorkItem:
                 "Estimated minutes must be positive.",
                 details={"estimatedMinutes": estimated_minutes},
             )
+        if planned_complete_at is not None:
+            require_aware(planned_complete_at, field_name="planned_complete_at")
         return cls(
             id=uuid4(),
             matter_id=matter_id,
@@ -266,6 +293,337 @@ class WorkItem:
             sequence_order=sequence_order,
         )
 
+    def confirm_priority(
+        self,
+        *,
+        actor_id: str,
+        priority: Priority,
+        planned_complete_at: datetime | None,
+        reasons: list[str],
+        override_reason: str | None,
+        expected_version: int,
+    ) -> None:
+        if self.version != expected_version:
+            raise EntityVersionConflictError(
+                "The work item was changed by another operation.",
+                details={"expectedVersion": expected_version, "actualVersion": self.version},
+            )
+        if self.status in {WorkItemStatus.DONE, WorkItemStatus.CANCELLED}:
+            raise InvalidStateTransitionError(
+                "A completed or cancelled work item cannot be reprioritized."
+            )
+        if planned_complete_at is not None:
+            require_aware(planned_complete_at, field_name="planned_complete_at")
+        self.priority = priority
+        self.priority_source = PrioritySource.LEGAL_CONFIRMED
+        self.priority_reasons = list(
+            dict.fromkeys(reason.strip() for reason in reasons if reason.strip())
+        )
+        self.override_reason = override_reason.strip() if override_reason else None
+        self.planned_complete_at = planned_complete_at
+        self.priority_confirmed_by = actor_id
+        self.priority_confirmed_at = utc_now()
+
+
+@dataclass(slots=True)
+class PriorityConfirmation:
+    id: UUID
+    work_item_id: UUID
+    proposed_priority: Priority
+    confirmed_priority: Priority
+    proposed_complete_at: datetime | None
+    confirmed_complete_at: datetime | None
+    reasons: list[str]
+    confirmed_by: str
+    status: PriorityConfirmationStatus = PriorityConfirmationStatus.CONFIRMED
+    override_reason: str | None = None
+    confirmed_at: datetime = field(default_factory=utc_now)
+    version: int = 1
+
+
+@dataclass(slots=True)
+class Deadline:
+    id: UUID
+    deadline_type: DeadlineType
+    source: DeadlineSource
+    due_at: datetime
+    timezone: str
+    is_hard: bool
+    status: DeadlineStatus = DeadlineStatus.ACTIVE
+    matter_id: UUID | None = None
+    work_item_id: UUID | None = None
+    source_reference: str | None = None
+    confidence: float | None = None
+    reminder_policy: dict[str, object] = field(default_factory=dict)
+    confirmed_by: str | None = None
+    confirmed_at: datetime | None = None
+    completed_at: datetime | None = None
+    version: int = 1
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        deadline_type: DeadlineType,
+        source: DeadlineSource,
+        due_at: datetime,
+        timezone: str,
+        is_hard: bool,
+        matter_id: UUID | None,
+        work_item_id: UUID | None,
+        source_reference: str | None,
+        confidence: float | None,
+        reminder_policy: dict[str, object],
+        actor_id: str | None,
+    ) -> Deadline:
+        if (matter_id is None) == (work_item_id is None):
+            raise DomainValidationError(
+                "A deadline must belong to exactly one matter or work item."
+            )
+        require_aware(due_at, field_name="due_at")
+        if confidence is not None and not 0 <= confidence <= 1:
+            raise DomainValidationError("Deadline confidence must be between 0 and 1.")
+        normalized_timezone = timezone.strip()
+        if not normalized_timezone:
+            raise DomainValidationError("Deadline timezone is required.")
+        return cls(
+            id=uuid4(),
+            deadline_type=deadline_type,
+            source=source,
+            due_at=due_at,
+            timezone=normalized_timezone,
+            is_hard=is_hard,
+            matter_id=matter_id,
+            work_item_id=work_item_id,
+            source_reference=source_reference,
+            confidence=confidence,
+            reminder_policy=reminder_policy,
+            confirmed_by=actor_id,
+            confirmed_at=utc_now() if actor_id else None,
+        )
+
+
+@dataclass(slots=True)
+class WorkItemDependency:
+    id: UUID
+    work_item_id: UUID
+    dependency_type: DependencyType
+    status: DependencyStatus = DependencyStatus.ACTIVE
+    depends_on_work_item_id: UUID | None = None
+    external_party_id: str | None = None
+    description: str | None = None
+    satisfied_at: datetime | None = None
+    waived_by: str | None = None
+    waived_at: datetime | None = None
+    version: int = 1
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        work_item_id: UUID,
+        dependency_type: DependencyType,
+        depends_on_work_item_id: UUID | None,
+        external_party_id: str | None,
+        description: str | None,
+    ) -> WorkItemDependency:
+        if depends_on_work_item_id == work_item_id:
+            raise DomainValidationError("A work item cannot depend on itself.")
+        if depends_on_work_item_id is None and not (external_party_id or description):
+            raise DomainValidationError(
+                "A dependency requires a predecessor work item or an external "
+                "dependency description."
+            )
+        return cls(
+            id=uuid4(),
+            work_item_id=work_item_id,
+            dependency_type=dependency_type,
+            depends_on_work_item_id=depends_on_work_item_id,
+            external_party_id=external_party_id.strip() if external_party_id else None,
+            description=description.strip() if description else None,
+        )
+
+
+@dataclass(slots=True)
+class ReviewPackage:
+    id: UUID
+    matter_id: UUID
+    package_type: ReviewPackageType
+    title: str
+    background: str
+    confirmed_facts: list[dict[str, object]]
+    unconfirmed_facts: list[dict[str, object]]
+    reasoning: str
+    risks: list[dict[str, object]]
+    alternatives: list[dict[str, object]]
+    citations: list[dict[str, object]]
+    proposed_content: str
+    target: dict[str, object]
+    created_by: str
+    work_item_id: UUID | None = None
+    status: ReviewPackageStatus = ReviewPackageStatus.DRAFT
+    submitted_at: datetime | None = None
+    approved_content_hash: str | None = None
+    version: int = 1
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        matter_id: UUID,
+        work_item_id: UUID | None,
+        package_type: ReviewPackageType,
+        title: str,
+        background: str,
+        confirmed_facts: list[dict[str, object]],
+        unconfirmed_facts: list[dict[str, object]],
+        reasoning: str,
+        risks: list[dict[str, object]],
+        alternatives: list[dict[str, object]],
+        citations: list[dict[str, object]],
+        proposed_content: str,
+        target: dict[str, object],
+        created_by: str,
+    ) -> ReviewPackage:
+        if not title.strip() or not background.strip() or not reasoning.strip():
+            raise DomainValidationError(
+                "Review package title, background and reasoning are required."
+            )
+        if not proposed_content.strip():
+            raise DomainValidationError("Review package proposed content is required.")
+        if not target:
+            raise DomainValidationError("Review package target is required.")
+        if package_type == ReviewPackageType.EXTERNAL_MESSAGE:
+            reply_to = str(target.get("replyToMessageId") or "").strip()
+            receive_id = str(target.get("receiveId") or "").strip()
+            if not reply_to and not receive_id:
+                raise DomainValidationError(
+                    "An external message requires replyToMessageId or receiveId."
+                )
+        return cls(
+            id=uuid4(),
+            matter_id=matter_id,
+            work_item_id=work_item_id,
+            package_type=package_type,
+            title=title.strip(),
+            background=background.strip(),
+            confirmed_facts=confirmed_facts,
+            unconfirmed_facts=unconfirmed_facts,
+            reasoning=reasoning.strip(),
+            risks=risks,
+            alternatives=alternatives,
+            citations=citations,
+            proposed_content=proposed_content.strip(),
+            target=target,
+            created_by=created_by,
+        )
+
+    def submit(self, *, expected_version: int) -> None:
+        if self.version != expected_version:
+            raise EntityVersionConflictError("The review package was changed by another operation.")
+        if self.status != ReviewPackageStatus.DRAFT:
+            raise InvalidStateTransitionError("Only a draft review package can be submitted.")
+        self.status = ReviewPackageStatus.PENDING_REVIEW
+        self.submitted_at = utc_now()
+
+    def apply_review(
+        self,
+        *,
+        decision: ReviewDecision,
+        final_content: str | None,
+        expected_version: int,
+    ) -> str | None:
+        if self.version != expected_version:
+            raise EntityVersionConflictError("The review package was changed by another operation.")
+        if self.status != ReviewPackageStatus.PENDING_REVIEW:
+            raise InvalidStateTransitionError("Only a pending review package can be reviewed.")
+        approved_content: str | None = None
+        if decision in {ReviewDecision.APPROVED, ReviewDecision.APPROVED_WITH_EDITS}:
+            approved_content = (final_content or self.proposed_content).strip()
+            if not approved_content:
+                raise DomainValidationError("Approved content cannot be empty.")
+            self.status = ReviewPackageStatus.APPROVED
+            self.approved_content_hash = text_hash(approved_content)
+        elif decision == ReviewDecision.REJECTED:
+            self.status = ReviewPackageStatus.REJECTED
+        else:
+            self.status = ReviewPackageStatus.NEEDS_INFORMATION
+        return approved_content
+
+
+@dataclass(slots=True)
+class ReviewRecord:
+    id: UUID
+    review_package_id: UUID
+    reviewer_id: str
+    decision: ReviewDecision
+    comments: str | None
+    final_content: str | None
+    final_content_hash: str | None
+    change_summary: list[dict[str, object]]
+    reusable_as_example: bool
+    reviewed_at: datetime = field(default_factory=utc_now)
+
+
+@dataclass(slots=True)
+class Communication:
+    id: UUID
+    matter_id: UUID
+    review_package_id: UUID
+    review_record_id: UUID
+    channel: CommunicationChannel
+    target: dict[str, object]
+    content: str
+    content_hash: str
+    status: CommunicationStatus
+    requested_by: str
+    correlation_id: str
+    work_item_id: UUID | None = None
+    external_message_id: str | None = None
+    attempts: int = 0
+    last_error: str | None = None
+    queued_at: datetime | None = None
+    sent_at: datetime | None = None
+    version: int = 1
+
+    @classmethod
+    def create_from_approved_review(
+        cls,
+        *,
+        package: ReviewPackage,
+        record: ReviewRecord,
+        actor_id: str,
+        correlation_id: str,
+    ) -> Communication:
+        if package.status != ReviewPackageStatus.APPROVED:
+            raise InvalidStateTransitionError("Only an approved review package can be sent.")
+        if record.decision not in {
+            ReviewDecision.APPROVED,
+            ReviewDecision.APPROVED_WITH_EDITS,
+        }:
+            raise InvalidStateTransitionError("The latest review record does not approve sending.")
+        content = (record.final_content or package.proposed_content).strip()
+        content_digest = text_hash(content)
+        if package.approved_content_hash != content_digest:
+            raise InvalidStateTransitionError(
+                "The message content no longer matches the approved review version."
+            )
+        return cls(
+            id=uuid4(),
+            matter_id=package.matter_id,
+            work_item_id=package.work_item_id,
+            review_package_id=package.id,
+            review_record_id=record.id,
+            channel=CommunicationChannel.FEISHU,
+            target=package.target,
+            content=content,
+            content_hash=content_digest,
+            status=CommunicationStatus.QUEUED,
+            requested_by=actor_id,
+            correlation_id=correlation_id,
+            queued_at=utc_now(),
+        )
+
 
 @dataclass(slots=True)
 class ContextSnapshot:
@@ -279,6 +637,43 @@ class ContextSnapshot:
     permission_snapshot: dict[str, object]
     generated_at: datetime
     content_hash: str
+
+
+@dataclass(slots=True)
+class FeishuRawEvent:
+    id: UUID
+    event_id: str
+    event_type: str
+    tenant_key: str | None
+    app_id: str | None
+    schema_version: str | None
+    raw_payload: dict[str, object]
+    payload_hash: str
+    status: FeishuEventStatus = FeishuEventStatus.RECEIVED
+    received_at: datetime = field(default_factory=utc_now)
+    processed_at: datetime | None = None
+    last_error: str | None = None
+
+
+@dataclass(slots=True)
+class FeishuMessage:
+    id: UUID
+    event_id: UUID
+    tenant_key: str | None
+    message_id: str
+    chat_id: str | None
+    thread_id: str | None
+    root_id: str | None
+    parent_id: str | None
+    sender_id: str | None
+    sender_type: str | None
+    message_type: str
+    content: dict[str, object]
+    mentions: list[dict[str, object]]
+    create_time: datetime | None
+    update_time: datetime | None
+    raw_message: dict[str, object]
+    status: FeishuMessageStatus = FeishuMessageStatus.RECEIVED
 
 
 @dataclass(slots=True)

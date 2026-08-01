@@ -8,6 +8,9 @@ from legal_workbench.domain.enums import (
     BusinessImpact,
     CandidateStatus,
     Confidentiality,
+    DeadlineSource,
+    DeadlineType,
+    DependencyType,
     LegalRelevance,
     LegalRisk,
     MatterCategory,
@@ -15,6 +18,8 @@ from legal_workbench.domain.enums import (
     Priority,
     PrioritySource,
     RecommendedAction,
+    ReviewDecision,
+    ReviewPackageType,
 )
 
 
@@ -93,3 +98,109 @@ class AddWorkItemCommand:
     ai_suggested_priority: Priority | None = None
     estimated_minutes: int | None = None
     planned_complete_at: datetime | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ConfirmPriorityCommand:
+    work_item_id: UUID
+    work_item_version: int
+    actor_id: str
+    correlation_id: str
+    idempotency_key: str
+    confirmed_priority: Priority
+    confirmed_complete_at: datetime | None
+    reasons: list[str]
+    override_reason: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class CreateDeadlineCommand:
+    actor_id: str
+    correlation_id: str
+    idempotency_key: str
+    deadline_type: DeadlineType
+    source: DeadlineSource
+    due_at: datetime
+    timezone: str
+    is_hard: bool
+    matter_id: UUID | None = None
+    work_item_id: UUID | None = None
+    source_reference: str | None = None
+    confidence: float | None = None
+    reminder_policy: dict[str, object] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class CreateDependencyCommand:
+    work_item_id: UUID
+    actor_id: str
+    correlation_id: str
+    idempotency_key: str
+    dependency_type: DependencyType
+    depends_on_work_item_id: UUID | None = None
+    external_party_id: str | None = None
+    description: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class CreateReviewPackageCommand:
+    matter_id: UUID
+    work_item_id: UUID | None
+    actor_id: str
+    correlation_id: str
+    idempotency_key: str
+    package_type: ReviewPackageType
+    title: str
+    background: str
+    confirmed_facts: list[dict[str, object]]
+    unconfirmed_facts: list[dict[str, object]]
+    reasoning: str
+    risks: list[dict[str, object]]
+    alternatives: list[dict[str, object]]
+    citations: list[dict[str, object]]
+    proposed_content: str
+    target: dict[str, object]
+    submit_for_review: bool = True
+
+
+@dataclass(frozen=True, slots=True)
+class SubmitReviewPackageCommand:
+    review_package_id: UUID
+    package_version: int
+    actor_id: str
+    correlation_id: str
+    idempotency_key: str
+
+
+@dataclass(frozen=True, slots=True)
+class ReviewPackageCommand:
+    review_package_id: UUID
+    package_version: int
+    actor_id: str
+    correlation_id: str
+    idempotency_key: str
+    decision: ReviewDecision
+    comments: str | None
+    final_content: str | None
+    change_summary: list[dict[str, object]]
+    reusable_as_example: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class QueueCommunicationCommand:
+    review_package_id: UUID
+    actor_id: str
+    correlation_id: str
+    idempotency_key: str
+
+
+@dataclass(frozen=True, slots=True)
+class IngestFeishuEventCommand:
+    actor_id: str
+    correlation_id: str
+    event_id: str
+    event_type: str
+    tenant_key: str | None
+    app_id: str | None
+    schema_version: str | None
+    raw_payload: dict[str, object]

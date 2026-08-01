@@ -1,58 +1,231 @@
-import { Badge, Button, Card, Checkbox, Collapse, Flex, Progress, Space, Tag, Typography } from 'antd';
-import { CheckOutlined, CloseOutlined, LinkOutlined, PlusOutlined, QuestionCircleOutlined } from '@ant-design/icons';
-import { useState } from 'react';
-import { inboxItems } from '../data/mock';
-import type { InboxItem } from '../types/domain';
-import { PriorityTag, RiskTag } from '../components/StatusTags';
+import {
+  Alert,
+  Button,
+  Card,
+  Empty,
+  Form,
+  Input,
+  InputNumber,
+  Modal,
+  Progress,
+  Select,
+  Space,
+  Spin,
+  Tag,
+  Typography,
+  message,
+} from 'antd';
+import { ReloadOutlined } from '@ant-design/icons';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { legalApi, type ConfirmCandidateInput } from '../services/api';
+import {
+  candidateStatusLabels,
+  categoryLabels,
+  displayValue,
+  priorityLabels,
+  riskLabels,
+} from '../services/apiLabels';
+import type { MatterCategory, MessageCandidate, Priority } from '../types/api';
 
 const { Title, Text, Paragraph } = Typography;
 
-export default function InboxPage() {
-  const [selected, setSelected] = useState<string[]>([]);
-  const toggle = (id: string) => setSelected((current) => current.includes(id) ? current.filter((item) => item !== id) : [...current, id]);
+interface ConfirmFormValues {
+  title: string;
+  primaryCategory: MatterCategory;
+  ownerId: string;
+  legalRisk: 'critical' | 'high' | 'medium' | 'low' | 'pending';
+  businessImpact: 'company' | 'department' | 'project' | 'general';
+  summary?: string;
+  objective?: string;
+  workItemTitle: string;
+  workItemOwnerId: string;
+  priority: Priority;
+  nextAction: string;
+  estimatedMinutes?: number;
+}
+
+export default function InboxPage({ onMatterCreated }: { onMatterCreated?: (matterId: string) => void }) {
+  const [items, setItems] = useState<MessageCandidate[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string>();
+  const [active, setActive] = useState<MessageCandidate>();
+  const [submitting, setSubmitting] = useState(false);
+  const [form] = Form.useForm<ConfirmFormValues>();
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError(undefined);
+    try {
+      setItems(await legalApi.listCandidates());
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '加载候选消息失败');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { void load(); }, [load]);
+
+  const openConfirm = (candidate: MessageCandidate) => {
+    const proposedCategory = candidate.categoryProposals.find(
+      (value) => typeof value.category === 'string',
+    )?.category as MatterCategory | undefined;
+    form.setFieldsValue({
+      title: candidate.titleProposal ?? '待确认法务事项',
+      primaryCategory: proposedCategory ?? 'general_consultation',
+      ownerId: 'local-legal-user',
+      legalRisk: 'pending',
+      businessImpact: 'general',
+      summary: candidate.evidenceRefs.join('\n'),
+      workItemTitle: candidate.titleProposal ?? '核实需求并形成处理意见',
+      workItemOwnerId: 'local-legal-user',
+      priority: 'medium',
+      nextAction: '核实事实、材料和完成时间',
+    });
+    setActive(candidate);
+  };
+
+  const confirm = async () => {
+    if (!active) return;
+    const values = await form.validateFields();
+    const payload: ConfirmCandidateInput = {
+      candidateVersion: active.version,
+      title: values.title,
+      primaryCategory: values.primaryCategory,
+      secondaryCategories: [],
+      ownerId: values.ownerId,
+      requesterIds: [],
+      legalRisk: values.legalRisk,
+      businessImpact: values.businessImpact,
+      confidentiality: 'internal',
+      summary: values.summary,
+      objective: values.objective,
+      initialWorkItems: [{
+        title: values.workItemTitle,
+        ownerId: values.workItemOwnerId,
+        priority: values.priority,
+        prioritySource: 'legal_confirmed',
+        nextAction: values.nextAction,
+        priorityReasons: ['法务在工作台确认'],
+      }],
+    };
+    setSubmitting(true);
+    try {
+      const result = await legalApi.confirmCandidate(active.id, payload);
+      message.success(`已创建事项 ${result.matterNumber}`);
+      setActive(undefined);
+      form.resetFields();
+      await load();
+      onMatterCreated?.(result.matterId);
+    } catch (reason) {
+      message.error(reason instanceof Error ? reason.message : '创建事项失败');
+    } finally {
+      setSubmitting(false);
+    }
+  };
 
   return (
     <div className="page">
       <div className="page-title-row">
-        <div><span className="eyebrow">HUMAN-IN-THE-LOOP</span><Title level={2}>AI 收件箱</Title><Text type="secondary">低置信度与边界不明确消息不会自动创建正式任务。</Text></div>
-        <Space><Button disabled={!selected.length}>批量关联</Button><Button disabled={!selected.length}>批量忽略</Button><Button type="primary" disabled={!selected.length}>确认所选</Button></Space>
+        <div>
+          <span className="eyebrow">HUMAN-IN-THE-LOOP</span>
+          <Title level={2}>AI 收件箱</Title>
+          <Text type="secondary">候选消息先由法务确认，再创建正式事项和行动任务。</Text>
+        </div>
+        <Button icon={<ReloadOutlined />} onClick={() => void load()}>刷新</Button>
       </div>
-      <div className="inbox-layout">
-        <aside className="filter-rail">
-          <strong>判断队列</strong>
-          {['全部待确认', '明确任务', '可能是工作', '仅供知悉', '信息不足', '已处理'].map((item, index) => <button key={item} className={index === 0 ? 'active' : ''}>{item}<Badge count={index === 0 ? 6 : index === 1 ? 2 : 0} /></button>)}
-          <strong>置信度</strong>
-          <button>低于 70%</button><button>70%–90%</button><button>高于 90%</button>
-        </aside>
-        <main className="inbox-stream">
-          <div className="batch-bar"><Checkbox checked={selected.length === inboxItems.length} onChange={() => setSelected(selected.length === inboxItems.length ? [] : inboxItems.map((item) => item.id))}>选择本页</Checkbox><span>共 {inboxItems.length} 条待确认</span></div>
-          {inboxItems.map((item) => <InboxCard key={item.id} item={item} checked={selected.includes(item.id)} onToggle={() => toggle(item.id)} />)}
-        </main>
-      </div>
+
+      {error && <Alert type="error" showIcon message={error} action={<Button onClick={() => void load()}>重试</Button>} />}
+      <Spin spinning={loading}>
+        <div className="inbox-stream">
+          {!loading && items.length === 0 && <Empty description="暂无待确认候选消息" />}
+          {items.map((item) => (
+            <CandidateCard key={item.id} item={item} onConfirm={() => openConfirm(item)} />
+          ))}
+        </div>
+      </Spin>
+
+      <Modal
+        open={Boolean(active)}
+        title="确认并创建法务事项"
+        width={760}
+        okText="创建事项"
+        cancelText="取消"
+        confirmLoading={submitting}
+        onCancel={() => setActive(undefined)}
+        onOk={() => void confirm()}
+      >
+        <Alert
+          type="info"
+          showIcon
+          message="该操作将在同一事务中创建 LegalMatter 和首个 WorkItem，并记录人工确认。"
+          style={{ marginBottom: 16 }}
+        />
+        <Form form={form} layout="vertical">
+          <Form.Item name="title" label="事项标题" rules={[{ required: true }]}><Input /></Form.Item>
+          <Space align="start" wrap>
+            <Form.Item name="primaryCategory" label="主分类" rules={[{ required: true }]}>
+              <Select style={{ width: 180 }} options={Object.entries(categoryLabels).map(([value, label]) => ({ value, label }))} />
+            </Form.Item>
+            <Form.Item name="legalRisk" label="法律风险" rules={[{ required: true }]}>
+              <Select style={{ width: 140 }} options={Object.entries(riskLabels).map(([value, label]) => ({ value, label }))} />
+            </Form.Item>
+            <Form.Item name="businessImpact" label="业务影响" rules={[{ required: true }]}>
+              <Select style={{ width: 140 }} options={[
+                { value: 'company', label: '公司级' }, { value: 'department', label: '部门级' },
+                { value: 'project', label: '项目级' }, { value: 'general', label: '一般' },
+              ]} />
+            </Form.Item>
+            <Form.Item name="ownerId" label="事项负责人" rules={[{ required: true }]}><Input style={{ width: 180 }} /></Form.Item>
+          </Space>
+          <Form.Item name="summary" label="事项背景"><Input.TextArea rows={3} /></Form.Item>
+          <Form.Item name="objective" label="处理目标"><Input.TextArea rows={2} /></Form.Item>
+          <Title level={5}>首个行动任务</Title>
+          <Form.Item name="workItemTitle" label="任务名称" rules={[{ required: true }]}><Input /></Form.Item>
+          <Space align="start" wrap>
+            <Form.Item name="workItemOwnerId" label="负责人" rules={[{ required: true }]}><Input style={{ width: 180 }} /></Form.Item>
+            <Form.Item name="priority" label="优先级" rules={[{ required: true }]}>
+              <Select style={{ width: 140 }} options={Object.entries(priorityLabels).map(([value, label]) => ({ value, label }))} />
+            </Form.Item>
+            <Form.Item name="estimatedMinutes" label="预计分钟"><InputNumber min={1} /></Form.Item>
+          </Space>
+          <Form.Item name="nextAction" label="下一步行动" rules={[{ required: true }]}><Input.TextArea rows={2} /></Form.Item>
+        </Form>
+      </Modal>
     </div>
   );
 }
 
-function InboxCard({ item, checked, onToggle }: { item: InboxItem; checked: boolean; onToggle: () => void }) {
+function CandidateCard({ item, onConfirm }: { item: MessageCandidate; onConfirm: () => void }) {
+  const category = useMemo(() => {
+    const value = item.categoryProposals.find((proposal) => typeof proposal.category === 'string')?.category;
+    return typeof value === 'string' ? categoryLabels[value] ?? value : '待分类';
+  }, [item.categoryProposals]);
+
   return (
     <Card className="inbox-card" bordered={false}>
       <div className="inbox-card-grid">
-        <Checkbox checked={checked} onChange={onToggle} />
         <div className="inbox-card-main">
-          <div className="inbox-card-head"><Tag color={item.aiDecision === '明确交给我的任务' ? 'blue' : item.aiDecision === '可能属于我的工作' ? 'gold' : 'default'}>{item.aiDecision}</Tag><span>{item.speaker.name} · {item.chatName} · {item.sentAt}</span></div>
-          <Title level={5}>{item.summary}</Title>
-          <Collapse ghost size="small" items={[{ key: 'context', label: '查看相关上下文', children: item.context.map((line) => <Paragraph key={line}>{line}</Paragraph>) }]} />
-          <Flex wrap gap={8}><PriorityTag value={item.suggestedPriority} /><RiskTag value={item.suggestedRisk} /><Tag>{item.suggestedType}</Tag>{item.relatedTaskId && <Tag icon={<LinkOutlined />}>关联 {item.relatedTaskId}</Tag>}</Flex>
-          <div className="rationale-box"><strong>AI 判断依据</strong>{item.rationale.map((reason) => <span key={reason}>· {reason}</span>)}</div>
+          <Space wrap>
+            <Tag color="blue">{candidateStatusLabels[item.status] ?? item.status}</Tag>
+            <Tag>{category}</Tag>
+            <Tag>{item.messageRole}</Tag>
+            <Tag color={item.legalRelevance === 'relevant' ? 'green' : 'gold'}>{item.legalRelevance}</Tag>
+          </Space>
+          <Title level={4}>{item.titleProposal ?? '未命名候选事项'}</Title>
+          <Paragraph type="secondary">建议动作：{item.recommendedAction}</Paragraph>
+          {item.evidenceRefs.length > 0 && (
+            <div className="rationale-box"><strong>证据与来源</strong>{item.evidenceRefs.map((value) => <span key={value}>· {displayValue(value)}</span>)}</div>
+          )}
         </div>
-        <div className="confidence-panel"><Text type="secondary">置信度</Text><Progress type="circle" percent={Math.round(item.confidence * 100)} size={62} strokeWidth={8} /><Text type="secondary">建议人工复核</Text></div>
+        <div className="confidence-panel">
+          <Text type="secondary">置信度</Text>
+          <Progress type="circle" percent={Math.round(item.confidence * 100)} size={68} />
+        </div>
       </div>
       <div className="inbox-card-actions">
-        <Button icon={<PlusOutlined />} type="primary">创建任务</Button>
-        <Button icon={<LinkOutlined />}>关联已有任务</Button>
-        <Button icon={<CheckOutlined />}>仅记录为信息</Button>
-        <Button icon={<QuestionCircleOutlined />}>修改提取结果</Button>
-        <Button icon={<CloseOutlined />} danger type="text">忽略</Button>
+        <Button type="primary" onClick={onConfirm}>确认并创建事项</Button>
+        <Text type="secondary">版本 {item.version} · {item.id}</Text>
       </div>
     </Card>
   );

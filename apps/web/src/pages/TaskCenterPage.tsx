@@ -1,36 +1,79 @@
-import { Button, Card, Input, Select, Space, Tabs, Typography } from 'antd';
-import { AppstoreOutlined, CalendarOutlined, FilterOutlined, PlusOutlined, SearchOutlined, UnorderedListOutlined } from '@ant-design/icons';
-import { tasks } from '../data/mock';
-import type { Task } from '../types/domain';
-import TaskTable from '../components/TaskTable';
+import { Alert, Button, Card, Empty, Input, Space, Spin, Table, Tag, Typography } from 'antd';
+import { ReloadOutlined, SearchOutlined } from '@ant-design/icons';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { legalApi } from '../services/api';
+import { categoryLabels, riskLabels } from '../services/apiLabels';
+import type { LegalMatter } from '../types/api';
 
 const { Title, Text } = Typography;
 
-export default function TaskCenterPage({ onOpenTask }: { onOpenTask: (task: Task) => void }) {
+export default function TaskCenterPage({ onOpenMatter }: { onOpenMatter: (matterId: string) => void }) {
+  const [items, setItems] = useState<LegalMatter[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string>();
+  const [keyword, setKeyword] = useState('');
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError(undefined);
+    try {
+      setItems(await legalApi.listMatters());
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '加载事项失败');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { void load(); }, [load]);
+
+  const filtered = useMemo(() => {
+    const normalized = keyword.trim().toLowerCase();
+    if (!normalized) return items;
+    return items.filter((item) => `${item.matterNumber} ${item.title} ${item.ownerId}`.toLowerCase().includes(normalized));
+  }, [items, keyword]);
+
   return (
     <div className="page">
-      <div className="page-title-row"><div><span className="eyebrow">LEGAL WORKFLOW</span><Title level={2}>任务中心</Title><Text type="secondary">统一查看任务、案件、项目及跨会话进度。</Text></div><Button type="primary" icon={<PlusOutlined />}>新建任务</Button></div>
-      <Card className="filter-card" bordered={false}>
-        <Space wrap>
-          <Input prefix={<SearchOutlined />} placeholder="搜索标题、主体、主播、合同或消息" style={{ width: 320 }} />
-          <Select placeholder="状态" style={{ width: 130 }} options={['待确认','待开始','处理中','等待业务反馈','等待外部反馈','等待材料','待审批','存在阻塞','已完成'].map((value) => ({ value }))} />
-          <Select placeholder="法律风险" style={{ width: 130 }} options={['严重','高','中','低','待评估'].map((value) => ({ value }))} />
-          <Select placeholder="业务部门" style={{ width: 150 }} options={['直播商务部','直播运营部','品牌市场部','人力资源部','财务部'].map((value) => ({ value }))} />
-          <Select placeholder="等待状态" style={{ width: 150 }} options={['等待我回复','等待他人回复','缺少材料','存在阻塞'].map((value) => ({ value }))} />
-          <Button icon={<FilterOutlined />}>更多筛选</Button><Button type="link">保存当前筛选</Button>
+      <div className="page-title-row">
+        <div>
+          <span className="eyebrow">LEGAL MATTERS</span>
+          <Title level={2}>法务事项中心</Title>
+          <Text type="secondary">事项承载完整法律问题，具体行动由WorkItem跟踪。</Text>
+        </div>
+        <Button icon={<ReloadOutlined />} onClick={() => void load()}>刷新</Button>
+      </div>
+      {error && <Alert type="error" showIcon message={error} />}
+      <Card bordered={false} className="task-center-card">
+        <Space style={{ marginBottom: 16 }}>
+          <Input
+            value={keyword}
+            onChange={(event) => setKeyword(event.target.value)}
+            prefix={<SearchOutlined />}
+            placeholder="搜索事项编号、标题或负责人"
+            style={{ width: 360 }}
+          />
+          <Text type="secondary">共 {filtered.length} 项</Text>
         </Space>
-      </Card>
-      <Card className="task-center-card" bordered={false}>
-        <Tabs
-          defaultActiveKey="list"
-          tabBarExtraContent={<Text type="secondary">共 {tasks.length} 项 · 其中 AI 创建 {tasks.filter((task) => task.aiCreated).length} 项</Text>}
-          items={[
-            { key: 'list', label: <span><UnorderedListOutlined /> 列表</span>, children: <TaskTable data={tasks} onOpen={onOpenTask} /> },
-            { key: 'board', label: <span><AppstoreOutlined /> 看板</span>, children: <div className="placeholder-state">看板视图：按状态展示拖拽列，并在状态变化时要求填写下一步行动。</div> },
-            { key: 'calendar', label: <span><CalendarOutlined /> 日历</span>, children: <div className="placeholder-state">日历视图：展示截止时间、提醒节点、诉讼期限与合同履约节点。</div> },
-            { key: 'timeline', label: '时间线', children: <div className="placeholder-state">时间线视图：聚合同一事项在不同群聊和日期中的关键变化。</div> },
-          ]}
-        />
+        <Spin spinning={loading}>
+          {!loading && filtered.length === 0 ? <Empty description="暂无事项" /> : (
+            <Table
+              rowKey="id"
+              dataSource={filtered}
+              pagination={{ pageSize: 12 }}
+              onRow={(record) => ({ onClick: () => onOpenMatter(record.id), style: { cursor: 'pointer' } })}
+              columns={[
+                { title: '编号', dataIndex: 'matterNumber', width: 170 },
+                { title: '事项', dataIndex: 'title', ellipsis: true },
+                { title: '分类', dataIndex: 'primaryCategory', render: (value: string) => categoryLabels[value] ?? value },
+                { title: '风险', dataIndex: 'legalRisk', render: (value: string) => <Tag color={value === 'critical' ? 'red' : value === 'high' ? 'volcano' : 'gold'}>{riskLabels[value] ?? value}</Tag> },
+                { title: '工作状态', dataIndex: 'workStatus', render: (value: string) => <Tag>{value}</Tag> },
+                { title: '负责人', dataIndex: 'ownerId' },
+                { title: '打开', render: (_: unknown, record: LegalMatter) => <Button type="link" onClick={(event) => { event.stopPropagation(); onOpenMatter(record.id); }}>查看</Button> },
+              ]}
+            />
+          )}
+        </Spin>
       </Card>
     </div>
   );

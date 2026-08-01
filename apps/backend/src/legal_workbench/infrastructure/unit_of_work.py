@@ -8,11 +8,18 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from legal_workbench.infrastructure.database import get_session_factory
 from legal_workbench.infrastructure.repositories import (
     SqlAlchemyAuditEventRepository,
+    SqlAlchemyCommunicationRepository,
     SqlAlchemyContextSnapshotRepository,
+    SqlAlchemyDeadlineRepository,
+    SqlAlchemyDependencyRepository,
+    SqlAlchemyFeishuRepository,
     SqlAlchemyIdempotencyRepository,
     SqlAlchemyLegalMatterRepository,
     SqlAlchemyMessageCandidateRepository,
     SqlAlchemyOutboxEventRepository,
+    SqlAlchemyPriorityConfirmationRepository,
+    SqlAlchemyReviewPackageRepository,
+    SqlAlchemyReviewRecordRepository,
     SqlAlchemyWorkItemRepository,
 )
 
@@ -25,6 +32,13 @@ class SqlAlchemyUnitOfWork:
         self.candidates: SqlAlchemyMessageCandidateRepository
         self.matters: SqlAlchemyLegalMatterRepository
         self.work_items: SqlAlchemyWorkItemRepository
+        self.priority_confirmations: SqlAlchemyPriorityConfirmationRepository
+        self.deadlines: SqlAlchemyDeadlineRepository
+        self.dependencies: SqlAlchemyDependencyRepository
+        self.review_packages: SqlAlchemyReviewPackageRepository
+        self.review_records: SqlAlchemyReviewRecordRepository
+        self.communications: SqlAlchemyCommunicationRepository
+        self.feishu: SqlAlchemyFeishuRepository
         self.audit_events: SqlAlchemyAuditEventRepository
         self.outbox_events: SqlAlchemyOutboxEventRepository
         self.idempotency: SqlAlchemyIdempotencyRepository
@@ -35,6 +49,13 @@ class SqlAlchemyUnitOfWork:
         self.candidates = SqlAlchemyMessageCandidateRepository(self._session)
         self.matters = SqlAlchemyLegalMatterRepository(self._session)
         self.work_items = SqlAlchemyWorkItemRepository(self._session)
+        self.priority_confirmations = SqlAlchemyPriorityConfirmationRepository(self._session)
+        self.deadlines = SqlAlchemyDeadlineRepository(self._session)
+        self.dependencies = SqlAlchemyDependencyRepository(self._session)
+        self.review_packages = SqlAlchemyReviewPackageRepository(self._session)
+        self.review_records = SqlAlchemyReviewRecordRepository(self._session)
+        self.communications = SqlAlchemyCommunicationRepository(self._session)
+        self.feishu = SqlAlchemyFeishuRepository(self._session)
         self.audit_events = SqlAlchemyAuditEventRepository(self._session)
         self.outbox_events = SqlAlchemyOutboxEventRepository(self._session)
         self.idempotency = SqlAlchemyIdempotencyRepository(self._session)

@@ -77,6 +77,8 @@ class WorkItemResponse(ApiModel):
     planned_start_at: datetime | None
     planned_complete_at: datetime | None
     completed_at: datetime | None
+    priority_confirmed_by: str | None
+    priority_confirmed_at: datetime | None
     sequence_order: int
     version: int
 

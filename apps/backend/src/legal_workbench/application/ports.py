@@ -7,14 +7,28 @@ from uuid import UUID
 
 from legal_workbench.domain.entities import (
     AuditEvent,
+    Communication,
     ContextSnapshot,
+    Deadline,
+    FeishuMessage,
+    FeishuRawEvent,
     IdempotencyRecord,
     LegalMatter,
     MessageCandidate,
     OutboxEvent,
+    PriorityConfirmation,
+    ReviewPackage,
+    ReviewRecord,
     WorkItem,
+    WorkItemDependency,
 )
-from legal_workbench.domain.enums import CandidateMatterRelation, CandidateStatus
+from legal_workbench.domain.enums import (
+    CandidateMatterRelation,
+    CandidateStatus,
+    CommunicationStatus,
+    DeadlineStatus,
+    ReviewPackageStatus,
+)
 
 
 class ContextSnapshotRepository(Protocol):
@@ -23,17 +37,12 @@ class ContextSnapshotRepository(Protocol):
 
 class MessageCandidateRepository(Protocol):
     async def add(self, candidate: MessageCandidate) -> None: ...
-
     async def get(self, candidate_id: UUID) -> MessageCandidate | None: ...
-
     async def get_for_update(self, candidate_id: UUID) -> MessageCandidate | None: ...
-
     async def save(self, candidate: MessageCandidate) -> None: ...
-
     async def list(
         self, *, status: CandidateStatus | None, limit: int
     ) -> Sequence[MessageCandidate]: ...
-
     async def link_to_matter(
         self,
         *,
@@ -46,22 +55,78 @@ class MessageCandidateRepository(Protocol):
 
 class LegalMatterRepository(Protocol):
     async def add(self, matter: LegalMatter) -> None: ...
-
     async def get(self, matter_id: UUID) -> LegalMatter | None: ...
-
     async def get_for_update(self, matter_id: UUID) -> LegalMatter | None: ...
-
     async def list(self, *, owner_id: str | None, limit: int) -> Sequence[LegalMatter]: ...
 
 
 class WorkItemRepository(Protocol):
     async def add(self, work_item: WorkItem) -> None: ...
-
     async def add_many(self, work_items: Sequence[WorkItem]) -> None: ...
-
     async def get(self, work_item_id: UUID) -> WorkItem | None: ...
-
+    async def get_for_update(self, work_item_id: UUID) -> WorkItem | None: ...
+    async def save(self, work_item: WorkItem) -> None: ...
     async def list_by_matter(self, matter_id: UUID) -> Sequence[WorkItem]: ...
+
+
+class PriorityConfirmationRepository(Protocol):
+    async def add(self, confirmation: PriorityConfirmation) -> None: ...
+    async def list_by_work_item(
+        self, work_item_id: UUID
+    ) -> Sequence[PriorityConfirmation]: ...
+
+
+class DeadlineRepository(Protocol):
+    async def add(self, deadline: Deadline) -> None: ...
+    async def list_by_work_item(
+        self, work_item_id: UUID, *, status: DeadlineStatus | None = None
+    ) -> Sequence[Deadline]: ...
+    async def list_by_matter(
+        self, matter_id: UUID, *, status: DeadlineStatus | None = None
+    ) -> Sequence[Deadline]: ...
+
+
+class DependencyRepository(Protocol):
+    async def add(self, dependency: WorkItemDependency) -> None: ...
+    async def list_by_work_item(
+        self, work_item_id: UUID
+    ) -> Sequence[WorkItemDependency]: ...
+
+
+class ReviewPackageRepository(Protocol):
+    async def add(self, package: ReviewPackage) -> None: ...
+    async def get(self, package_id: UUID) -> ReviewPackage | None: ...
+    async def get_for_update(self, package_id: UUID) -> ReviewPackage | None: ...
+    async def save(self, package: ReviewPackage) -> None: ...
+    async def list(
+        self, *, status: ReviewPackageStatus | None, matter_id: UUID | None, limit: int
+    ) -> Sequence[ReviewPackage]: ...
+
+
+class ReviewRecordRepository(Protocol):
+    async def add(self, record: ReviewRecord) -> None: ...
+    async def get(self, record_id: UUID) -> ReviewRecord | None: ...
+    async def get_latest_approved(self, package_id: UUID) -> ReviewRecord | None: ...
+    async def list_by_package(self, package_id: UUID) -> Sequence[ReviewRecord]: ...
+
+
+class CommunicationRepository(Protocol):
+    async def add(self, communication: Communication) -> None: ...
+    async def get(self, communication_id: UUID) -> Communication | None: ...
+    async def get_for_update(self, communication_id: UUID) -> Communication | None: ...
+    async def get_by_review_record(self, review_record_id: UUID) -> Communication | None: ...
+    async def list(
+        self, *, status: CommunicationStatus | None, limit: int
+    ) -> Sequence[Communication]: ...
+
+
+class FeishuRepository(Protocol):
+    async def get_event_by_external_id(self, event_id: str) -> FeishuRawEvent | None: ...
+    async def add_event(self, event: FeishuRawEvent) -> None: ...
+    async def get_message(
+        self, *, tenant_key: str | None, message_id: str
+    ) -> FeishuMessage | None: ...
+    async def add_message(self, message: FeishuMessage) -> None: ...
 
 
 class AuditEventRepository(Protocol):
@@ -74,7 +139,6 @@ class OutboxEventRepository(Protocol):
 
 class IdempotencyRepository(Protocol):
     async def get(self, *, operation: str, key: str) -> IdempotencyRecord | None: ...
-
     async def add(self, record: IdempotencyRecord) -> None: ...
 
 
@@ -83,25 +147,27 @@ class UnitOfWork(Protocol):
     candidates: MessageCandidateRepository
     matters: LegalMatterRepository
     work_items: WorkItemRepository
+    priority_confirmations: PriorityConfirmationRepository
+    deadlines: DeadlineRepository
+    dependencies: DependencyRepository
+    review_packages: ReviewPackageRepository
+    review_records: ReviewRecordRepository
+    communications: CommunicationRepository
+    feishu: FeishuRepository
     audit_events: AuditEventRepository
     outbox_events: OutboxEventRepository
     idempotency: IdempotencyRepository
 
     async def __aenter__(self) -> UnitOfWork: ...
-
     async def __aexit__(
         self,
         exc_type: type[BaseException] | None,
         exc: BaseException | None,
         traceback: TracebackType | None,
     ) -> bool | None: ...
-
     async def lock_idempotency(self, *, operation: str, key: str) -> None: ...
-
     async def flush(self) -> None: ...
-
     async def commit(self) -> None: ...
-
     async def rollback(self) -> None: ...
 
 

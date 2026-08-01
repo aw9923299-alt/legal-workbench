@@ -90,6 +90,26 @@ services:
       api:
         condition: service_healthy
 
+  scheduler:
+    build:
+      context: .
+      dockerfile: infra/docker/backend.Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      LEGAL_WORKBENCH_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-legal_workbench}:${POSTGRES_PASSWORD:-change-me-local-only}@postgres:5432/${POSTGRES_DB:-legal_workbench}
+      LEGAL_WORKBENCH_REDIS_URL: redis://redis:6379/0
+    command:
+      - celery
+      - -A
+      - legal_workbench.infrastructure.celery_app:celery_app
+      - beat
+      - --loglevel=INFO
+    depends_on:
+      api:
+        condition: service_healthy
+
   web:
     build:
       context: .
