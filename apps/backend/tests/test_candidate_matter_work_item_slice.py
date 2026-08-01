@@ -55,6 +55,20 @@ class FakeContextSnapshots:
     async def add(self, snapshot: ContextSnapshot) -> None:
         self.store[snapshot.id] = snapshot
 
+    async def find_by_source_hash(
+        self, *, source_type: str, source_id: str, content_hash: str
+    ) -> ContextSnapshot | None:
+        return next(
+            (
+                snapshot
+                for snapshot in self.store.values()
+                if snapshot.source_type == source_type
+                and snapshot.source_id == source_id
+                and snapshot.content_hash == content_hash
+            ),
+            None,
+        )
+
 
 class FakeCandidates:
     def __init__(
@@ -312,6 +326,22 @@ async def test_create_candidate_is_audited_outboxed_and_idempotent() -> None:
     assert state.audit_events[0].event_type == "message_candidate_created"
     assert state.outbox_events[0].event_type == "MessageCandidateCreated"
     assert state.outbox_events[0].correlation_id == "corr-candidate-1"
+
+
+@pytest.mark.asyncio
+async def test_different_business_requests_reuse_identical_context_snapshot() -> None:
+    state = FakeState()
+    handler = CreateCandidateHandler(state.factory)
+
+    first = await handler.execute(make_create_candidate_command(idempotency_key="first"))
+    second = await handler.execute(make_create_candidate_command(idempotency_key="second"))
+
+    assert first.candidate_id != second.candidate_id
+    assert len(state.snapshots) == 1
+    assert len(state.candidates) == 2
+    assert {
+        candidate.context_snapshot_id for candidate in state.candidates.values()
+    } == set(state.snapshots)
 
 
 @pytest.mark.asyncio

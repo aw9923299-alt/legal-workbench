@@ -29,6 +29,9 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from legal_workbench.domain.enums import (
+    AgentDefinitionStatus,
+    AgentRunSourceType,
+    AgentRunStatus,
     BusinessImpact,
     CandidateMatterRelation,
     CandidateStatus,
@@ -40,6 +43,7 @@ from legal_workbench.domain.enums import (
     DeadlineType,
     DependencyStatus,
     DependencyType,
+    DraftArtifactStatus,
     FeishuEventStatus,
     FeishuMessageStatus,
     LegalRelevance,
@@ -83,8 +87,21 @@ def enum_type(enum_class: type[Any], *, name: str, length: int) -> SqlEnum:
 
 class ContextSnapshotModel(UuidPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "context_snapshots"
+    __table_args__ = (
+        Index(
+            "ix_context_snapshots_source_hash",
+            "source_type",
+            "source_id",
+            "content_hash",
+            unique=True,
+        ),
+    )
 
     source_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    source_id: Mapped[str] = mapped_column(String(160), nullable=False)
+    snapshot_version: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default="1"
+    )
     source_ids: Mapped[list[str]] = mapped_column(
         JSONB, nullable=False, default=list, server_default=JSON_EMPTY_LIST
     )
@@ -94,6 +111,9 @@ class ContextSnapshotModel(UuidPrimaryKeyMixin, TimestampMixin, Base):
     file_ids: Mapped[list[str]] = mapped_column(
         JSONB, nullable=False, default=list, server_default=JSON_EMPTY_LIST
     )
+    attachment_ids: Mapped[list[str]] = mapped_column(
+        JSONB, nullable=False, default=list, server_default=JSON_EMPTY_LIST
+    )
     relevant_matter_ids: Mapped[list[str]] = mapped_column(
         JSONB, nullable=False, default=list, server_default=JSON_EMPTY_LIST
     )
@@ -101,6 +121,12 @@ class ContextSnapshotModel(UuidPrimaryKeyMixin, TimestampMixin, Base):
         JSONB, nullable=False, default=list, server_default=JSON_EMPTY_LIST
     )
     permission_snapshot: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=JSON_EMPTY_OBJECT
+    )
+    thread_metadata: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=JSON_EMPTY_OBJECT
+    )
+    content: Mapped[dict[str, Any]] = mapped_column(
         JSONB, nullable=False, default=dict, server_default=JSON_EMPTY_OBJECT
     )
     generated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
@@ -116,9 +142,21 @@ class MessageCandidateModel(UuidPrimaryKeyMixin, TimestampMixin, VersionedMixin,
     __table_args__ = (
         CheckConstraint("confidence >= 0 AND confidence <= 1", name="confidence_range"),
         Index("ix_message_candidates_status_created_at", "status", "created_at"),
+        Index(
+            "uq_message_candidates_active_message",
+            "feishu_message_id",
+            unique=True,
+            postgresql_where=sql_text(
+                "feishu_message_id IS NOT NULL AND status IN "
+                "('pending_analysis', 'pending_confirmation', 'confirmed', 'linked')"
+            ),
+        ),
     )
     context_snapshot_id: Mapped[UUID] = mapped_column(
         ForeignKey("context_snapshots.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    feishu_message_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("feishu_messages.id", ondelete="RESTRICT"), nullable=True, index=True
     )
     status: Mapped[CandidateStatus] = mapped_column(
         enum_type(CandidateStatus, name="candidate_status", length=40), nullable=False
@@ -146,7 +184,15 @@ class MessageCandidateModel(UuidPrimaryKeyMixin, TimestampMixin, VersionedMixin,
         JSONB, nullable=False, default=list, server_default=JSON_EMPTY_LIST
     )
     confidence: Mapped[float] = mapped_column(Float, nullable=False)
-    agent_run_id: Mapped[UUID | None] = mapped_column(nullable=True)
+    agent_run_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("agent_runs.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
+    requires_manual_review: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default=sql_text("true")
+    )
+    analysis_payload: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=JSON_EMPTY_OBJECT
+    )
     confirmed_by: Mapped[str | None] = mapped_column(String(160))
     confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
@@ -300,6 +346,9 @@ class AuditEventModel(UuidPrimaryKeyMixin, Base):
     aggregate_id: Mapped[UUID] = mapped_column(nullable=False)
     event_type: Mapped[str] = mapped_column(String(120), nullable=False)
     actor_id: Mapped[str] = mapped_column(String(160), nullable=False)
+    actor_source: Mapped[str] = mapped_column(
+        String(40), nullable=False, default="system", server_default="system"
+    )
     payload: Mapped[dict[str, Any]] = mapped_column(
         JSONB, nullable=False, default=dict, server_default=JSON_EMPTY_OBJECT
     )
@@ -440,7 +489,9 @@ class WorkItemDependencyModel(UuidPrimaryKeyMixin, TimestampMixin, VersionedMixi
             name="dependency_not_self",
         ),
         UniqueConstraint(
-            "work_item_id", "depends_on_work_item_id", "dependency_type",
+            "work_item_id",
+            "depends_on_work_item_id",
+            "dependency_type",
             name="uq_work_item_dependency",
         ),
         Index("ix_work_item_dependencies_active", "work_item_id", "status"),
@@ -602,7 +653,7 @@ class FeishuEventModel(UuidPrimaryKeyMixin, Base):
     last_error: Mapped[str | None] = mapped_column(Text)
 
 
-class FeishuMessageModel(UuidPrimaryKeyMixin, TimestampMixin, Base):
+class FeishuMessageModel(UuidPrimaryKeyMixin, TimestampMixin, VersionedMixin, Base):
     __tablename__ = "feishu_messages"
     __table_args__ = (
         UniqueConstraint("tenant_key", "message_id", name="uq_feishu_messages_tenant_message"),
@@ -633,6 +684,150 @@ class FeishuMessageModel(UuidPrimaryKeyMixin, TimestampMixin, Base):
     raw_message: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     status: Mapped[FeishuMessageStatus] = mapped_column(
         enum_type(FeishuMessageStatus, name="feishu_message_status", length=24), nullable=False
+    )
+    context_snapshot_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("context_snapshots.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    last_agent_run_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("agent_runs.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    analysis_attempts: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    failure_code: Mapped[str | None] = mapped_column(String(80))
+    failure_message: Mapped[str | None] = mapped_column(Text)
+
+
+class AgentDefinitionModel(UuidPrimaryKeyMixin, TimestampMixin, Base):
+    __tablename__ = "agent_definitions"
+    __table_args__ = (
+        UniqueConstraint("key", "version", name="uq_agent_definitions_key_version"),
+        Index("ix_agent_definitions_key_status", "key", "status"),
+    )
+
+    key: Mapped[str] = mapped_column(String(120), nullable=False)
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    version: Mapped[str] = mapped_column(String(40), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[AgentDefinitionStatus] = mapped_column(
+        enum_type(AgentDefinitionStatus, name="agent_definition_status", length=20),
+        nullable=False,
+    )
+    prompt_template: Mapped[str] = mapped_column(Text, nullable=False)
+    input_schema: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=JSON_EMPTY_OBJECT
+    )
+    output_schema: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=JSON_EMPTY_OBJECT
+    )
+    allowed_tools: Mapped[list[str]] = mapped_column(
+        JSONB, nullable=False, default=list, server_default=JSON_EMPTY_LIST
+    )
+    allowed_knowledge_scopes: Mapped[list[str]] = mapped_column(
+        JSONB, nullable=False, default=list, server_default=JSON_EMPTY_LIST
+    )
+    timeout_seconds: Mapped[int] = mapped_column(Integer, nullable=False)
+    max_retries: Mapped[int] = mapped_column(Integer, nullable=False)
+    requires_human_review: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default=sql_text("true")
+    )
+
+
+class AgentRunModel(UuidPrimaryKeyMixin, TimestampMixin, VersionedMixin, Base):
+    __tablename__ = "agent_runs"
+    __table_args__ = (
+        Index("ix_agent_runs_status_created", "status", "created_at"),
+        Index("ix_agent_runs_message_created", "feishu_message_id", "created_at"),
+        Index("ix_agent_runs_correlation", "correlation_id"),
+    )
+
+    agent_definition_id: Mapped[UUID] = mapped_column(
+        ForeignKey("agent_definitions.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    matter_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("legal_matters.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    work_item_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("work_items.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    feishu_message_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("feishu_messages.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
+    context_snapshot_id: Mapped[UUID] = mapped_column(
+        ForeignKey("context_snapshots.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    status: Mapped[AgentRunStatus] = mapped_column(
+        enum_type(AgentRunStatus, name="agent_run_status", length=32), nullable=False
+    )
+    objective: Mapped[str] = mapped_column(Text, nullable=False)
+    input_payload: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=JSON_EMPTY_OBJECT
+    )
+    output_payload: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=JSON_EMPTY_OBJECT
+    )
+    raw_stdout: Mapped[str | None] = mapped_column(Text)
+    raw_stderr: Mapped[str | None] = mapped_column(Text)
+    prompt_snapshot: Mapped[str] = mapped_column(Text, nullable=False)
+    working_directory: Mapped[str] = mapped_column(Text, nullable=False)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    timeout_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    attempt_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False)
+    failure_code: Mapped[str | None] = mapped_column(String(80), index=True)
+    failure_message: Mapped[str | None] = mapped_column(Text)
+    correlation_id: Mapped[str] = mapped_column(String(80), nullable=False)
+    created_by: Mapped[str] = mapped_column(String(160), nullable=False)
+
+
+class AgentRunSourceModel(UuidPrimaryKeyMixin, Base):
+    __tablename__ = "agent_run_sources"
+    __table_args__ = (
+        UniqueConstraint(
+            "agent_run_id",
+            "source_type",
+            "source_id",
+            "source_hash",
+            name="uq_agent_run_sources_exact_source",
+        ),
+        Index("ix_agent_run_sources_run", "agent_run_id", "created_at"),
+    )
+
+    agent_run_id: Mapped[UUID] = mapped_column(
+        ForeignKey("agent_runs.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    source_type: Mapped[AgentRunSourceType] = mapped_column(
+        enum_type(AgentRunSourceType, name="agent_run_source_type", length=32), nullable=False
+    )
+    source_id: Mapped[str] = mapped_column(String(200), nullable=False)
+    source_version: Mapped[str | None] = mapped_column(String(80))
+    source_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    display_name: Mapped[str] = mapped_column(String(500), nullable=False)
+    citation_metadata: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=JSON_EMPTY_OBJECT
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class DraftArtifactModel(UuidPrimaryKeyMixin, TimestampMixin, VersionedMixin, Base):
+    __tablename__ = "draft_artifacts"
+    __table_args__ = (Index("ix_draft_artifacts_run_status", "agent_run_id", "status"),)
+
+    agent_run_id: Mapped[UUID] = mapped_column(
+        ForeignKey("agent_runs.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    artifact_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    title: Mapped[str] = mapped_column(String(500), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    structured_payload: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=JSON_EMPTY_OBJECT
+    )
+    status: Mapped[DraftArtifactStatus] = mapped_column(
+        enum_type(DraftArtifactStatus, name="draft_artifact_status", length=20), nullable=False
     )
 
 

@@ -97,12 +97,14 @@ button { cursor: pointer; }
 .inbox-stream { display: grid; gap: 10px; }
 .batch-bar { display: flex; gap: 18px; align-items: center; padding: 10px 14px; background: #fff; border: 1px solid #d8dee8; }
 .inbox-card .ant-card-body { padding: 0; }
-.inbox-card-grid { display: grid; grid-template-columns: 22px minmax(0,1fr) 110px; gap: 14px; padding: 16px; }
+.inbox-card-grid { display: grid; grid-template-columns: minmax(0,1fr) 110px; gap: 14px; padding: 16px; }
 .inbox-card-head { display: flex; align-items: center; gap: 8px; color: #7d8797; font-size: 12px; }
 .inbox-card h5 { margin: 8px 0 2px !important; }
 .rationale-box { display: grid; gap: 3px; margin-top: 10px; padding: 10px; background: #f6f8fa; border-left: 2px solid #7b9bbb; color: #596579; font-size: 12px; }
 .confidence-panel { display: grid; justify-items: center; align-content: center; gap: 8px; border-left: 1px solid #e7eaf0; }
-.inbox-card-actions { display: flex; gap: 5px; padding: 10px 16px; background: #f7f8fa; border-top: 1px solid #e3e7ed; }
+.analysis-meta { display: flex; flex-wrap: wrap; gap: 8px 18px; color: #7b8698; font-size: 12px; }
+.inbox-card-actions { display: flex; align-items: center; gap: 5px; padding: 10px 16px; background: #f7f8fa; border-top: 1px solid #e3e7ed; }
+.inbox-card-actions .ant-typography { margin-left: auto; }
 .filter-card { margin-bottom: 12px; }
 .filter-card .ant-card-body { padding: 14px; }
 .task-center-card .ant-card-body { padding: 0; }
@@ -128,6 +130,7 @@ button { cursor: pointer; }
 .agent-name > svg { color: #315f8f; font-size: 18px; }
 .agent-name div { display: grid; }
 .agent-name span { color: #8a94a4; font-size: 11px; }
+.agent-json { max-height: 320px; overflow: auto; padding: 12px; background: #f6f8fa; font-size: 12px; white-space: pre-wrap; }
 .library-card .ant-card-body { display: grid; gap: 7px; }
 .library-card h4 { margin: 4px 0 0 !important; }
 .library-icon { width: 32px; height: 32px; display: grid; place-items: center; background: #e9f0f7; color: #315f8f; font-family: serif; font-weight: 700; }

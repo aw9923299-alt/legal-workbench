@@ -1,55 +1,63 @@
-# Claude Code / Codex 项目交接说明
+# Codex 项目交接说明
 
 更新日期：2026-08-01
 
-## 当前阶段
-
-仓库已完成从单一前端原型到工业化工程骨架的第一步：
-
-- 前端迁入 `apps/web`；
-- 新增 `apps/backend` Python模块化单体；
-- 新增FastAPI健康检查、SQLAlchemy、Alembic和Celery基础；
-- 新增PostgreSQL 18 + pgvector + Redis Docker Compose；
-- 正式设计已切换为Python后端和PostgreSQL单一事实库。
-
-真实领域表、飞书接入、Codex Runner、文件解析和专业Agent尚未实现。
-
-## 已实现的工程骨架
-
-| 模块 | 状态 |
-|---|---|
-| React工作台 | Mock原型，已迁入 `apps/web` |
-| FastAPI应用 | 已建立，含live/ready健康检查 |
-| PostgreSQL连接 | 已建立SQLAlchemy异步Engine |
-| Alembic | 已建立，首个迁移启用vector/pg_trgm/unaccent |
-| Celery/Redis | 已建立最小Worker和ping任务 |
-| Docker Compose | api/worker/web/postgres/redis可编排 |
-| Codex/飞书/索引进程 | 仅提供禁用状态的骨架入口 |
-| 正式设计 | 已更新为Python + PostgreSQL + pgvector |
-
-## 关键技术债
-
-1. 尚未建立正式领域SQLAlchemy模型；
-2. 尚未实现事务Outbox和死信表；
-3. 前端仍使用旧Task ViewModel和Mock；
-4. 未生成Python和npm锁文件；
-5. 未实现认证、权限和字段脱敏；
-6. 未实现飞书事件幂等和补偿同步；
-7. 未实现Codex隔离执行；
-8. 知识库尚无解析器、版本和检索接口；
-9. Compose中的集成Profiles是骨架，不应当作已上线能力。
-
-## 下一迭代
-
-优先完成“候选消息和事项”后端垂直切片：
+## 当前可用闭环
 
 ```text
-SQLAlchemy模型与迁移
-→ MessageCandidate API
-→ LegalMatter/WorkItem API
-→ 幂等与乐观锁
-→ 前端从Mock切换到FastAPI
-→ 组件和集成测试
+FeishuEvent
+→ FeishuMessage
+→ FeishuMessageReceived Outbox
+→ Celery feishu.process_message
+→ ContextSnapshot
+→ AgentDefinition(message_judgement) + AgentRun + AgentRunSource
+→ CodexCliRuntime
+→ Pydantic/业务校验
+→ MessageCandidate(pending_confirmation) 或 ignored
 ```
 
-暂不接真实飞书、Codex和外发。
+Runtime 前后使用独立短事务，不在数据库事务内等待 Codex。任何置信度都不会自动创建 `LegalMatter`。
+
+## 状态矩阵
+
+| 能力 | 状态 |
+|---|---|
+| React 收件箱/Candidate/Matter/WorkItem/审核页 | 已实现，闭环相关数据已连接 FastAPI |
+| Python FastAPI + SQLAlchemy + PostgreSQL | 已实现 |
+| Outbox 领取、重试、死信、显式 Handler 注册 | 已实现 |
+| 飞书原始事件/消息幂等落库 | 已实现 |
+| ContextSnapshot/AgentDefinition/AgentRun/Source/DraftArtifact | 已实现 |
+| `message_judgement` + `CodexCliRuntime` | 已实现，真实请求需显式配置 |
+| HttpOnly 本地会话与 Actor 来源审计 | 已实现；生产会话签发器尚未实现 |
+| 飞书 Verification Token | 已实现 |
+| 飞书加密回调/WebSocket/补偿同步 | 尚未实现；加密载荷明确拒绝 |
+| 知识解析/检索/专业 Agent/外发 | 本轮未实现 |
+
+## 重要代码入口
+
+- `application/context_snapshots.py`：确定性授权上下文选择与快照去重；
+- `application/message_analysis.py`：准备、Runtime 外调、结果落库三段编排；
+- `agents/message_judgement.py`：严格输出 Schema 和 Candidate 决策；
+- `agents/codex_cli.py`：Codex 工作目录、子进程、超时和审计文件；
+- `workers/tasks.py`：Celery 自动重试；
+- `infrastructure/outbox.py`：显式事件 Handler 注册。
+
+## 配置门禁
+
+- `LEGAL_WORKBENCH_ENABLE_REAL_CODEX=false` 时禁止真实 Codex，但仍保存可审计失败运行；
+- `LEGAL_WORKBENCH_ENABLE_REAL_FEISHU=false` 时 Webhook 返回 503；设为 `true` 时当前必须配置 Verification Token，否则应用启动失败；仅 Encrypt Key 不会启用尚未实现的加密回调；
+- 只有 `local/development` 可签发本地 Session 和按开关使用开发 Actor Header；所有非本地环境必须使用至少 32 字符的非默认 Session Secret；Compose 端口默认仅绑定 `127.0.0.1`；
+- Runtime 审计目录不得写入飞书 Token、数据库 URL、Redis URL 或 Codex 凭证。
+
+Runtime 将唯一授权 ContextSnapshot 作为不可信 JSON 直接送入 stdin，同时禁用 Shell、统一执行、代码模式、多 Agent、Apply Patch、网络搜索、MCP Apps、浏览器、Computer Use、插件和技能发现。Worker 单并发运行，并在子进程结束后收回审计目录所有权。该限制显著缩小权限面，但仍不宣称宿主机模式达到可证明的 OS 级隔离。
+
+当前 Compose 没有做容器零出网：模型传输需要访问 Codex/OpenAI 服务。生产化时应使用目的地址 allowlist/代理；不要把“Agent 网络工具关闭”描述为“进程完全无网络”。
+
+人工重新分析会创建新 AgentRun：待确认 Candidate 随最新合法结果更新，最新结果无关时旧 Candidate 作废；已人工确认/关联的 Candidate 不被覆盖。
+
+## 下一步
+
+1. 在专用容器内使用非生产凭证执行真实 Codex 冒烟和故障注入；
+2. 实现飞书加密回调、WebSocket 和补偿同步；
+3. 实现生产会话签发与授权策略；
+4. 再开始知识检索与合同 Agent，不在当前消息研判边界内扩展。

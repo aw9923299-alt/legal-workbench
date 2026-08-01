@@ -6,10 +6,14 @@ from typing import Protocol
 from uuid import UUID
 
 from legal_workbench.domain.entities import (
+    AgentDefinition,
+    AgentRun,
+    AgentRunSource,
     AuditEvent,
     Communication,
     ContextSnapshot,
     Deadline,
+    DraftArtifact,
     FeishuMessage,
     FeishuRawEvent,
     IdempotencyRecord,
@@ -23,6 +27,7 @@ from legal_workbench.domain.entities import (
     WorkItemDependency,
 )
 from legal_workbench.domain.enums import (
+    AgentRunStatus,
     CandidateMatterRelation,
     CandidateStatus,
     CommunicationStatus,
@@ -33,6 +38,10 @@ from legal_workbench.domain.enums import (
 
 class ContextSnapshotRepository(Protocol):
     async def add(self, snapshot: ContextSnapshot) -> None: ...
+    async def get(self, snapshot_id: UUID) -> ContextSnapshot | None: ...
+    async def find_by_source_hash(
+        self, *, source_type: str, source_id: str, content_hash: str
+    ) -> ContextSnapshot | None: ...
 
 
 class MessageCandidateRepository(Protocol):
@@ -51,6 +60,31 @@ class MessageCandidateRepository(Protocol):
         relation_type: CandidateMatterRelation,
         confirmed_by: str,
     ) -> None: ...
+    async def get_active_for_message(self, message_id: UUID) -> MessageCandidate | None: ...
+
+
+class AgentDefinitionRepository(Protocol):
+    async def add(self, definition: AgentDefinition) -> None: ...
+    async def get(self, definition_id: UUID) -> AgentDefinition | None: ...
+    async def get_active(self, key: str) -> AgentDefinition | None: ...
+
+
+class AgentRunRepository(Protocol):
+    async def add(self, run: AgentRun) -> None: ...
+    async def get(self, run_id: UUID) -> AgentRun | None: ...
+    async def get_for_update(self, run_id: UUID) -> AgentRun | None: ...
+    async def save(self, run: AgentRun) -> None: ...
+    async def list(self, *, status: AgentRunStatus | None, limit: int) -> Sequence[AgentRun]: ...
+    async def list_by_message(self, message_id: UUID) -> Sequence[AgentRun]: ...
+
+
+class AgentRunSourceRepository(Protocol):
+    async def add_many(self, sources: Sequence[AgentRunSource]) -> None: ...
+    async def list_by_run(self, run_id: UUID) -> Sequence[AgentRunSource]: ...
+
+
+class DraftArtifactRepository(Protocol):
+    async def add(self, artifact: DraftArtifact) -> None: ...
 
 
 class LegalMatterRepository(Protocol):
@@ -71,9 +105,7 @@ class WorkItemRepository(Protocol):
 
 class PriorityConfirmationRepository(Protocol):
     async def add(self, confirmation: PriorityConfirmation) -> None: ...
-    async def list_by_work_item(
-        self, work_item_id: UUID
-    ) -> Sequence[PriorityConfirmation]: ...
+    async def list_by_work_item(self, work_item_id: UUID) -> Sequence[PriorityConfirmation]: ...
 
 
 class DeadlineRepository(Protocol):
@@ -88,9 +120,7 @@ class DeadlineRepository(Protocol):
 
 class DependencyRepository(Protocol):
     async def add(self, dependency: WorkItemDependency) -> None: ...
-    async def list_by_work_item(
-        self, work_item_id: UUID
-    ) -> Sequence[WorkItemDependency]: ...
+    async def list_by_work_item(self, work_item_id: UUID) -> Sequence[WorkItemDependency]: ...
 
 
 class ReviewPackageRepository(Protocol):
@@ -127,6 +157,12 @@ class FeishuRepository(Protocol):
         self, *, tenant_key: str | None, message_id: str
     ) -> FeishuMessage | None: ...
     async def add_message(self, message: FeishuMessage) -> None: ...
+    async def get_message_by_id(self, message_id: UUID) -> FeishuMessage | None: ...
+    async def get_message_for_update(self, message_id: UUID) -> FeishuMessage | None: ...
+    async def list_context_messages(
+        self, message: FeishuMessage, *, limit: int
+    ) -> Sequence[FeishuMessage]: ...
+    async def save_message(self, message: FeishuMessage) -> None: ...
 
 
 class AuditEventRepository(Protocol):
@@ -145,6 +181,10 @@ class IdempotencyRepository(Protocol):
 class UnitOfWork(Protocol):
     context_snapshots: ContextSnapshotRepository
     candidates: MessageCandidateRepository
+    agent_definitions: AgentDefinitionRepository
+    agent_runs: AgentRunRepository
+    agent_run_sources: AgentRunSourceRepository
+    draft_artifacts: DraftArtifactRepository
     matters: LegalMatterRepository
     work_items: WorkItemRepository
     priority_confirmations: PriorityConfirmationRepository

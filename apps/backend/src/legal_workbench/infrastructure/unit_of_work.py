@@ -8,11 +8,15 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from legal_workbench.application.ports import UnitOfWork
 from legal_workbench.infrastructure.database import get_session_factory
 from legal_workbench.infrastructure.repositories import (
+    SqlAlchemyAgentDefinitionRepository,
+    SqlAlchemyAgentRunRepository,
+    SqlAlchemyAgentRunSourceRepository,
     SqlAlchemyAuditEventRepository,
     SqlAlchemyCommunicationRepository,
     SqlAlchemyContextSnapshotRepository,
     SqlAlchemyDeadlineRepository,
     SqlAlchemyDependencyRepository,
+    SqlAlchemyDraftArtifactRepository,
     SqlAlchemyFeishuRepository,
     SqlAlchemyIdempotencyRepository,
     SqlAlchemyLegalMatterRepository,
@@ -34,6 +38,10 @@ class SqlAlchemyUnitOfWork(UnitOfWork):
         self._session = self._session_factory()
         self.context_snapshots = SqlAlchemyContextSnapshotRepository(self._session)
         self.candidates = SqlAlchemyMessageCandidateRepository(self._session)
+        self.agent_definitions = SqlAlchemyAgentDefinitionRepository(self._session)
+        self.agent_runs = SqlAlchemyAgentRunRepository(self._session)
+        self.agent_run_sources = SqlAlchemyAgentRunSourceRepository(self._session)
+        self.draft_artifacts = SqlAlchemyDraftArtifactRepository(self._session)
         self.matters = SqlAlchemyLegalMatterRepository(self._session)
         self.work_items = SqlAlchemyWorkItemRepository(self._session)
         self.priority_confirmations = SqlAlchemyPriorityConfirmationRepository(self._session)
@@ -87,9 +95,7 @@ class SqlAlchemyUnitOfWork(UnitOfWork):
 
 
 class SqlAlchemyUnitOfWorkFactory:
-    def __init__(
-        self, session_factory: async_sessionmaker[AsyncSession] | None = None
-    ) -> None:
+    def __init__(self, session_factory: async_sessionmaker[AsyncSession] | None = None) -> None:
         self._session_factory = session_factory
 
     def __call__(self) -> UnitOfWork:

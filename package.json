@@ -10,8 +10,8 @@
     "typecheck": "npm run typecheck --workspace @legal-workbench/web",
     "build": "npm run build --workspace @legal-workbench/web",
     "preview": "npm run preview --workspace @legal-workbench/web",
-    "backend:dev": "python -m uvicorn legal_workbench.main:app --app-dir apps/backend/src --reload --host 0.0.0.0 --port 8000",
-    "backend:test": "python -m pytest apps/backend/tests",
+    "backend:dev": ".venv/bin/python -m uvicorn legal_workbench.main:app --app-dir apps/backend/src --reload --host 127.0.0.1 --port 8000",
+    "backend:test": ".venv/bin/python -m pytest apps/backend/tests",
     "compose:up": "docker compose up -d --build",
     "compose:down": "docker compose down",
     "compose:logs": "docker compose logs -f"

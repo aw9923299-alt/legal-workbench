@@ -25,7 +25,7 @@ legal-workbench/
 └─ Makefile
 ```
 
-## 阶段0：工程基础（当前）
+## 阶段0：工程基础（已完成）
 
 已完成：
 
@@ -33,7 +33,7 @@ legal-workbench/
 - Python后端骨架；
 - FastAPI健康检查；
 - SQLAlchemy、Alembic和Celery配置；
-- PostgreSQL 18 + pgvector + Redis Compose；
+- PostgreSQL 18 + Redis Compose（pgvector 为可选扩展）；
 - 首个扩展迁移；
 - Python/前端CI基线；
 - 正式文档切换到Python和PostgreSQL。
@@ -50,12 +50,13 @@ legal-workbench/
 - `version`乐观锁、确认事务行锁和唯一幂等键；
 - Candidate确认创建Matter并批量创建WorkItem的应用用例。
 
-后续实现：
+已完成补充：
 
 - FeishuMessage原始事件和消息表；
 - Deadline、Dependency及事项状态聚合；
-- 真实并发压力测试；
-- Outbox发布Worker和死信处理。
+- Outbox发布Worker、显式 Handler 注册、指数退避和死信处理。
+
+尚未完成：真实高并发压力测试。
 
 验收：空库可升级；重复请求不重复建单；version冲突返回409；Outbox与业务写入原子提交。
 
@@ -68,18 +69,19 @@ legal-workbench/
 - Matter列表、详情及WorkItem列表/新增；
 - 创建事项和新增WorkItem的幂等门禁。
 
-后续实现：
+已完成补充：
 
-- 关联/更新/知悉/忽略；
 - 一条Candidate生成多个WorkItem；
 - 优先级和完成时间确认；
-- 前端API查询层、Mock/Real切换和错误状态。
+- 前端 API 查询层与消息研判相关加载/错误/重试状态。
+
+尚未完成：候选关联/更新/知悉/忽略的全部独立确认 API；前端仍保留与本闭环无关的演示数据。
 
 验收：刷新可恢复；人工确认值不被自动覆盖；端到端测试覆盖主流程。
 
-## 阶段3：审核和发送门禁
+## 阶段3：审核和发送门禁（部分完成）
 
-实现：
+已实现：
 
 - DraftArtifact、ReviewPackage、ReviewRecord、Communication；
 - 审核包页面；
@@ -88,20 +90,27 @@ legal-workbench/
 
 验收：缺少审核、版本不一致或事项状态变化时拒绝发送。
 
-## 阶段4：飞书受控接入
+占位/未完成：通用 DraftArtifact 已建模；实际飞书外发仍禁用。
+
+## 阶段4：飞书受控接入（部分完成）
 
 范围：机器人私聊、指定群@消息、手动转发、已有事项线程。
 
-实现事件签名、幂等落库、附件版本、撤回/编辑、断线重连和补偿同步。
+已实现：Verification Token 验证、真实模式 fail-closed、事件/消息幂等落库、原始载荷哈希、Outbox 自动分析。
 
-## 阶段5：Codex Runtime与核心Agent
+尚未实现：加密回调解密、WebSocket 长连接、附件正文下载/版本、撤回/编辑、断线重连和补偿同步。
 
-实现：
+## 阶段5：Codex Runtime与消息研判 Agent（本轮已完成）
 
-- AgentDefinition和版本目录；
-- 独立运行目录、工具白名单和Schema校验；
-- 消息研判、事项归并、任务规划、优先级建议、结果汇总；
-- AgentRun租约、超时、重试和死信。
+已实现：
+
+- AgentDefinition/AgentRun/AgentRunSource/DraftArtifact 模型与版本；
+- 独立运行目录、无工具白名单、受控来源与 Schema/业务校验；
+- ContextSnapshot 确定性选取与 `message_judgement@1.0.0`；
+- AgentRun 心跳、超时、尝试、错误分类、指数退避和死信；
+- 收件箱和 AgentRun 详情。
+
+尚未实现：事项归并、任务规划、优先级建议和结果汇总 Agent；真实 Codex 凭证冒烟测试。
 
 ## 阶段6：知识库
 

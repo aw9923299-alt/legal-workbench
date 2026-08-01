@@ -1,5 +1,7 @@
+import hmac
 from typing import Annotated, Any
 
+import structlog
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from legal_workbench.api.dependencies import get_correlation_id, get_uow_factory
@@ -10,6 +12,7 @@ from legal_workbench.config import get_settings
 from legal_workbench.infrastructure.unit_of_work import SqlAlchemyUnitOfWorkFactory
 
 router = APIRouter(prefix="/integrations/feishu", tags=["feishu"])
+logger = structlog.get_logger(__name__)
 
 
 @router.post("/events")
@@ -17,6 +20,12 @@ async def receive_feishu_event(
     request: Request,
     uow_factory: Annotated[SqlAlchemyUnitOfWorkFactory, Depends(get_uow_factory)],
 ) -> dict[str, Any] | FeishuEventIngestedResponse:
+    settings = get_settings()
+    if not settings.enable_real_feishu:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Real Feishu event ingestion is disabled by configuration.",
+        )
     payload = await request.json()
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="Feishu event payload must be an object.")
@@ -56,12 +65,18 @@ async def receive_feishu_event(
 
 
 def _verify_token(payload: dict[str, object]) -> None:
-    expected = get_settings().feishu_verification_token
+    settings = get_settings()
+    expected = settings.feishu_verification_token
     if not expected:
-        return
+        logger.warning("feishu_verification_failed", reason="token_not_configured")
+        raise HTTPException(
+            status_code=403,
+            detail="Plain Feishu callbacks require verification-token validation.",
+        )
     header = payload.get("header")
     actual: object = payload.get("token")
     if isinstance(header, dict):
         actual = header.get("token") or actual
-    if actual != expected:
+    if not isinstance(actual, str) or not hmac.compare_digest(actual, expected):
+        logger.warning("feishu_verification_failed", reason="token_mismatch")
         raise HTTPException(status_code=403, detail="Invalid Feishu verification token.")

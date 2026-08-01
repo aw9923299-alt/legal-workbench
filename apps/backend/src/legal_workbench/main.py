@@ -14,7 +14,7 @@ from legal_workbench.api.errors import (
 )
 from legal_workbench.api.middleware import CorrelationIdMiddleware
 from legal_workbench.api.router import api_router
-from legal_workbench.config import get_settings
+from legal_workbench.config import RuntimeEnvironment, get_settings
 from legal_workbench.domain.errors import DomainError
 from legal_workbench.infrastructure.database import dispose_engine
 from legal_workbench.infrastructure.logging import configure_logging
@@ -39,7 +39,9 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 app = FastAPI(
     title=settings.app_name,
     version="0.3.0",
-    docs_url="/docs" if settings.environment != "production" else None,
+    docs_url=(
+        "/docs" if settings.environment != RuntimeEnvironment.PRODUCTION else None
+    ),
     redoc_url=None,
     lifespan=lifespan,
 )

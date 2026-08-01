@@ -4,6 +4,13 @@
 
 本文定义可直接指导开发的正式系统设计。项目运行在本地Mac，以飞书消息为入口，以Codex为唯一推理和生成AI，以法务人工审核为最终控制点。前端采用React，后端采用Python模块化单体，PostgreSQL是唯一业务事实库。
 
+### 1.1 实现状态（2026-08-01）
+
+- **已实现**：飞书 Webhook Token 校验与原始事件/消息幂等落库、Outbox 可靠投递、消息上下文快照、`message_judgement` AgentDefinition/AgentRun/Source、受控 Codex CLI Runtime、结果校验、Candidate 待确认和前端展示。
+- **部分实现**：真实飞书仅支持 Verification Token 路径；容器 Runtime 已尽量缩小 OS/环境边界，宿主机模式仍依赖 Codex 只读 sandbox。
+- **占位实现**：`DraftArtifact` 已有通用模型，消息研判主产物仍是 `MessageCandidate`。
+- **尚未实现**：飞书加密回调、长连接和补偿同步；知识解析/检索；事项归并、任务规划和专业 Agent；自动外发。
+
 ## 2. 产品闭环
 
 ```text
@@ -59,7 +66,7 @@
 | Worker | Celery任务、重试、日报、提醒和Outbox消费 |
 | Feishu Connector | 长连接、事件落库、附件下载、发送和回执 |
 | File Indexer | 文件扫描、解析、版本和知识索引 |
-| Codex Runner | Agent隔离执行、工具权限和输出校验 |
+| Worker + Codex Runtime | Celery 消费、Agent隔离执行、工具权限和输出校验 |
 | Scheduler | 定时提醒、保留策略和健康检查 |
 
 初期不拆独立微服务。只有在安全隔离、独立伸缩或发布节奏确有需求时，才基于现有边界拆分。
@@ -97,7 +104,7 @@ FeishuMessage
 
 关系约束：
 
-- 一条消息可产生多个候选；
+- 一条消息同时至多存在一个有效候选；人工重新分析保留历史 AgentRun；
 - 多条消息可关联一个事项；
 - 一个事项包含多个WorkItem、Deadline、Dependency和AgentRun；
 - Agent只产生DraftArtifact；
@@ -110,10 +117,14 @@ FeishuMessage
 → 签名和授权校验
 → eventId/messageId幂等落库
 → 保存原始载荷哈希和受控正文
-→ 下载授权附件并计算SHA-256
-→ 创建ContextSnapshot任务
-→ 消息研判Agent
-→ MessageCandidate
+→ 同一事务写入 FeishuMessageReceived Outbox
+→ Dispatcher 显式 Handler 投递 Celery
+→ 确定性选取当前/父/线程消息和附件元数据
+→ 保存不可变 ContextSnapshot
+→ 创建 AgentRun 并提交准备事务
+→ 事务外执行 Codex Runtime
+→ Schema/业务校验
+→ MessageCandidate 或 ignored
 ```
 
 Mac离线或断线后，连接器根据飞书能力执行补偿同步；无法补拉的时间窗必须在工作台明确显示。
@@ -203,3 +214,5 @@ PostgreSQL负责元数据、正文、全文索引、`pg_trgm`和可选向量字�
 - 本地目录最小只读挂载；
 - 数据备份、恢复演练和Legal Hold；
 - API、数据库和Redis默认只暴露本机。
+- API 从 HttpOnly Session 解析 Actor；本地 Session 与 `X-Actor-ID` 只允许显式 `local/development` 环境，非本地环境必须配置独立 Session Secret。
+- Compose 发布端口默认仅绑定 `127.0.0.1`；真实飞书模式当前缺少 Verification Token 时应用拒绝启动，仅 Encrypt Key 不会启用尚未实现的加密回调。

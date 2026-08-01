@@ -3,9 +3,13 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from hashlib import sha256
+from typing import ClassVar
 from uuid import UUID, uuid4
 
 from legal_workbench.domain.enums import (
+    AgentDefinitionStatus,
+    AgentRunSourceType,
+    AgentRunStatus,
     BusinessImpact,
     CandidateStatus,
     CommunicationChannel,
@@ -16,6 +20,7 @@ from legal_workbench.domain.enums import (
     DeadlineType,
     DependencyStatus,
     DependencyType,
+    DraftArtifactStatus,
     FeishuEventStatus,
     FeishuMessageStatus,
     LegalRelevance,
@@ -53,6 +58,17 @@ def require_aware(value: datetime, *, field_name: str) -> None:
         raise DomainValidationError(f"{field_name} must be timezone-aware.")
 
 
+class AuthenticatedActorId(str):
+    """String-compatible actor identifier carrying its verified identity source."""
+
+    identity_source: str
+
+    def __new__(cls, value: str, *, identity_source: str) -> AuthenticatedActorId:
+        instance = super().__new__(cls, value)
+        instance.identity_source = identity_source
+        return instance
+
+
 @dataclass(slots=True)
 class MessageCandidate:
     id: UUID
@@ -68,6 +84,9 @@ class MessageCandidate:
     related_matter_proposals: list[dict[str, object]] = field(default_factory=list)
     evidence_refs: list[str] = field(default_factory=list)
     agent_run_id: UUID | None = None
+    feishu_message_id: UUID | None = None
+    requires_manual_review: bool = True
+    analysis_payload: dict[str, object] = field(default_factory=dict)
     confirmed_by: str | None = None
     confirmed_at: datetime | None = None
     version: int = 1
@@ -146,6 +165,59 @@ class MessageCandidate:
         self.status = CandidateStatus.CONFIRMED
         self.confirmed_by = actor_id
         self.confirmed_at = utc_now()
+
+    def replace_pending_analysis(
+        self,
+        *,
+        context_snapshot_id: UUID,
+        legal_relevance: LegalRelevance,
+        message_role: MessageRole,
+        recommended_action: RecommendedAction,
+        confidence: float,
+        title_proposal: str | None,
+        category_proposals: list[dict[str, object]],
+        deadline_proposals: list[dict[str, object]],
+        evidence_refs: list[str],
+        agent_run_id: UUID,
+        requires_manual_review: bool,
+        analysis_payload: dict[str, object],
+    ) -> None:
+        if self.status not in {
+            CandidateStatus.PENDING_ANALYSIS,
+            CandidateStatus.PENDING_CONFIRMATION,
+        }:
+            raise InvalidStateTransitionError(
+                "Only a pending candidate can be replaced by a later AgentRun.",
+                details={"candidateId": str(self.id), "status": self.status.value},
+            )
+        if not 0 <= confidence <= 1:
+            raise DomainValidationError("Candidate confidence must be between 0 and 1.")
+        self.context_snapshot_id = context_snapshot_id
+        self.status = CandidateStatus.PENDING_CONFIRMATION
+        self.legal_relevance = legal_relevance
+        self.message_role = message_role
+        self.recommended_action = recommended_action
+        self.confidence = confidence
+        self.title_proposal = title_proposal.strip() if title_proposal else None
+        self.category_proposals = category_proposals
+        self.deadline_proposals = deadline_proposals
+        self.evidence_refs = evidence_refs
+        self.agent_run_id = agent_run_id
+        self.requires_manual_review = requires_manual_review
+        self.analysis_payload = analysis_payload
+        self.version += 1
+
+    def reject_superseded_analysis(self) -> None:
+        if self.status not in {
+            CandidateStatus.PENDING_ANALYSIS,
+            CandidateStatus.PENDING_CONFIRMATION,
+        }:
+            raise InvalidStateTransitionError(
+                "Only a pending candidate can be superseded by a later analysis.",
+                details={"candidateId": str(self.id), "status": self.status.value},
+            )
+        self.status = CandidateStatus.REJECTED
+        self.version += 1
 
 
 @dataclass(slots=True)
@@ -637,6 +709,182 @@ class ContextSnapshot:
     permission_snapshot: dict[str, object]
     generated_at: datetime
     content_hash: str
+    source_id: str | None = None
+    snapshot_version: int = 1
+    attachment_ids: list[str] = field(default_factory=list)
+    thread_metadata: dict[str, object] = field(default_factory=dict)
+    content: dict[str, object] = field(default_factory=dict)
+    created_at: datetime = field(default_factory=utc_now)
+
+
+@dataclass(slots=True)
+class AgentDefinition:
+    id: UUID
+    key: str
+    name: str
+    version: str
+    description: str
+    status: AgentDefinitionStatus
+    prompt_template: str
+    input_schema: dict[str, object]
+    output_schema: dict[str, object]
+    allowed_tools: list[str]
+    allowed_knowledge_scopes: list[str]
+    timeout_seconds: int
+    max_retries: int
+    requires_human_review: bool
+    created_at: datetime = field(default_factory=utc_now)
+    updated_at: datetime = field(default_factory=utc_now)
+
+    def __post_init__(self) -> None:
+        if not self.key.strip() or not self.version.strip():
+            raise DomainValidationError("Agent key and version are required.")
+        if self.timeout_seconds < 1:
+            raise DomainValidationError("Agent timeout must be positive.")
+        if self.max_retries < 0:
+            raise DomainValidationError("Agent retries cannot be negative.")
+
+    def ensure_executable(self) -> None:
+        if self.status != AgentDefinitionStatus.ACTIVE:
+            raise InvalidStateTransitionError(
+                "Only an active AgentDefinition can execute.",
+                details={"agentKey": self.key, "status": self.status.value},
+            )
+
+
+@dataclass(slots=True)
+class AgentRun:
+    id: UUID
+    agent_definition_id: UUID
+    context_snapshot_id: UUID
+    status: AgentRunStatus
+    objective: str
+    prompt_snapshot: str
+    working_directory: str
+    attempt_number: int
+    max_attempts: int
+    correlation_id: str
+    created_by: str
+    matter_id: UUID | None = None
+    work_item_id: UUID | None = None
+    feishu_message_id: UUID | None = None
+    input_payload: dict[str, object] = field(default_factory=dict)
+    output_payload: dict[str, object] = field(default_factory=dict)
+    raw_stdout: str | None = None
+    raw_stderr: str | None = None
+    started_at: datetime | None = None
+    heartbeat_at: datetime | None = None
+    finished_at: datetime | None = None
+    timeout_at: datetime | None = None
+    failure_code: str | None = None
+    failure_message: str | None = None
+    created_at: datetime = field(default_factory=utc_now)
+    updated_at: datetime = field(default_factory=utc_now)
+    version: int = 1
+
+    _TRANSITIONS: ClassVar[dict[AgentRunStatus, set[AgentRunStatus]]] = {
+        AgentRunStatus.QUEUED: {
+            AgentRunStatus.PREPARING,
+            AgentRunStatus.CANCELLED,
+        },
+        AgentRunStatus.PREPARING: {
+            AgentRunStatus.RUNNING,
+            AgentRunStatus.FAILED,
+            AgentRunStatus.CANCELLED,
+        },
+        AgentRunStatus.RUNNING: {
+            AgentRunStatus.VALIDATING,
+            AgentRunStatus.FAILED,
+            AgentRunStatus.TIMED_OUT,
+            AgentRunStatus.CANCELLED,
+        },
+        AgentRunStatus.VALIDATING: {
+            AgentRunStatus.COMPLETED,
+            AgentRunStatus.NEEDS_MORE_INFORMATION,
+            AgentRunStatus.FAILED,
+        },
+        AgentRunStatus.FAILED: {
+            AgentRunStatus.QUEUED,
+            AgentRunStatus.DEAD_LETTER,
+        },
+        AgentRunStatus.TIMED_OUT: {
+            AgentRunStatus.QUEUED,
+            AgentRunStatus.DEAD_LETTER,
+        },
+        AgentRunStatus.COMPLETED: set(),
+        AgentRunStatus.NEEDS_MORE_INFORMATION: set(),
+        AgentRunStatus.CANCELLED: set(),
+        AgentRunStatus.DEAD_LETTER: set(),
+    }
+    _TERMINAL: ClassVar[set[AgentRunStatus]] = {
+        AgentRunStatus.COMPLETED,
+        AgentRunStatus.NEEDS_MORE_INFORMATION,
+        AgentRunStatus.CANCELLED,
+        AgentRunStatus.DEAD_LETTER,
+    }
+
+    def __post_init__(self) -> None:
+        if self.attempt_number < 1 or self.max_attempts < self.attempt_number:
+            raise DomainValidationError("Agent attempt numbers are invalid.")
+        if not self.prompt_snapshot.strip():
+            raise DomainValidationError("Agent prompt snapshot is required.")
+
+    def transition_to(self, target: AgentRunStatus, *, now: datetime | None = None) -> None:
+        if target not in self._TRANSITIONS[self.status]:
+            raise InvalidStateTransitionError(
+                f"AgentRun cannot transition from {self.status.value} to {target.value}."
+            )
+        changed_at = now or utc_now()
+        require_aware(changed_at, field_name="AgentRun transition time")
+        self.status = target
+        if target == AgentRunStatus.RUNNING and self.started_at is None:
+            self.started_at = changed_at
+            self.heartbeat_at = changed_at
+        if target in self._TERMINAL or target in {
+            AgentRunStatus.FAILED,
+            AgentRunStatus.TIMED_OUT,
+        }:
+            self.finished_at = changed_at
+        self.updated_at = changed_at
+        self.version += 1
+
+    def heartbeat(self, *, now: datetime | None = None) -> None:
+        if self.status not in {AgentRunStatus.PREPARING, AgentRunStatus.RUNNING}:
+            raise InvalidStateTransitionError(
+                "Heartbeat is allowed only while preparing or running."
+            )
+        changed_at = now or utc_now()
+        require_aware(changed_at, field_name="AgentRun heartbeat")
+        self.heartbeat_at = changed_at
+        self.updated_at = changed_at
+        self.version += 1
+
+
+@dataclass(frozen=True, slots=True)
+class AgentRunSource:
+    id: UUID
+    agent_run_id: UUID
+    source_type: AgentRunSourceType
+    source_id: str
+    source_version: str | None
+    source_hash: str
+    display_name: str
+    citation_metadata: dict[str, object] = field(default_factory=dict)
+    created_at: datetime = field(default_factory=utc_now)
+
+
+@dataclass(slots=True)
+class DraftArtifact:
+    id: UUID
+    agent_run_id: UUID
+    artifact_type: str
+    title: str
+    content: str
+    structured_payload: dict[str, object]
+    status: DraftArtifactStatus = DraftArtifactStatus.DRAFT
+    version: int = 1
+    created_at: datetime = field(default_factory=utc_now)
+    updated_at: datetime = field(default_factory=utc_now)
 
 
 @dataclass(slots=True)
@@ -674,6 +922,66 @@ class FeishuMessage:
     update_time: datetime | None
     raw_message: dict[str, object]
     status: FeishuMessageStatus = FeishuMessageStatus.RECEIVED
+    context_snapshot_id: UUID | None = None
+    last_agent_run_id: UUID | None = None
+    analysis_attempts: int = 0
+    failure_code: str | None = None
+    failure_message: str | None = None
+    version: int = 1
+
+    _TRANSITIONS: ClassVar[dict[FeishuMessageStatus, set[FeishuMessageStatus]]] = {
+        FeishuMessageStatus.RECEIVED: {FeishuMessageStatus.QUEUED_FOR_ANALYSIS},
+        FeishuMessageStatus.QUEUED_FOR_ANALYSIS: {
+            FeishuMessageStatus.CONTEXT_PREPARED,
+            FeishuMessageStatus.ANALYSIS_FAILED,
+            FeishuMessageStatus.DEAD_LETTER,
+        },
+        FeishuMessageStatus.CONTEXT_PREPARED: {
+            FeishuMessageStatus.AGENT_QUEUED,
+            FeishuMessageStatus.ANALYSIS_FAILED,
+        },
+        FeishuMessageStatus.AGENT_QUEUED: {
+            FeishuMessageStatus.ANALYSING,
+            FeishuMessageStatus.ANALYSIS_FAILED,
+        },
+        FeishuMessageStatus.ANALYSING: {
+            FeishuMessageStatus.CANDIDATE_CREATED,
+            FeishuMessageStatus.IGNORED,
+            FeishuMessageStatus.ANALYSIS_FAILED,
+        },
+        FeishuMessageStatus.ANALYSIS_FAILED: {
+            FeishuMessageStatus.QUEUED_FOR_ANALYSIS,
+            FeishuMessageStatus.DEAD_LETTER,
+        },
+        FeishuMessageStatus.CANDIDATE_CREATED: {
+            FeishuMessageStatus.QUEUED_FOR_ANALYSIS,
+        },
+        FeishuMessageStatus.IGNORED: {FeishuMessageStatus.QUEUED_FOR_ANALYSIS},
+        FeishuMessageStatus.DEAD_LETTER: {FeishuMessageStatus.QUEUED_FOR_ANALYSIS},
+    }
+
+    def transition_to(
+        self,
+        target: FeishuMessageStatus,
+        *,
+        failure_code: str | None = None,
+        failure_message: str | None = None,
+    ) -> None:
+        if target not in self._TRANSITIONS[self.status]:
+            raise InvalidStateTransitionError(
+                f"FeishuMessage cannot transition from {self.status.value} to {target.value}."
+            )
+        if target in {
+            FeishuMessageStatus.ANALYSIS_FAILED,
+            FeishuMessageStatus.DEAD_LETTER,
+        } and (not failure_code or not failure_message):
+            raise DomainValidationError("A failure code and failure message are required.")
+        self.status = target
+        self.failure_code = failure_code
+        self.failure_message = failure_message
+        if target == FeishuMessageStatus.ANALYSING:
+            self.analysis_attempts += 1
+        self.version += 1
 
 
 @dataclass(slots=True)
@@ -685,7 +993,12 @@ class AuditEvent:
     actor_id: str
     payload: dict[str, object]
     correlation_id: str
+    actor_source: str = "system"
     created_at: datetime = field(default_factory=utc_now)
+
+    def __post_init__(self) -> None:
+        if self.actor_source == "system" and isinstance(self.actor_id, AuthenticatedActorId):
+            self.actor_source = self.actor_id.identity_source
 
 
 @dataclass(slots=True)

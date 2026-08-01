@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
@@ -10,12 +11,11 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from legal_workbench.config import Settings, get_settings
 from legal_workbench.domain.entities import Communication
-from legal_workbench.domain.enums import CommunicationStatus, FeishuMessageStatus
+from legal_workbench.domain.enums import CommunicationStatus
 from legal_workbench.infrastructure.celery_app import celery_app
 from legal_workbench.infrastructure.database import get_session_factory
 from legal_workbench.infrastructure.models import (
     CommunicationModel,
-    FeishuMessageModel,
     OutboxDeadLetterModel,
     OutboxEventModel,
 )
@@ -33,6 +33,39 @@ class ClaimedOutboxEvent:
     payload: dict[str, object]
     correlation_id: str
     attempts: int
+
+
+class UnsupportedOutboxEventError(RuntimeError):
+    code = "UNSUPPORTED_OUTBOX_EVENT"
+
+    def __init__(self, event_type: str) -> None:
+        super().__init__(f"UNSUPPORTED_OUTBOX_EVENT: {event_type}")
+
+
+async def _handle_communication_send(
+    dispatcher: OutboxDispatcher, event: ClaimedOutboxEvent
+) -> None:
+    await dispatcher._send_communication(event.aggregate_id)
+
+
+async def _handle_feishu_message(_: OutboxDispatcher, event: ClaimedOutboxEvent) -> None:
+    actor_id = str(event.payload.get("actorId") or "feishu-connector")
+    actor_source = str(event.payload.get("actorSource") or "integration")
+    celery_app.send_task(
+        "feishu.process_message",
+        args=[str(event.aggregate_id), actor_id, actor_source, event.correlation_id],
+        kwargs={"force_new_run": bool(event.payload.get("forceNewRun", False))},
+        headers={"correlation_id": event.correlation_id},
+    )
+
+
+async def _handle_internal_notification(_: OutboxDispatcher, event: ClaimedOutboxEvent) -> None:
+    logger.info(
+        "outbox_internal_event_acknowledged",
+        event_id=str(event.id),
+        event_type=event.event_type,
+        aggregate_id=str(event.aggregate_id),
+    )
 
 
 class OutboxDispatcher:
@@ -68,9 +101,7 @@ class OutboxDispatcher:
 
     async def requeue_dead_letter(self, dead_letter_id: UUID) -> UUID:
         async with self._session_factory() as session, session.begin():
-            record = await session.get(
-                OutboxDeadLetterModel, dead_letter_id, with_for_update=True
-            )
+            record = await session.get(OutboxDeadLetterModel, dead_letter_id, with_for_update=True)
             if record is None:
                 raise LookupError("Outbox dead letter was not found.")
             if record.requeued_at is not None:
@@ -133,22 +164,10 @@ class OutboxDispatcher:
             ]
 
     async def _dispatch(self, event: ClaimedOutboxEvent) -> None:
-        if event.event_type == "CommunicationSendRequested":
-            await self._send_communication(event.aggregate_id)
-            return
-        if event.event_type == "FeishuMessageReceived":
-            celery_app.send_task(
-                "feishu.process_message",
-                args=[str(event.aggregate_id)],
-                headers={"correlation_id": event.correlation_id},
-            )
-            return
-        logger.info(
-            "outbox_event_published_without_external_handler",
-            event_id=str(event.id),
-            event_type=event.event_type,
-            aggregate_id=str(event.aggregate_id),
-        )
+        handler = OUTBOX_HANDLERS.get(event.event_type)
+        if handler is None:
+            raise UnsupportedOutboxEventError(event.event_type)
+        await handler(self, event)
 
     async def _send_communication(self, communication_id: UUID) -> None:
         communication = await self._mark_communication_sending(communication_id)
@@ -161,9 +180,7 @@ class OutboxDispatcher:
             raise
         await self._mark_communication_sent(communication_id, external_message_id)
 
-    async def _mark_communication_sending(
-        self, communication_id: UUID
-    ) -> Communication | None:
+    async def _mark_communication_sending(self, communication_id: UUID) -> Communication | None:
         async with self._session_factory() as session, session.begin():
             statement = (
                 select(CommunicationModel)
@@ -217,9 +234,7 @@ class OutboxDispatcher:
             model.locked_by = None
             model.last_error = None
 
-    async def _record_failure(
-        self, event: ClaimedOutboxEvent, error: Exception
-    ) -> None:
+    async def _record_failure(self, event: ClaimedOutboxEvent, error: Exception) -> None:
         now = datetime.now(UTC)
         error_text = f"{type(error).__name__}: {error}"[:4000]
         attempts = event.attempts + 1
@@ -293,8 +308,18 @@ class OutboxDispatcher:
         )
 
 
-async def mark_feishu_message_queued(message_id: UUID) -> None:
-    async with get_session_factory()() as session, session.begin():
-        model = await session.get(FeishuMessageModel, message_id, with_for_update=True)
-        if model is not None and model.status == FeishuMessageStatus.RECEIVED:
-            model.status = FeishuMessageStatus.QUEUED_FOR_ANALYSIS
+OutboxHandler = Callable[[OutboxDispatcher, ClaimedOutboxEvent], Awaitable[None]]
+
+OUTBOX_HANDLERS: dict[str, OutboxHandler] = {
+    "CommunicationSendRequested": _handle_communication_send,
+    "FeishuMessageReceived": _handle_feishu_message,
+    "FeishuMessageAnalysisRequested": _handle_feishu_message,
+    "LegalMatterCreated": _handle_internal_notification,
+    "MessageCandidateCreated": _handle_internal_notification,
+    "WorkItemCreated": _handle_internal_notification,
+    "ReviewPackageCreated": _handle_internal_notification,
+    "ReviewPackageReviewed": _handle_internal_notification,
+    "DeadlineCreated": _handle_internal_notification,
+    "WorkItemDependencyCreated": _handle_internal_notification,
+    "WorkItemPriorityConfirmed": _handle_internal_notification,
+}

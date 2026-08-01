@@ -96,6 +96,9 @@ class CandidateResponse(ApiModel):
     related_matter_proposals: list[dict[str, object]]
     evidence_refs: list[str]
     agent_run_id: UUID | None
+    feishu_message_id: UUID | None
+    requires_manual_review: bool
+    analysis_payload: dict[str, object]
     confirmed_by: str | None
     confirmed_at: datetime | None
     version: int
