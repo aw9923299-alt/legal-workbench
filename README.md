@@ -2,7 +2,7 @@
 
 运行在本地 Mac 上的法务智能工作系统。系统从经过授权的飞书消息中发现工作，由受控的 Codex Agent 完成消息研判、事项归并、任务规划、专业分析、回复草拟、日报和复盘；所有发送给其他人员的内容必须经过法务审核。
 
-> 当前仓库已经包含 React 前端原型、Python 后端基础设施，以及 `MessageCandidate → LegalMatter → WorkItem` 首个后端垂直切片。真实飞书接入、Codex Runner、审核发送门禁、知识文件解析和专业 Agent 仍需按实施计划开发。
+> 当前仓库已经包含 React 前端、Python/FastAPI 后端、PostgreSQL 领域模型与迁移，以及 `MessageCandidate → LegalMatter → WorkItem → ReviewPackage → Communication` 核心业务闭环。已接入优先级确认、Deadline、Dependency、审核门禁、Outbox 重试/死信和飞书原始事件幂等落库；Codex Runner、知识文件解析和专业 Agent 仍需按实施计划继续开发。
 
 ## 核心闭环
 
@@ -147,20 +147,22 @@ python -m pytest apps/backend/tests
 已完成：
 
 - `ContextSnapshot`、`MessageCandidate`、`LegalMatter`、`WorkItem` 正式领域对象；
-- SQLAlchemy映射、Repository、Unit of Work和Alembic首批业务表；
-- 候选确认创建事项、批量创建初始WorkItem；
-- 乐观锁、行锁、事务级幂等锁、审计和事务Outbox；
-- Candidate、Matter和WorkItem基础API与单元测试。
+- SQLAlchemy 映射、Repository、Unit of Work和三批 Alembic 业务迁移；
+- Candidate确认创建Matter和初始WorkItem的事务闭环；
+- 前端接入Candidate、Matter、WorkItem、优先级、期限、依赖和审核接口；
+- PriorityConfirmation、Deadline和WorkItemDependency模型；
+- ReviewPackage、ReviewRecord、Communication及所有外发人工审核门禁；
+- Outbox并发领取、指数退避、重试、死信和重新入队；
+- 飞书原始事件及消息按事件ID、消息ID幂等落库；
+- 乐观锁、行锁、事务级幂等锁、审计和事务Outbox。
 
 ## 当前开发顺序
 
-1. 前端接入Candidate/Matter/WorkItem API；
-2. 实现优先级确认、Deadline和Dependency；
-3. 实现ReviewPackage、ReviewRecord和发送门禁；
-4. 接入受控飞书消息范围及原始事件幂等落库；
-5. 实现Outbox发布Worker、重试和死信；
-6. 实现Codex Runtime和核心Agent；
-7. 建立知识文件解析、全文检索和可追溯引用；
-8. 跑通合同审核端到端闭环；
-9. 建立学习、评测和日报；
-10. 接入其他专业Agent。
+1. 实现飞书WebSocket长连接和加密回调解密；
+2. 实现Codex Runtime及核心管家Agent；
+3. 建立知识文件解析、全文检索和可追溯引用；
+4. 跑通合同审核端到端专业Agent闭环；
+5. 完善Communication发送回执、失败补偿和人工重发；
+6. 建立学习、评测、日报和事项复盘；
+7. 依次接入文案、人力、纠纷和知产Agent；
+8. 完善权限、备份、监控和Mac常驻运行。

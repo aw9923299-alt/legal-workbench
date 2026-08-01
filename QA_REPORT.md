@@ -146,3 +146,17 @@ GitHub CI已配置在正常公网包源环境执行前端、后端和Compose检�
 - `git diff --check`：通过。
 
 当前环境的内部Python包源仍缺少`structlog`、`redis`、`psycopg`等公开依赖，且没有Docker命令，因此未在本环境执行完整测试套件和真实PostgreSQL迁移。声明依赖完整的CI或本地Docker环境应继续执行Ruff、mypy、全量pytest及真实数据库升级/降级验证。
+
+## 2026-08-01 完整法务工作流与飞书接入
+
+已实现：
+
+- 前端接入Candidate、Matter、WorkItem、优先级、Deadline、Dependency和审核接口；
+- PriorityConfirmation、Deadline、WorkItemDependency正式模型与迁移；
+- ReviewPackage、ReviewRecord、Communication及外发审核门禁；
+- Outbox并发领取、指数退避、重试、死信和重新入队；
+- 飞书原始事件和消息按event_id、tenant_key/message_id幂等落库；
+- Communication正文哈希校验，防止审核后正文被静默修改；
+- Celery Beat定时发布Outbox，Compose增加scheduler角色。
+
+本轮按功能优先要求未新增测试，完成了Python语法、Alembic离线升级/降级、TypeScript语法、TOML/JSON/YAML和`git diff --check`等静态检查。完整运行验证仍需在具备Docker及公网依赖源的环境执行。
