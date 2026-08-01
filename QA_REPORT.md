@@ -85,3 +85,11 @@ npm run dev
 - 混合知识检索和受控学习；
 - Mac + Docker Compose 可靠性；
 - API、领域事件、异常和实施计划。
+
+## 2026-08-01 仓库交付验证
+
+- 完整 React 前端原型和正式设计文档已写入远程 `main`；
+- 正式设计提交：`fa9542f`（`docs: define local Codex legal workbench architecture`）；
+- 已安装 `.github/workflows/ci.yml`，对 `main` push 和 Pull Request 执行依赖安装、类型检查和生产构建；
+- 一次性导入载荷和导入工作流已从最终分支删除；
+- 临时导入 Pull Request 已关闭。
