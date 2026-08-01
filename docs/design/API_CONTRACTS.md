@@ -75,8 +75,7 @@ interface IngestResult {
 
 ```http
 GET /api/v1/integrations/feishu/status
-POST /api/v1/integrations/feishu/pause
-POST /api/v1/integrations/feishu/resume
+POST /api/v1/integrations/feishu/reconnect
 POST /api/v1/integrations/feishu/reconcile
 ```
 
@@ -84,16 +83,21 @@ POST /api/v1/integrations/feishu/reconcile
 
 ```ts
 interface FeishuIntegrationStatus {
-  connected: boolean;
-  paused: boolean;
+  connectionMode: 'long_connection' | 'webhook';
+  status: 'disabled' | 'starting' | 'connected' | 'degraded' | 'disconnected' | 'failed';
   lastEventAt?: string;
-  lastProcessedAt?: string;
-  lagSeconds?: number;
-  lastCursor?: string;
-  uncoveredWindow?: { from: string; to: string; reason: string };
-  recentErrors: IntegrationError[];
+  lastConnectedAt?: string;
+  lastDisconnectedAt?: string;
+  lastErrorCode?: string;
+  lastErrorMessage?: string;
+  reconnectCount: number;
+  lastReconcileAt?: string;
+  lastReconcileStatus?: 'completed' | 'partial' | 'local_only';
+  lastReconcileMessage?: string;
 }
 ```
+
+`reconnect`、`reconcile` 需要认证 Actor、`Idempotency-Key` 和 Correlation ID，并写审计。补偿只覆盖配置群聊的指定时间窗；未配置时返回 `partial/local_only`。
 
 ## 3.3 消息研判与 AgentRun
 

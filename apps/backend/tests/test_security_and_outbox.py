@@ -38,10 +38,11 @@ def test_real_feishu_requires_verification_configuration() -> None:
         )
 
 
-def test_encrypt_key_alone_does_not_enable_unimplemented_callback_mode() -> None:
+def test_encrypt_key_alone_does_not_replace_webhook_verification_token() -> None:
     with pytest.raises(ValidationError, match="verification token"):
         Settings(
             enable_real_feishu=True,
+            feishu_event_source="webhook",
             feishu_verification_token=None,
             feishu_encrypt_key="configured-but-not-implemented",
             _env_file=None,
@@ -165,6 +166,7 @@ def test_feishu_webhook_rejects_invalid_verification_token(
     from legal_workbench.main import app
 
     monkeypatch.setenv("LEGAL_WORKBENCH_ENABLE_REAL_FEISHU", "true")
+    monkeypatch.setenv("LEGAL_WORKBENCH_FEISHU_EVENT_SOURCE", "webhook")
     monkeypatch.setenv("LEGAL_WORKBENCH_FEISHU_VERIFICATION_TOKEN", "expected-token")
     get_settings.cache_clear()
     try:
@@ -195,3 +197,6 @@ def test_message_analysis_api_contracts_are_registered() -> None:
     assert "/api/v1/feishu/messages/{message_id}/analyse" in paths
     assert "/api/v1/feishu/messages/{message_id}/retry-analysis" in paths
     assert "/api/v1/feishu/messages/{message_id}/analysis" in paths
+    assert "/api/v1/integrations/feishu/status" in paths
+    assert "/api/v1/integrations/feishu/reconnect" in paths
+    assert "/api/v1/integrations/feishu/reconcile" in paths

@@ -6,10 +6,10 @@
 
 ### 1.1 实现状态（2026-08-01）
 
-- **已实现**：飞书 Webhook Token 校验与原始事件/消息幂等落库、Outbox 可靠投递、消息上下文快照、`message_judgement` AgentDefinition/AgentRun/Source、受控 Codex CLI Runtime、结果校验、Candidate 待确认和前端展示。
-- **部分实现**：真实飞书仅支持 Verification Token 路径；容器 Runtime 已尽量缩小 OS/环境边界，宿主机模式仍依赖 Codex 只读 sandbox。
+- **已实现**：飞书官方 SDK 长连接/Verification Token Webhook 双入口、原始事件/消息幂等落库、连接状态、消息版本、附件元数据与受控下载、时间窗补偿、Outbox 可靠投递、消息上下文快照、`message_judgement` AgentDefinition/AgentRun/Source、受控 Codex CLI Runtime、结果校验、Candidate 待确认和前端展示。
+- **部分实现**：真实飞书凭证未在当前环境联调，Webhook 加密载荷仍拒绝；容器 Runtime 已尽量缩小 OS/环境边界，宿主机模式仍依赖 Codex 只读 sandbox。
 - **占位实现**：`DraftArtifact` 已有通用模型，消息研判主产物仍是 `MessageCandidate`。
-- **尚未实现**：飞书加密回调、长连接和补偿同步；知识解析/检索；事项归并、任务规划和专业 Agent；自动外发。
+- **尚未实现**：飞书加密 Webhook；知识解析/检索；事项归并、任务规划和专业 Agent；自动外发。
 
 ## 2. 产品闭环
 
@@ -129,6 +129,8 @@ FeishuMessage
 
 Mac离线或断线后，连接器根据飞书能力执行补偿同步；无法补拉的时间窗必须在工作台明确显示。
 
+两种接入模式必须进入同一 Application Service。连接器回调不创建 Candidate，只在短事务中写原始事件、标准消息/版本、附件元数据和 Outbox。Redis 被清空不会影响这些事实。
+
 ## 8. 候选确认
 
 MessageCandidate的最终处理动作：
@@ -215,4 +217,4 @@ PostgreSQL负责元数据、正文、全文索引、`pg_trgm`和可选向量字�
 - 数据备份、恢复演练和Legal Hold；
 - API、数据库和Redis默认只暴露本机。
 - API 从 HttpOnly Session 解析 Actor；本地 Session 与 `X-Actor-ID` 只允许显式 `local/development` 环境，非本地环境必须配置独立 Session Secret。
-- Compose 发布端口默认仅绑定 `127.0.0.1`；真实飞书模式当前缺少 Verification Token 时应用拒绝启动，仅 Encrypt Key 不会启用尚未实现的加密回调。
+- Compose 发布端口默认仅绑定 `127.0.0.1`；真实长连接缺少 App ID/Secret、Webhook 缺少 Verification Token 时应用拒绝启动。

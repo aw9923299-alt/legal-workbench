@@ -14,9 +14,12 @@ from legal_workbench.domain.entities import (
     ContextSnapshot,
     Deadline,
     DraftArtifact,
+    FeishuAttachment,
     FeishuMessage,
+    FeishuMessageVersion,
     FeishuRawEvent,
     IdempotencyRecord,
+    IntegrationConnection,
     LegalMatter,
     MessageCandidate,
     OutboxEvent,
@@ -151,7 +154,9 @@ class CommunicationRepository(Protocol):
 
 
 class FeishuRepository(Protocol):
-    async def get_event_by_external_id(self, event_id: str) -> FeishuRawEvent | None: ...
+    async def get_event_by_external_id(
+        self, event_id: str, *, tenant_key: str | None = None
+    ) -> FeishuRawEvent | None: ...
     async def add_event(self, event: FeishuRawEvent) -> None: ...
     async def get_message(
         self, *, tenant_key: str | None, message_id: str
@@ -163,6 +168,20 @@ class FeishuRepository(Protocol):
         self, message: FeishuMessage, *, limit: int
     ) -> Sequence[FeishuMessage]: ...
     async def save_message(self, message: FeishuMessage) -> None: ...
+    async def next_message_revision(self, message_id: UUID) -> int: ...
+    async def add_message_version(self, version: FeishuMessageVersion) -> None: ...
+    async def list_message_versions(
+        self, message_id: UUID
+    ) -> Sequence[FeishuMessageVersion]: ...
+    async def add_attachments(self, attachments: Sequence[FeishuAttachment]) -> None: ...
+    async def list_pending_attachments(
+        self, message_id: UUID
+    ) -> Sequence[FeishuAttachment]: ...
+    async def save_attachment(self, attachment: FeishuAttachment) -> None: ...
+    async def get_connection(
+        self, *, integration_type: str, connection_mode: object
+    ) -> IntegrationConnection | None: ...
+    async def save_connection(self, connection: IntegrationConnection) -> None: ...
 
 
 class AuditEventRepository(Protocol):

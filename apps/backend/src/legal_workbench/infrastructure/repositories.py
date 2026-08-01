@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Sequence
 from decimal import Decimal
+from hashlib import sha256
 from uuid import UUID
 
-from sqlalchemy import Select, or_, select
+from sqlalchemy import Select, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from legal_workbench.domain.entities import (
@@ -16,9 +18,12 @@ from legal_workbench.domain.entities import (
     ContextSnapshot,
     Deadline,
     DraftArtifact,
+    FeishuAttachment,
     FeishuMessage,
+    FeishuMessageVersion,
     FeishuRawEvent,
     IdempotencyRecord,
+    IntegrationConnection,
     LegalMatter,
     MessageCandidate,
     OutboxEvent,
@@ -31,6 +36,7 @@ from legal_workbench.domain.entities import (
 from legal_workbench.domain.enums import (
     AgentDefinitionStatus,
     AgentRunStatus,
+    AttachmentDownloadStatus,
     CandidateMatterRelation,
     CandidateStatus,
     CommunicationStatus,
@@ -49,9 +55,12 @@ from legal_workbench.infrastructure.models import (
     ContextSnapshotModel,
     DeadlineModel,
     DraftArtifactModel,
+    FeishuAttachmentModel,
     FeishuEventModel,
     FeishuMessageModel,
+    FeishuMessageVersionModel,
     IdempotencyRecordModel,
+    IntegrationConnectionModel,
     LegalMatterModel,
     MessageCandidateModel,
     OutboxEventModel,
@@ -1138,9 +1147,14 @@ class SqlAlchemyFeishuRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
         self._tracked_messages: dict[UUID, FeishuMessageModel] = {}
+        self._tracked_attachments: dict[UUID, FeishuAttachmentModel] = {}
 
-    async def get_event_by_external_id(self, event_id: str) -> FeishuRawEvent | None:
+    async def get_event_by_external_id(
+        self, event_id: str, *, tenant_key: str | None = None
+    ) -> FeishuRawEvent | None:
         statement = select(FeishuEventModel).where(FeishuEventModel.event_id == event_id)
+        if tenant_key is not None:
+            statement = statement.where(FeishuEventModel.tenant_key == tenant_key)
         model = (await self._session.execute(statement)).scalar_one_or_none()
         return None if model is None else self._event_to_domain(model)
 
@@ -1164,9 +1178,7 @@ class SqlAlchemyFeishuRepository:
 
     async def get_message(self, *, tenant_key: str | None, message_id: str) -> FeishuMessage | None:
         statement = select(FeishuMessageModel).where(
-            FeishuMessageModel.tenant_key.is_(None)
-            if tenant_key is None
-            else FeishuMessageModel.tenant_key == tenant_key,
+            FeishuMessageModel.tenant_key == (tenant_key or ""),
             FeishuMessageModel.message_id == message_id,
         )
         model = (await self._session.execute(statement)).scalar_one_or_none()
@@ -1193,6 +1205,13 @@ class SqlAlchemyFeishuRepository:
             create_time=message.create_time,
             update_time=message.update_time,
             raw_message=message.raw_message,
+            plain_text=message.plain_text,
+            structured_content=message.structured_content or message.content,
+            attachments=message.attachments,
+            content_hash=message.content_hash or self._message_hash(message.raw_message),
+            edited_at=message.edited_at,
+            recalled_at=message.recalled_at,
+            unsupported_reason=message.unsupported_reason,
             status=message.status,
             context_snapshot_id=message.context_snapshot_id,
             last_agent_run_id=message.last_agent_run_id,
@@ -1268,7 +1287,195 @@ class SqlAlchemyFeishuRepository:
         model.analysis_attempts = message.analysis_attempts
         model.failure_code = message.failure_code
         model.failure_message = message.failure_message
+        model.event_id = message.event_id
+        model.message_type = message.message_type
+        model.content = message.content
+        model.mentions = message.mentions
+        model.update_time = message.update_time
+        model.raw_message = message.raw_message
+        model.plain_text = message.plain_text
+        model.structured_content = message.structured_content
+        model.attachments = message.attachments
+        model.content_hash = message.content_hash or self._message_hash(message.raw_message)
+        model.edited_at = message.edited_at
+        model.recalled_at = message.recalled_at
+        model.unsupported_reason = message.unsupported_reason
         model.version = message.version
+
+    async def next_message_revision(self, message_id: UUID) -> int:
+        statement = select(func.coalesce(func.max(FeishuMessageVersionModel.revision), 0)).where(
+            FeishuMessageVersionModel.feishu_message_id == message_id
+        )
+        return int((await self._session.execute(statement)).scalar_one()) + 1
+
+    async def add_message_version(self, version: FeishuMessageVersion) -> None:
+        self._session.add(
+            FeishuMessageVersionModel(
+                id=version.id,
+                feishu_message_id=version.feishu_message_id,
+                event_id=version.event_id,
+                revision=version.revision,
+                raw_payload=version.raw_payload,
+                content_hash=version.content_hash,
+                plain_text=version.plain_text,
+                structured_content=version.structured_content,
+                attachments=version.attachments,
+                edited_at=version.edited_at,
+                recalled_at=version.recalled_at,
+                is_recalled=version.is_recalled,
+                created_at=version.created_at,
+            )
+        )
+
+    async def list_message_versions(self, message_id: UUID) -> Sequence[FeishuMessageVersion]:
+        statement = (
+            select(FeishuMessageVersionModel)
+            .where(FeishuMessageVersionModel.feishu_message_id == message_id)
+            .order_by(FeishuMessageVersionModel.revision.desc())
+        )
+        models = (await self._session.execute(statement)).scalars().all()
+        return [
+            FeishuMessageVersion(
+                id=model.id,
+                feishu_message_id=model.feishu_message_id,
+                event_id=model.event_id,
+                revision=model.revision,
+                raw_payload=model.raw_payload,
+                content_hash=model.content_hash,
+                plain_text=model.plain_text,
+                structured_content=model.structured_content,
+                attachments=model.attachments,
+                edited_at=model.edited_at,
+                recalled_at=model.recalled_at,
+                is_recalled=model.is_recalled,
+                created_at=model.created_at,
+            )
+            for model in models
+        ]
+
+    async def add_attachments(self, attachments: Sequence[FeishuAttachment]) -> None:
+        models = [
+            FeishuAttachmentModel(
+                    id=value.id,
+                    feishu_message_id=value.feishu_message_id,
+                    message_version_id=value.message_version_id,
+                    file_key=value.file_key,
+                    file_name=value.file_name,
+                    mime_type=value.mime_type,
+                    size=value.size,
+                    sha256=value.sha256,
+                    local_path=value.local_path,
+                    download_status=value.download_status,
+                    download_error=value.download_error,
+                    authorized_for_analysis=value.authorized_for_analysis,
+                    created_at=value.created_at,
+                    updated_at=value.updated_at,
+            )
+            for value in attachments
+        ]
+        self._tracked_attachments.update({model.id: model for model in models})
+        self._session.add_all(models)
+
+    async def list_pending_attachments(
+        self, message_id: UUID
+    ) -> Sequence[FeishuAttachment]:
+        statement = select(FeishuAttachmentModel).where(
+            FeishuAttachmentModel.feishu_message_id == message_id,
+            FeishuAttachmentModel.download_status == AttachmentDownloadStatus.PENDING,
+        )
+        models = (await self._session.execute(statement)).scalars().all()
+        self._tracked_attachments.update({model.id: model for model in models})
+        return [self._attachment_to_domain(model) for model in models]
+
+    async def save_attachment(self, attachment: FeishuAttachment) -> None:
+        model = self._tracked_attachments.get(attachment.id)
+        if model is None:
+            model = await self._session.get(FeishuAttachmentModel, attachment.id)
+        if model is None:
+            raise RuntimeError(f"FeishuAttachment {attachment.id} is not tracked")
+        model.sha256 = attachment.sha256
+        model.local_path = attachment.local_path
+        model.download_status = attachment.download_status
+        model.download_error = attachment.download_error
+        model.authorized_for_analysis = attachment.authorized_for_analysis
+        model.updated_at = attachment.updated_at
+
+    async def get_connection(
+        self, *, integration_type: str, connection_mode: object
+    ) -> IntegrationConnection | None:
+        statement = select(IntegrationConnectionModel).where(
+            IntegrationConnectionModel.integration_type == integration_type,
+            IntegrationConnectionModel.connection_mode == connection_mode,
+        )
+        model = (await self._session.execute(statement)).scalar_one_or_none()
+        return None if model is None else self._connection_to_domain(model)
+
+    async def save_connection(self, connection: IntegrationConnection) -> None:
+        model = await self._session.get(IntegrationConnectionModel, connection.id)
+        if model is None:
+            model = IntegrationConnectionModel(
+                id=connection.id,
+                integration_type=connection.integration_type,
+                connection_mode=connection.connection_mode,
+                status=connection.status,
+                created_at=connection.updated_at,
+                updated_at=connection.updated_at,
+            )
+            self._session.add(model)
+        model.status = connection.status
+        model.last_connected_at = connection.last_connected_at
+        model.last_disconnected_at = connection.last_disconnected_at
+        model.last_event_at = connection.last_event_at
+        model.last_error_code = connection.last_error_code
+        model.last_error_message = connection.last_error_message
+        model.reconnect_count = connection.reconnect_count
+        model.last_reconcile_at = connection.last_reconcile_at
+        model.last_reconcile_status = connection.last_reconcile_status
+        model.last_reconcile_message = connection.last_reconcile_message
+        model.updated_at = connection.updated_at
+
+    @staticmethod
+    def _message_hash(value: dict[str, object]) -> str:
+        payload = json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+        return sha256(payload.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _connection_to_domain(model: IntegrationConnectionModel) -> IntegrationConnection:
+        return IntegrationConnection(
+            id=model.id,
+            integration_type=model.integration_type,
+            connection_mode=model.connection_mode,
+            status=model.status,
+            last_connected_at=model.last_connected_at,
+            last_disconnected_at=model.last_disconnected_at,
+            last_event_at=model.last_event_at,
+            last_error_code=model.last_error_code,
+            last_error_message=model.last_error_message,
+            reconnect_count=model.reconnect_count,
+            last_reconcile_at=model.last_reconcile_at,
+            last_reconcile_status=model.last_reconcile_status,
+            last_reconcile_message=model.last_reconcile_message,
+            updated_at=model.updated_at,
+        )
+
+    @staticmethod
+    def _attachment_to_domain(model: FeishuAttachmentModel) -> FeishuAttachment:
+        return FeishuAttachment(
+            id=model.id,
+            feishu_message_id=model.feishu_message_id,
+            message_version_id=model.message_version_id,
+            file_key=model.file_key,
+            file_name=model.file_name,
+            mime_type=model.mime_type,
+            size=model.size,
+            sha256=model.sha256,
+            local_path=model.local_path,
+            download_status=model.download_status,
+            download_error=model.download_error,
+            authorized_for_analysis=model.authorized_for_analysis,
+            created_at=model.created_at,
+            updated_at=model.updated_at,
+        )
 
     @staticmethod
     def _event_to_domain(model: FeishuEventModel) -> FeishuRawEvent:
@@ -1313,6 +1520,13 @@ class SqlAlchemyFeishuRepository:
             failure_code=model.failure_code,
             failure_message=model.failure_message,
             version=model.version,
+            plain_text=model.plain_text,
+            structured_content=model.structured_content,
+            attachments=model.attachments,
+            content_hash=model.content_hash,
+            edited_at=model.edited_at,
+            recalled_at=model.recalled_at,
+            unsupported_reason=model.unsupported_reason,
         )
 
 

@@ -21,7 +21,16 @@ services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
-    command: ["redis-server", "--appendonly", "yes"]
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --appendfsync
+      - everysec
+      - --maxmemory
+      - 256mb
+      - --maxmemory-policy
+      - noeviction
     ports:
       - "127.0.0.1:${REDIS_PORT:-6379}:6379"
     volumes:
@@ -51,6 +60,7 @@ services:
     volumes:
       - ./data/knowledge:/data/knowledge:ro
       - ./data/codex-runs:/data/codex-runs
+      - ./data/feishu-attachments:/data/feishu-attachments
     depends_on:
       postgres:
         condition: service_healthy
@@ -87,6 +97,7 @@ services:
       - --concurrency=1
     volumes:
       - ./data/codex-runs:/data/codex-runs
+      - ./data/feishu-attachments:/data/feishu-attachments:ro
     depends_on:
       api:
         condition: service_healthy
@@ -129,13 +140,15 @@ services:
       context: .
       dockerfile: infra/docker/backend.Dockerfile
     profiles: ["integrations"]
-    restart: "no"
+    restart: unless-stopped
     env_file:
       - .env
     environment:
       LEGAL_WORKBENCH_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-legal_workbench}:${POSTGRES_PASSWORD:-change-me-local-only}@postgres:5432/${POSTGRES_DB:-legal_workbench}
       LEGAL_WORKBENCH_REDIS_URL: redis://redis:6379/0
     command: ["python", "-m", "legal_workbench.integrations.feishu_connector"]
+    volumes:
+      - ./data/feishu-attachments:/data/feishu-attachments
     depends_on:
       api:
         condition: service_healthy

@@ -14,6 +14,17 @@ FeishuEvent → FeishuMessage → FeishuMessageReceived Outbox
 
 同时覆盖未知 Outbox 事件、前端重试幂等键、认证边界和真实飞书配置 fail-closed。
 
+## 阶段一增量结果：飞书本地消息接入
+
+- **已实现**：官方 `lark-oapi` SDK 长连接和现有 Webhook 共用 `IngestFeishuEventHandler`；长连接支持启动、SDK 心跳、内部重连、外层 `1/2/4/8/16/30` 秒退避和优雅退出；
+- **已实现**：`integration_connections`、`feishu_message_versions`、`feishu_attachments` 及迁移 `20260801_0005`；连接错误、事件时间、重连次数和补偿结果不再只存在内存；
+- **已实现**：text/post/file/image、回复、线程、编辑、撤回和 unsupported 标准化；unsupported 可见但不写分析 Outbox；
+- **已实现**：附件受控下载、大小上限、权限化路径、SHA-256 和默认 `authorized_for_analysis=false`；没有 OCR/正文解析；
+- **已实现**：`GET status`、`POST reconnect`、`POST reconcile`；写接口要求后端认证 Actor、Idempotency-Key、Correlation ID 并写审计；
+- **已通过模拟验证**：15 个飞书新增针对性测试，长连接失败两次后按 1/2 秒退避并在成功时保持连接；全量后端测试 76 passed、2 skipped；
+- **已通过真实 PostgreSQL 验证**：临时数据库从空库升级到 `20260801_0005`，执行 `downgrade -1 → upgrade head` 成功；两条数据库集成测试 `2 passed`；
+- **尚未真实集成验证**：当前环境未提供飞书 App ID/Secret、租户和授权群聊，未连接真实飞书。远端补偿是配置群聊的时间窗查询，不承诺租户全量零遗漏；加密 Webhook 仍拒绝。
+
 ## 已实现并验证
 
 - `message_judgement` 输出使用 Pydantic 2 严格 Schema，禁止额外字段，置信度限制为 0–1；
@@ -29,7 +40,7 @@ FeishuEvent → FeishuMessage → FeishuMessageReceived Outbox
 
 ## 数据库与运行时验证
 
-- PostgreSQL 18 实例上执行 `alembic upgrade head → downgrade -1 → upgrade head`，最终版本为 `20260801_0004 (head)`；
+- PostgreSQL 18 临时数据库上执行 `alembic upgrade head → downgrade -1 → upgrade head`，阶段一最终版本为 `20260801_0005 (head)`；
 - 在 `20260801_0003` 插入两个历史重复 ContextSnapshot 和一个历史 Candidate 外部 Agent UUID 后执行升级/降级，快照没有被合并删除，历史 UUID 可完整恢复；
 - PostgreSQL 集成测试验证 `FeishuMessage → ContextSnapshot → AgentRun → MessageCandidate`，结果为 `2 passed, 62 deselected`；
 - Worker 镜像构建成功，包含固定版本 `codex-cli 0.145.0-alpha.9`；
@@ -83,5 +94,5 @@ docker compose run --rm --no-deps --entrypoint id worker codex-agent
 - 已完成真实 Codex CLI 二进制、版本、特性注册表及严格参数解析检查；当前环境未向容器提供 Codex 认证，因此未发起真实模型推理请求，也不声称真实模型调用通过；
 - 宿主机模式依赖 Codex CLI 只读 sandbox 和工作目录约束，不是可证明的完整文件读取白名单；
 - Agent 可控 Web/浏览器/MCP 工具已关闭，但模型传输仍需要服务端出网；当前 Compose 尚未配置目的地址 allowlist 或代理级 egress 限制；
-- 飞书 Verification Token 回调已实现，加密回调解密、WebSocket 长连接和补偿同步尚未实现；
+- 飞书长连接、Verification Token Webhook 和配置群聊时间窗补偿代码已实现并通过模拟/数据库验证；真实凭证联调和加密 Webhook 尚未完成；
 - 生产认证的外部登录/会话签发器尚未实现；本轮只建立可扩展的后端会话边界。

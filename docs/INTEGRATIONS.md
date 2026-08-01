@@ -4,9 +4,15 @@
 
 ## 飞书适配器
 
-负责机器人私聊、指定群聊@消息、手动转发和已有事项线程；完成事件签名、幂等落库、线程上下文、附件、编辑/撤回、断线重连、补偿同步、审核后发送和回执。
+负责机器人私聊、指定群聊@消息、手动转发和已有事项线程。当前已实现官方 SDK 长连接与 Verification Token Webhook 双模式，二者统一调用 `IngestFeishuEventHandler`，完成原始事件/消息事务幂等、线程关系、编辑/撤回版本、附件元数据与受控下载、连接状态和时间窗补偿审计。
 
 事件接收线程只做校验、持久化和投递，不运行Codex。
+
+长连接默认使用 `FEISHU_EVENT_SOURCE=long_connection`。SDK 心跳和内部重连之外，连接器还使用 `1/2/4/8/16/30` 秒有上限退避；状态写入 `integration_connections`。`ENABLE_REAL_FEISHU=true` 时缺凭证直接失败，不会退回 Fake。
+
+补偿同步只查询 `FEISHU_RECONCILE_CHAT_IDS` 明确列出的群聊和可配置时间窗，数据库通过事件/消息唯一约束吸收重复。飞书接口不是全租户游标日志；未配置群聊或权限不足时状态为 `partial/local_only`，不得承诺绝不漏消息。
+
+附件只下载到 `FEISHU_ATTACHMENT_ROOT/<tenant>/<message UUID>`，校验最大字节数、计算 SHA-256 并登记路径。`authorized_for_analysis=false` 为默认值，本轮不做 OCR、正文解析或向量化。
 
 ## Codex Runtime
 

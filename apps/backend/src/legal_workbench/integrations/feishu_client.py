@@ -62,6 +62,82 @@ class FeishuApiClient:
                 )
         return self._extract_message_id(response)
 
+    async def download_message_resource(
+        self,
+        *,
+        message_id: str,
+        file_key: str,
+        resource_type: str,
+    ) -> tuple[bytes, str | None, int | None]:
+        """Download an attachment without granting it to the Codex runtime."""
+
+        token = await self._get_tenant_access_token()
+        timeout = httpx.Timeout(self._settings.feishu_request_timeout_seconds)
+        async with httpx.AsyncClient(
+            base_url=self._settings.feishu_api_base_url,
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=timeout,
+        ) as client:
+            response = await client.get(
+                f"/im/v1/messages/{message_id}/resources/{file_key}",
+                params={"type": resource_type},
+            )
+        if response.is_error:
+            raise FeishuApiError(
+                f"Feishu resource download failed with HTTP {response.status_code}."
+            )
+        mime_type = response.headers.get("content-type")
+        size_header = response.headers.get("content-length")
+        try:
+            size = int(size_header) if size_header else len(response.content)
+        except ValueError:
+            size = len(response.content)
+        return response.content, mime_type, size
+
+    async def list_chat_messages(
+        self,
+        *,
+        chat_id: str,
+        start_time: datetime,
+        end_time: datetime,
+    ) -> list[dict[str, object]]:
+        """Return every message visible in a configured chat/time window."""
+
+        token = await self._get_tenant_access_token()
+        page_token: str | None = None
+        messages: list[dict[str, object]] = []
+        timeout = httpx.Timeout(self._settings.feishu_request_timeout_seconds)
+        async with httpx.AsyncClient(
+            base_url=self._settings.feishu_api_base_url,
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=timeout,
+        ) as client:
+            while True:
+                params: dict[str, str | int] = {
+                    "container_id_type": "chat",
+                    "container_id": chat_id,
+                    "start_time": int(start_time.timestamp()),
+                    "end_time": int(end_time.timestamp()),
+                    "sort_type": "ByCreateTimeAsc",
+                    "page_size": 50,
+                }
+                if page_token:
+                    params["page_token"] = page_token
+                response = await client.get("/im/v1/messages", params=params)
+                body = self._parse_response(response)
+                data = body.get("data")
+                if not isinstance(data, dict):
+                    raise FeishuApiError("Feishu message list response did not contain data.")
+                items = data.get("items")
+                if isinstance(items, list):
+                    messages.extend(item for item in items if isinstance(item, dict))
+                if not bool(data.get("has_more")):
+                    break
+                page_token = str(data.get("page_token") or "")
+                if not page_token:
+                    raise FeishuApiError("Feishu pagination omitted page_token.")
+        return messages
+
     async def _get_tenant_access_token(self) -> str:
         now = datetime.now(UTC)
         if self._token and self._token_expires_at and self._token_expires_at > now:

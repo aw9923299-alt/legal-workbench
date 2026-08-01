@@ -43,7 +43,8 @@ interface FeishuMessage {
     | 'candidate_created'
     | 'ignored'
     | 'analysis_failed'
-    | 'dead_letter';
+    | 'dead_letter'
+    | 'unsupported';
   contextSnapshotId?: string;
   lastAgentRunId?: string;
   analysisAttempts: number;
@@ -57,7 +58,9 @@ interface FeishuMessage {
 唯一约束：
 
 - `(tenant_id, event_id)`；
-- `(tenant_id, message_id, content_hash)`。
+- `(tenant_id, message_id)`；消息正文变化进入不可变 `FeishuMessageVersion`，不覆盖历史审计。
+
+`integration_connections` 持久化连接模式、状态、最近连接/断开/事件、错误、重连次数和最近补偿结果。`feishu_message_versions` 为每次创建、编辑或撤回追加修订；`feishu_attachments` 保存 file key、名称、MIME、大小、SHA-256、本地路径、下载状态和 `authorized_for_analysis`。迁移 `20260801_0005` 可降级并保留 0004 原有消息行。
 
 ## 2.2 FileAsset
 

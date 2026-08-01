@@ -32,6 +32,7 @@ from legal_workbench.domain.enums import (
     AgentDefinitionStatus,
     AgentRunSourceType,
     AgentRunStatus,
+    AttachmentDownloadStatus,
     BusinessImpact,
     CandidateMatterRelation,
     CandidateStatus,
@@ -46,6 +47,8 @@ from legal_workbench.domain.enums import (
     DraftArtifactStatus,
     FeishuEventStatus,
     FeishuMessageStatus,
+    IntegrationConnectionMode,
+    IntegrationConnectionStatus,
     LegalRelevance,
     LegalRisk,
     MatterCategory,
@@ -632,13 +635,13 @@ class CommunicationModel(UuidPrimaryKeyMixin, TimestampMixin, VersionedMixin, Ba
 class FeishuEventModel(UuidPrimaryKeyMixin, Base):
     __tablename__ = "feishu_events"
     __table_args__ = (
-        UniqueConstraint("event_id", name="uq_feishu_events_event_id"),
+        UniqueConstraint("tenant_key", "event_id", name="uq_feishu_events_tenant_event"),
         Index("ix_feishu_events_status_received", "status", "received_at"),
     )
 
     event_id: Mapped[str] = mapped_column(String(160), nullable=False)
     event_type: Mapped[str] = mapped_column(String(160), nullable=False)
-    tenant_key: Mapped[str | None] = mapped_column(String(160))
+    tenant_key: Mapped[str] = mapped_column(String(160), nullable=False, default="")
     app_id: Mapped[str | None] = mapped_column(String(160))
     schema_version: Mapped[str | None] = mapped_column(String(24))
     raw_payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
@@ -664,7 +667,7 @@ class FeishuMessageModel(UuidPrimaryKeyMixin, TimestampMixin, VersionedMixin, Ba
     event_id: Mapped[UUID] = mapped_column(
         ForeignKey("feishu_events.id", ondelete="RESTRICT"), nullable=False, index=True
     )
-    tenant_key: Mapped[str | None] = mapped_column(String(160))
+    tenant_key: Mapped[str] = mapped_column(String(160), nullable=False, default="")
     message_id: Mapped[str] = mapped_column(String(160), nullable=False)
     chat_id: Mapped[str | None] = mapped_column(String(160), index=True)
     thread_id: Mapped[str | None] = mapped_column(String(160))
@@ -682,6 +685,17 @@ class FeishuMessageModel(UuidPrimaryKeyMixin, TimestampMixin, VersionedMixin, Ba
     create_time: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     update_time: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     raw_message: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    plain_text: Mapped[str | None] = mapped_column(Text)
+    structured_content: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=JSON_EMPTY_OBJECT
+    )
+    attachments: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB, nullable=False, default=list, server_default=JSON_EMPTY_LIST
+    )
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    edited_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    recalled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    unsupported_reason: Mapped[str | None] = mapped_column(Text)
     status: Mapped[FeishuMessageStatus] = mapped_column(
         enum_type(FeishuMessageStatus, name="feishu_message_status", length=24), nullable=False
     )
@@ -696,6 +710,104 @@ class FeishuMessageModel(UuidPrimaryKeyMixin, TimestampMixin, VersionedMixin, Ba
     )
     failure_code: Mapped[str | None] = mapped_column(String(80))
     failure_message: Mapped[str | None] = mapped_column(Text)
+
+
+class IntegrationConnectionModel(UuidPrimaryKeyMixin, TimestampMixin, Base):
+    __tablename__ = "integration_connections"
+    __table_args__ = (
+        UniqueConstraint(
+            "integration_type",
+            "connection_mode",
+            name="uq_integration_connections_type_mode",
+        ),
+    )
+
+    integration_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    connection_mode: Mapped[IntegrationConnectionMode] = mapped_column(
+        enum_type(IntegrationConnectionMode, name="integration_connection_mode", length=24),
+        nullable=False,
+    )
+    status: Mapped[IntegrationConnectionStatus] = mapped_column(
+        enum_type(IntegrationConnectionStatus, name="integration_connection_status", length=24),
+        nullable=False,
+    )
+    last_connected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_disconnected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_event_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_error_code: Mapped[str | None] = mapped_column(String(100))
+    last_error_message: Mapped[str | None] = mapped_column(Text)
+    reconnect_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    last_reconcile_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_reconcile_status: Mapped[str | None] = mapped_column(String(40))
+    last_reconcile_message: Mapped[str | None] = mapped_column(Text)
+
+
+class FeishuMessageVersionModel(UuidPrimaryKeyMixin, Base):
+    __tablename__ = "feishu_message_versions"
+    __table_args__ = (
+        UniqueConstraint(
+            "feishu_message_id", "revision", name="uq_feishu_message_versions_revision"
+        ),
+        Index("ix_feishu_message_versions_message_created", "feishu_message_id", "created_at"),
+    )
+
+    feishu_message_id: Mapped[UUID] = mapped_column(
+        ForeignKey("feishu_messages.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    event_id: Mapped[UUID] = mapped_column(
+        ForeignKey("feishu_events.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    raw_payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    plain_text: Mapped[str] = mapped_column(Text, nullable=False, default="", server_default="")
+    structured_content: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=JSON_EMPTY_OBJECT
+    )
+    attachments: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB, nullable=False, default=list, server_default=JSON_EMPTY_LIST
+    )
+    edited_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    recalled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    is_recalled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=FALSE_DEFAULT
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class FeishuAttachmentModel(UuidPrimaryKeyMixin, TimestampMixin, Base):
+    __tablename__ = "feishu_attachments"
+    __table_args__ = (
+        UniqueConstraint(
+            "message_version_id", "file_key", name="uq_feishu_attachments_version_file"
+        ),
+        Index("ix_feishu_attachments_status_created", "download_status", "created_at"),
+    )
+
+    feishu_message_id: Mapped[UUID] = mapped_column(
+        ForeignKey("feishu_messages.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    message_version_id: Mapped[UUID] = mapped_column(
+        ForeignKey("feishu_message_versions.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    file_key: Mapped[str] = mapped_column(String(240), nullable=False)
+    file_name: Mapped[str] = mapped_column(String(500), nullable=False)
+    mime_type: Mapped[str | None] = mapped_column(String(160))
+    size: Mapped[int | None] = mapped_column(Integer)
+    sha256: Mapped[str | None] = mapped_column(String(64))
+    local_path: Mapped[str | None] = mapped_column(Text)
+    download_status: Mapped[AttachmentDownloadStatus] = mapped_column(
+        enum_type(AttachmentDownloadStatus, name="attachment_download_status", length=24),
+        nullable=False,
+    )
+    download_error: Mapped[str | None] = mapped_column(Text)
+    authorized_for_analysis: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=FALSE_DEFAULT
+    )
 
 
 class AgentDefinitionModel(UuidPrimaryKeyMixin, TimestampMixin, Base):

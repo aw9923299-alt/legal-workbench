@@ -10,6 +10,7 @@ from legal_workbench.domain.enums import (
     AgentDefinitionStatus,
     AgentRunSourceType,
     AgentRunStatus,
+    AttachmentDownloadStatus,
     BusinessImpact,
     CandidateStatus,
     CommunicationChannel,
@@ -23,6 +24,8 @@ from legal_workbench.domain.enums import (
     DraftArtifactStatus,
     FeishuEventStatus,
     FeishuMessageStatus,
+    IntegrationConnectionMode,
+    IntegrationConnectionStatus,
     LegalRelevance,
     LegalRisk,
     MatterCategory,
@@ -904,6 +907,59 @@ class FeishuRawEvent:
 
 
 @dataclass(slots=True)
+class IntegrationConnection:
+    id: UUID
+    integration_type: str
+    connection_mode: IntegrationConnectionMode
+    status: IntegrationConnectionStatus
+    last_connected_at: datetime | None = None
+    last_disconnected_at: datetime | None = None
+    last_event_at: datetime | None = None
+    last_error_code: str | None = None
+    last_error_message: str | None = None
+    reconnect_count: int = 0
+    last_reconcile_at: datetime | None = None
+    last_reconcile_status: str | None = None
+    last_reconcile_message: str | None = None
+    updated_at: datetime = field(default_factory=utc_now)
+
+
+@dataclass(frozen=True, slots=True)
+class FeishuMessageVersion:
+    id: UUID
+    feishu_message_id: UUID
+    event_id: UUID
+    revision: int
+    raw_payload: dict[str, object]
+    content_hash: str
+    plain_text: str
+    structured_content: dict[str, object]
+    attachments: list[dict[str, object]]
+    edited_at: datetime | None = None
+    recalled_at: datetime | None = None
+    is_recalled: bool = False
+    created_at: datetime = field(default_factory=utc_now)
+
+
+@dataclass(slots=True)
+class FeishuAttachment:
+    id: UUID
+    feishu_message_id: UUID
+    message_version_id: UUID
+    file_key: str
+    file_name: str
+    mime_type: str | None
+    size: int | None
+    download_status: AttachmentDownloadStatus
+    sha256: str | None = None
+    local_path: str | None = None
+    download_error: str | None = None
+    authorized_for_analysis: bool = False
+    created_at: datetime = field(default_factory=utc_now)
+    updated_at: datetime = field(default_factory=utc_now)
+
+
+@dataclass(slots=True)
 class FeishuMessage:
     id: UUID
     event_id: UUID
@@ -928,6 +984,13 @@ class FeishuMessage:
     failure_code: str | None = None
     failure_message: str | None = None
     version: int = 1
+    plain_text: str | None = None
+    structured_content: dict[str, object] = field(default_factory=dict)
+    attachments: list[dict[str, object]] = field(default_factory=list)
+    content_hash: str | None = None
+    edited_at: datetime | None = None
+    recalled_at: datetime | None = None
+    unsupported_reason: str | None = None
 
     _TRANSITIONS: ClassVar[dict[FeishuMessageStatus, set[FeishuMessageStatus]]] = {
         FeishuMessageStatus.RECEIVED: {FeishuMessageStatus.QUEUED_FOR_ANALYSIS},

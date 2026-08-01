@@ -272,3 +272,26 @@ class FeishuMessageStatus(StrEnum):
     IGNORED = "ignored"
     ANALYSIS_FAILED = "analysis_failed"
     DEAD_LETTER = "dead_letter"
+    UNSUPPORTED = "unsupported"
+
+
+class IntegrationConnectionMode(StrEnum):
+    LONG_CONNECTION = "long_connection"
+    WEBHOOK = "webhook"
+
+
+class IntegrationConnectionStatus(StrEnum):
+    DISABLED = "disabled"
+    STARTING = "starting"
+    CONNECTED = "connected"
+    DEGRADED = "degraded"
+    DISCONNECTED = "disconnected"
+    FAILED = "failed"
+
+
+class AttachmentDownloadStatus(StrEnum):
+    PENDING = "pending"
+    DOWNLOADING = "downloading"
+    DOWNLOADED = "downloaded"
+    FAILED = "failed"
+    NOT_REQUESTED = "not_requested"

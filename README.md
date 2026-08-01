@@ -2,7 +2,7 @@
 
 运行在本地 Mac 上的法务智能工作系统。系统从经过授权的飞书消息中发现工作，由受控的 Codex Agent 完成消息研判、事项归并、任务规划、专业分析、回复草拟、日报和复盘；所有发送给其他人员的内容必须经过法务审核。
 
-> 当前已实现 `FeishuEvent → FeishuMessage → Outbox → ContextSnapshot → AgentRun → MessageCandidate` 消息研判闭环，以及候选确认、事项/任务、审核与 Communication 的确定性业务基础。真实 Codex 执行需显式开启并提供可用认证；飞书加密回调解密、长连接/补偿同步、知识解析和专业 Agent 尚未实现。
+> 当前已实现 `FeishuEvent → FeishuMessage → Outbox → ContextSnapshot → AgentRun → MessageCandidate` 消息研判闭环，以及官方 SDK 长连接/Webhook 双入口、断线重连、消息版本与附件元数据、时间窗补偿接口。真实飞书与真实 Codex 均需显式开启并提供可用凭证；知识解析和专业 Agent 尚未实现。
 
 ## 核心闭环
 
@@ -158,19 +158,20 @@ npm run build
 - Outbox并发领取、指数退避、重试、死信和重新入队；
 - Outbox Handler 显式注册，未知事件会失败、重试并最终死信；
 - 飞书原始事件及消息按事件ID、消息ID幂等落库；
+- 飞书官方 SDK 长连接和 Webhook 共用同一 Application Service；连接状态、编辑/撤回历史、附件下载状态和补偿结果均持久化在 PostgreSQL；
 - 乐观锁、行锁、事务级幂等锁、审计和事务Outbox；
 - HttpOnly 本地会话认证边界；只有显式 `local/development` 环境可签发本地 Session，开发 Actor Header 需显式开关；Compose 端口默认只绑定 `127.0.0.1`；
 - 收件箱与 Agent 详情页展示来源、状态、版本、置信度、理由、事实/推断、期限和缺失信息。
 
 部分实现：
 
-- 飞书开关关闭时 Webhook 返回 503；真实模式支持 Verification Token 校验并 fail closed，仅配置 Encrypt Key 不能启用，加密回调目前明确拒绝；
+- 飞书开关关闭时真实入口 fail closed；长连接缺少 App ID/Secret、Webhook 缺少 Verification Token 时拒绝启动。当前环境未提供真实凭证，长连接与远端时间窗补偿仅通过 Fake/自动化测试验证；Webhook 加密载荷仍明确拒绝；
 - 容器 Worker 以专用 UID、最小环境变量和无知识目录挂载运行 Codex；主机模式仍依赖 Codex 自身只读沙箱，不声称是完整 OS 级隔离。
 
 ## 当前开发顺序
 
-1. 在容器内使用真实凭证执行 Codex 安全冒烟与故障注入测试；
-2. 实现飞书 WebSocket 长连接、加密回调解密和补偿同步；
+1. 在测试飞书应用上验证长连接、撤回和按群聊时间窗补偿，并评审加密 Webhook；
+2. 在容器内使用真实凭证执行 Codex 安全冒烟与故障注入测试；
 3. 建立知识文件解析、全文检索和可追溯引用；
 4. 跑通合同审核端到端专业Agent闭环；
 5. 完善Communication发送回执、失败补偿和人工重发；

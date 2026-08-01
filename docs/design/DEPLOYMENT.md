@@ -21,7 +21,7 @@ agents        worker 内受控 CodexCliRuntime
 integrations  feishu-connector、file-indexer
 ```
 
-Profiles中的进程当前是工程入口，不代表真实功能已实现。
+`feishu-connector` 已实现官方 SDK 长连接；真实运行仍需测试应用凭证并显式开启。`file-indexer` 仍是工程入口。
 
 ## 3. 镜像策略
 
@@ -38,7 +38,8 @@ Profiles中的进程当前是工程入口，不代表真实功能已实现。
 | 数据 | 存储 | 说明 |
 |---|---|---|
 | 领域、审计、知识元数据和正文 | PostgreSQL Volume | 唯一事实库，每日备份 |
-| 队列和延时任务 | Redis AOF | 可重建但需持久化 |
+| 队列和延时任务 | Redis AOF | 可重建；不得成为任务状态或消息事实库 |
+| 飞书附件 | 本地受控目录 | 仅元数据/下载/哈希，默认不授权给 Codex |
 | 公司原始资料 | 本地受控目录 | 默认只读挂载给服务 |
 | Codex运行目录 | 本地隔离目录 | 定期清理，保留哈希和必要产物 |
 | Agent定义和提示词 | Git | 版本控制 |
@@ -80,6 +81,8 @@ Profiles中的进程当前是工程入口，不代表真实功能已实现。
 → 重放Outbox和未完成任务
 → 工作台展示恢复结果和不可覆盖窗口
 ```
+
+当前远端补偿是配置群聊的时间窗查询，不是租户级游标。Mac 唤醒后应调用 `/integrations/feishu/reconcile`，然后由数据库恢复扫描重派 Outbox/待分析消息。
 
 ## 8. Worker与Codex Runner
 
