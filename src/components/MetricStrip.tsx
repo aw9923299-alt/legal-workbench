@@ -1,0 +1,28 @@
+import { ArrowRightOutlined } from '@ant-design/icons';
+import type { ReactNode } from 'react';
+
+interface MetricProps {
+  label: string;
+  value: number;
+  hint: string;
+  tone: 'critical' | 'warning' | 'neutral' | 'info';
+  icon: ReactNode;
+}
+
+export default function MetricStrip({ items }: { items: MetricProps[] }) {
+  return (
+    <section className="metric-strip">
+      {items.map((item) => (
+        <button key={item.label} className={`metric-cell metric-${item.tone}`}>
+          <span className="metric-icon">{item.icon}</span>
+          <span className="metric-copy">
+            <span className="metric-label">{item.label}</span>
+            <strong>{item.value}</strong>
+            <span className="metric-hint">{item.hint}</span>
+          </span>
+          <ArrowRightOutlined className="metric-arrow" />
+        </button>
+      ))}
+    </section>
+  );
+}
