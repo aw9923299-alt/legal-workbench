@@ -27,7 +27,7 @@ jobs:
           cat .bootstrap/part-* > /tmp/legal-workbench.b64
           base64 --decode /tmp/legal-workbench.b64 > /tmp/legal-workbench.tar.xz
           tar -xJf /tmp/legal-workbench.tar.xz
-          rm -rf .bootstrap .github/workflows/bootstrap-import.yml
+          rm -rf .bootstrap .github/workflows/bootstrap-import.yml .github/workflows/ci.yml
 
       - name: Commit imported source and design
         shell: bash
