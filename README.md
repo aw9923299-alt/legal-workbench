@@ -140,4 +140,4 @@ Node.js 要求：20 或更高版本。
 
 详细验收标准见 [实施计划](./docs/design/IMPLEMENTATION_PLAN.md)。
 
-<!-- bootstrap-trigger -->
+<!-- bootstrap-pr-trigger -->
