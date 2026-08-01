@@ -23,6 +23,23 @@ def ping(payload: dict[str, Any] | None = None) -> dict[str, Any]:
     return {"status": "ok", "payload": payload or {}}
 
 
+@celery_app.task(name="system.scheduler_heartbeat")  # type: ignore[untyped-decorator]
+def scheduler_heartbeat() -> dict[str, str]:
+    from datetime import UTC, datetime
+
+    from redis import Redis
+
+    value = datetime.now(UTC).isoformat()
+    client = Redis.from_url(get_settings().redis_url, decode_responses=True)
+    try:
+        client.set(
+            "legal-workbench:scheduler-heartbeat", value, ex=90
+        )
+    finally:
+        client.close()
+    return {"heartbeatAt": value}
+
+
 @celery_app.task(name="outbox.publish")  # type: ignore[untyped-decorator]
 def publish_outbox() -> dict[str, int]:
     count = asyncio.run(OutboxDispatcher().publish_batch())

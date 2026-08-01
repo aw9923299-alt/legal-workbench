@@ -62,45 +62,93 @@ FeishuEvent → FeishuMessage → FeishuMessageReceived Outbox
 - 普通单元测试使用 `FakeAgentRuntime`，不调用真实 Codex。
 - Runtime 测试验证即使工具全部禁用，stdin 仍包含唯一授权消息内容；重分析测试验证待确认 Candidate 更新/作废语义。
 
+## 阶段三增量结果：可运营工作台
+
+- **已实现**：React Router 与 TanStack Query 接管 `/inbox`、消息详情、Candidate 跳转、AgentRun 列表/详情、系统状态和 Matter 路由；核心页面不读取 Mock 状态；
+- **已实现**：AI 收件箱按待分析、排队、分析中、待确认、已处理、忽略、失败和死信分类，并支持正文、分类、时间和群聊筛选；
+- **已实现**：消息详情左右分栏显示原文/线程/附件/编辑撤回历史，以及 Agent 状态、版本、建议、已确认事实、AI 推断、缺失信息和分析修订；人工可创建、关联、登记更新、仅供知悉、忽略或重新分析；
+- **已实现**：Agent 运行中心显示状态历史、ContextSnapshot、实际来源、版本、租约、Worker、校验错误、受限输出和 Candidate，并提供取消与重试；
+- **已实现**：系统状态页读取 FastAPI/PostgreSQL/Redis/Celery/Feishu/Codex/队列/死信真实健康值，危险恢复操作二次确认；Outbox 死信重入队增加 Actor、幂等、Correlation ID 和审计；
+- **已实现**：SSE 区分 `system.health`、`message.ingested`、`agent-run.updated`、`candidate.created` 和 `outbox.failed`；连续失败后回退到 15 秒轮询；
+- **已通过自动化验证**：前端测试覆盖收件箱状态映射、消息详情、事实与推断视觉分离、Agent 状态刷新、SSE 退避/轮询、幂等键复用、结构化错误和 Candidate 人工动作请求头；
+- **部分实现**：SSE 当前使用数据库健康快照差异检测，不是 PostgreSQL LISTEN/NOTIFY；列表为上限分页而非游标分页；前端生产包仍有大 chunk 警告；
+- **尚未真实集成验证**：因缺飞书凭证和隔离 Codex 认证，真实消息→真实模型→人工确认的现场演示未执行；Fake Runtime + PostgreSQL 闭环是本轮可重复验证基线。
+
 ## 最终验证命令
 
-提交前以本节记录的最终结果为准。后端命令均使用仓库根目录 `.venv`：
+提交前以本节记录的最终结果为准。宿主 `.venv` 为 Python 3.14.6，生产镜像按项目基线使用 Python 3.12.13：
 
 ```bash
 git diff --check
 cd apps/backend
 ../../.venv/bin/python -m compileall src
 ../../.venv/bin/ruff check .
-../../.venv/bin/mypy src
+../../.venv/bin/mypy --config-file pyproject.toml src
 ../../.venv/bin/pytest --disable-warnings
-# 63 passed, 2 skipped, 281 warnings
+# 89 passed, 3 skipped, 390 warnings
 
 RUN_POSTGRES_INTEGRATION_TESTS=1 \
-LEGAL_WORKBENCH_TEST_DATABASE_URL=postgresql+psycopg://legal_workbench:change-me-local-only@127.0.0.1:5432/legal_workbench \
+LEGAL_WORKBENCH_TEST_DATABASE_URL=postgresql+psycopg://legal_workbench:change-me-local-only@127.0.0.1:5432/legal_workbench_stage3_019fbdd2 \
 ../../.venv/bin/pytest -m integration --disable-warnings
-# 2 passed, 63 deselected, 20 warnings
+# 3 passed, 89 deselected, 30 warnings
+
+../../.venv/bin/python ../../scripts/smoke_test_codex_triage.py \
+  --database-url postgresql+psycopg://legal_workbench:change-me-local-only@127.0.0.1:5432/legal_workbench_stage3_019fbdd2 \
+  --runtime fake --allow-database-write
+# 11/11 success；realInferenceExecuted=false
 
 cd ../web
 npm install
 npm run typecheck
+npm test
 npm run build
+# 6 test files / 10 tests passed；构建成功
 cd ../..
 docker compose config --quiet
-docker compose up -d postgres redis
-docker compose run --rm --no-deps worker alembic -c apps/backend/alembic.ini upgrade head
-docker compose run --rm --no-deps worker alembic -c apps/backend/alembic.ini downgrade -1
-docker compose run --rm --no-deps worker alembic -c apps/backend/alembic.ini upgrade head
-docker compose run --rm --no-deps worker alembic -c apps/backend/alembic.ini current
-# 20260801_0004 (head)
+docker compose build
+docker compose up -d postgres redis api worker scheduler web
+docker compose ps
+# API/PostgreSQL/Redis healthy；Worker/Scheduler/Web running
 
-docker compose build worker
+cd apps/backend
+LEGAL_WORKBENCH_DATABASE_URL=postgresql+psycopg://legal_workbench:change-me-local-only@127.0.0.1:5432/legal_workbench_stage3_019fbdd2 \
+  ../../.venv/bin/alembic -c alembic.ini upgrade head
+LEGAL_WORKBENCH_DATABASE_URL=postgresql+psycopg://legal_workbench:change-me-local-only@127.0.0.1:5432/legal_workbench_stage3_019fbdd2 \
+  ../../.venv/bin/alembic -c alembic.ini downgrade -1
+LEGAL_WORKBENCH_DATABASE_URL=postgresql+psycopg://legal_workbench:change-me-local-only@127.0.0.1:5432/legal_workbench_stage3_019fbdd2 \
+  ../../.venv/bin/alembic -c alembic.ini upgrade head
+# 20260801_0006 (head)
+
+cd ../..
 docker compose run --rm --no-deps --entrypoint codex worker --version
 # codex-cli 0.145.0-alpha.9
 docker compose run --rm --no-deps --entrypoint id worker codex-agent
 # uid=10001(codex-agent) gid=10001(codex-agent) groups=10001(codex-agent)
 ```
 
-结果：`compileall`、Ruff、mypy、pytest、迁移往返、数据库集成测试、前端 typecheck/build、Compose 配置、Worker 镜像构建均通过。Vite 构建产生单个约 1.30 MB chunk 的体积警告，不影响构建成功。
+结果：`git diff --check`、`compileall`、Ruff、mypy、pytest、迁移往返、数据库集成测试、Fake Runtime 冒烟、前端 typecheck/test/build、Compose 配置和全部镜像构建均通过。Vite 构建产生单个 `1,440.35 kB`（gzip `453.38 kB`）chunk 警告，不影响构建成功。
+
+`npm audit` 返回 `2 high`：两项均源自 React Router 的 RSC Action CSRF 公告 `GHSA-qwww-vcr4-c8h2`。当前 Registry 最新 `react-router-dom` 为 `7.18.2`，公告要求 `>=8.3.0`，暂无可安装修复版本；本项目是纯 Vite SPA，不启用 RSC/Server Actions，但该上游告警仍明确保留，未通过降级或强制安装掩盖。
+
+## 故障注入与恢复
+
+- **已通过模拟验证**：停止 Redis 后，PostgreSQL 中消息、Run、Candidate 与 Outbox 数量不变；系统状态准确显示 Redis/Worker/Scheduler 不可用；Redis 启动并执行 `FLUSHALL` 后，恢复扫描可从 PostgreSQL 重新发现任务，Scheduler 心跳重新建立；
+- **已通过模拟验证**：停止/恢复 Worker，系统状态由降级恢复正常；停止/恢复 API，HTTP 由不可达恢复 200；
+- **已通过模拟验证**：终止无网络隔离容器中的实际 `codex exec` 进程，退出码为 137；AgentRun 租约超时、重派与死信路径由自动化测试覆盖。因缺真实认证，这不是一次真实模型运行中的故障；
+- **已通过模拟验证**：飞书连接器在 `ENABLE_REAL_FEISHU=false` 时持久化为 `disabled`，人工重连返回 HTTP 409 `INVALID_STATE_TRANSITION`；长连接断线按 `1/2/4/8/16/30` 秒退避测试通过；
+- **修复并回归**：故障演练发现 Celery Beat 任务复用了跨事件循环异步 Redis 客户端，已改为每次任务使用独立同步客户端并增加回归测试；系统页 Worker 探测阈值由 0.5 秒调整为 1 秒，减少单 Worker Mac 的瞬时误报。
+
+## 页面可视化验证
+
+浏览器基于 Compose 实例和真实 API 数据完成检查，控制台 `error/warning` 为 0：
+
+![AI 收件箱](screenshots/ai-inbox.png)
+
+![消息详情与人工确认](screenshots/message-detail.png)
+
+![Agent 运行中心](screenshots/agent-run-center.png)
+
+![系统状态](screenshots/system-health.png)
 
 ## 部分实现与未验证项
 
@@ -108,4 +156,6 @@ docker compose run --rm --no-deps --entrypoint id worker codex-agent
 - 宿主机模式依赖 Codex CLI 只读 sandbox 和工作目录约束，不是可证明的完整文件读取白名单；
 - Agent 可控 Web/浏览器/MCP 工具已关闭，但模型传输仍需要服务端出网；当前 Compose 尚未配置目的地址 allowlist 或代理级 egress 限制；
 - 飞书长连接、Verification Token Webhook 和配置群聊时间窗补偿代码已实现并通过模拟/数据库验证；真实凭证联调和加密 Webhook 尚未完成；
-- 生产认证的外部登录/会话签发器尚未实现；本轮只建立可扩展的后端会话边界。
+- 生产认证的外部登录/会话签发器尚未实现；本轮只建立可扩展的后端会话边界；
+- Candidate 的“更新已有 Matter”当前只登记可审计关联与人工决定，不静默覆盖已有 Matter 字段；字段级更新应在后续单独定义并通过版本冲突测试；
+- SSE 当前基于 PostgreSQL 快照差异，不提供跨重启事件游标；前端路由包仍需做按页分包。

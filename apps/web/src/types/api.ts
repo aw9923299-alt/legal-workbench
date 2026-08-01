@@ -80,6 +80,8 @@ export interface MessageJudgementResult {
 
 export type AgentRunStatus = 'queued' | 'preparing' | 'running' | 'validating' | 'completed' | 'needs_more_information' | 'failed' | 'timed_out' | 'cancelled' | 'dead_letter';
 
+export type FeishuMessageStatus = 'received' | 'queued_for_analysis' | 'context_prepared' | 'agent_queued' | 'analysing' | 'candidate_created' | 'ignored' | 'analysis_failed' | 'dead_letter';
+
 export interface AgentRunSource {
   sourceType: string;
   sourceId: string;
@@ -111,12 +113,103 @@ export interface AgentRunRecord {
   maxAttempts: number;
   failureCode: string | null;
   failureMessage: string | null;
+  runtimeVersion: string | null;
+  agentDefinitionVersion: string;
+  promptVersion: string;
+  validationErrors: string[];
+  repairAttempted: boolean;
+  tokenUsage: Record<string, number> | null;
+  workerId: string | null;
+  leaseExpiresAt: string | null;
   correlationId: string;
   createdBy: string;
   createdAt: string;
   updatedAt: string;
   version: number;
   sources: AgentRunSource[];
+  statusEvents: Array<{
+    id: string;
+    fromStatus: AgentRunStatus | null;
+    toStatus: AgentRunStatus;
+    changedAt: string;
+    correlationId: string;
+    attemptNumber: number;
+    failureCode: string | null;
+    failureMessage: string | null;
+  }>;
+  candidateId: string | null;
+}
+
+export interface FeishuMessageSummary {
+  id: string;
+  messageId: string;
+  tenantKey: string | null;
+  chatId: string | null;
+  threadId: string | null;
+  parentMessageId: string | null;
+  rootMessageId: string | null;
+  senderId: string | null;
+  senderType: string | null;
+  messageType: string;
+  plainText: string | null;
+  sentAt: string | null;
+  editedAt: string | null;
+  recalledAt: string | null;
+  status: FeishuMessageStatus;
+  unsupportedReason: string | null;
+  analysisAttempts: number;
+  failureCode: string | null;
+  failureMessage: string | null;
+  agentRunId: string | null;
+  agentStatus: AgentRunStatus | null;
+  candidateId: string | null;
+  candidateStatus: CandidateStatus | null;
+  confidence: number | null;
+  suggestedCategory: string | null;
+  suggestedDeadline: string | null;
+}
+
+export interface CandidateRevision {
+  id: string;
+  candidateId: string;
+  revision: number;
+  agentRunId: string;
+  analysisPayload: MessageJudgementResult;
+  createdAt: string;
+  supersededAt: string | null;
+  supersededBy: string | null;
+}
+
+export interface FeishuMessageDetail extends FeishuMessageSummary {
+  structuredContent: Record<string, unknown>;
+  rawPayload: Record<string, unknown>;
+  contextMessages: FeishuMessageSummary[];
+  versions: Array<{
+    id: string;
+    revision: number;
+    eventId: string;
+    plainText: string;
+    structuredContent: Record<string, unknown>;
+    attachments: Array<Record<string, unknown>>;
+    contentHash: string;
+    editedAt: string | null;
+    recalledAt: string | null;
+    isRecalled: boolean;
+    createdAt: string;
+  }>;
+  attachments: Array<{
+    id: string;
+    fileKey: string;
+    fileName: string;
+    mimeType: string | null;
+    size: number | null;
+    sha256: string | null;
+    localPath: string | null;
+    downloadStatus: string;
+    downloadError: string | null;
+    authorizedForAnalysis: boolean;
+  }>;
+  candidateRevisions: CandidateRevision[];
 }
 
 export interface MessageAnalysis {
@@ -137,6 +230,11 @@ export interface MessageAnalysis {
     participantIds: string[];
     contentHash: string;
     truncated: boolean;
+    truncationReason: string | null;
+    originalSize: number;
+    includedSize: number;
+    builderVersion: string;
+    selectionPolicyVersion: string;
     createdAt: string;
   } | null;
   agentRun: AgentRunRecord | null;
@@ -145,6 +243,56 @@ export interface MessageAnalysis {
   failureCode: string | null;
   failureMessage: string | null;
   canRetry: boolean;
+}
+
+export interface ComponentHealth {
+  status: 'normal' | 'degraded' | 'unavailable' | 'not_configured' | string;
+  detail: string;
+  updatedAt: string;
+}
+
+export interface SystemHealth {
+  generatedAt: string;
+  components: Record<string, ComponentHealth>;
+  metrics: {
+    outboxPending: number;
+    agentQueued: number;
+    failedRuns: number;
+    agentDeadLetters: number;
+    outboxDeadLetters: number;
+    lastMessageAt: string | null;
+    lastCompletedRunAt: string | null;
+    lastReconcileAt: string | null;
+    lastCandidateAt: string | null;
+    lastAgentRunUpdateAt: string | null;
+    lastOutboxFailureAt: string | null;
+  } | null;
+  codex: {
+    enabled: boolean;
+    status: string;
+    executable: string | null;
+    detectedVersion: string | null;
+    expectedVersion: string | null;
+    authentication: string;
+    runtimeDirectoryWritable: boolean;
+    detail: string;
+  };
+}
+
+export interface FeishuConnection {
+  integrationType: string;
+  connectionMode: string;
+  status: string;
+  lastConnectedAt: string | null;
+  lastDisconnectedAt: string | null;
+  lastEventAt: string | null;
+  lastErrorCode: string | null;
+  lastErrorMessage: string | null;
+  reconnectCount: number;
+  lastReconcileAt: string | null;
+  lastReconcileStatus: string | null;
+  lastReconcileMessage: string | null;
+  updatedAt: string;
 }
 
 export interface LegalMatter {

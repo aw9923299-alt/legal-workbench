@@ -1454,6 +1454,36 @@ class SqlAlchemyFeishuRepository:
             self._tracked_messages[model.id] = model
         return [self._message_to_domain(model) for model in models]
 
+    async def list_messages(
+        self,
+        *,
+        statuses: Sequence[FeishuMessageStatus] | None,
+        search: str | None,
+        chat_id: str | None,
+        created_from: datetime | None,
+        created_to: datetime | None,
+        limit: int,
+    ) -> Sequence[FeishuMessage]:
+        statement: Select[tuple[FeishuMessageModel]] = select(FeishuMessageModel)
+        if statuses:
+            statement = statement.where(FeishuMessageModel.status.in_(list(statuses)))
+        if search:
+            statement = statement.where(FeishuMessageModel.plain_text.ilike(f"%{search}%"))
+        if chat_id:
+            statement = statement.where(FeishuMessageModel.chat_id == chat_id)
+        if created_from:
+            statement = statement.where(FeishuMessageModel.create_time >= created_from)
+        if created_to:
+            statement = statement.where(FeishuMessageModel.create_time <= created_to)
+        statement = statement.order_by(
+            FeishuMessageModel.create_time.desc().nullslast(),
+            FeishuMessageModel.created_at.desc(),
+        ).limit(limit)
+        models = (await self._session.execute(statement)).scalars().all()
+        for model in models:
+            self._tracked_messages[model.id] = model
+        return [self._message_to_domain(model) for model in models]
+
     async def list_queued_without_active_run(
         self, *, limit: int
     ) -> Sequence[FeishuMessage]:
@@ -1592,6 +1622,16 @@ class SqlAlchemyFeishuRepository:
         statement = select(FeishuAttachmentModel).where(
             FeishuAttachmentModel.feishu_message_id == message_id,
             FeishuAttachmentModel.download_status == AttachmentDownloadStatus.PENDING,
+        )
+        models = (await self._session.execute(statement)).scalars().all()
+        self._tracked_attachments.update({model.id: model for model in models})
+        return [self._attachment_to_domain(model) for model in models]
+
+    async def list_attachments(self, message_id: UUID) -> Sequence[FeishuAttachment]:
+        statement = (
+            select(FeishuAttachmentModel)
+            .where(FeishuAttachmentModel.feishu_message_id == message_id)
+            .order_by(FeishuAttachmentModel.created_at, FeishuAttachmentModel.id)
         )
         models = (await self._session.execute(statement)).scalars().all()
         self._tracked_attachments.update({model.id: model for model in models})

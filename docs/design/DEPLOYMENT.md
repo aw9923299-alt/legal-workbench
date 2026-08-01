@@ -108,6 +108,8 @@ Codex Runner：
 
 - `/api/v1/health/live`：进程存活；
 - `/api/v1/health/ready`：PostgreSQL和Redis就绪；
+- `/api/v1/system/health`：FastAPI、PostgreSQL、Redis、Worker、Scheduler、飞书、Codex CLI/认证和运行指标；
+- `/api/v1/events/stream`：SSE 运行变化，断开不影响 PostgreSQL 事实；
 - 飞书连接状态和最后事件时间；
 - Celery队列长度、最老任务和死信；
 - Codex运行数、超时和租约；
@@ -128,7 +130,11 @@ docker compose up -d --build
 docker compose ps
 curl http://localhost:8000/api/v1/health/live
 curl http://localhost:8000/api/v1/health/ready
+# 先 POST /api/v1/auth/local-session 获取本地 HttpOnly Session，再访问：
+curl --cookie-jar /tmp/legal-workbench-cookie http://localhost:8000/api/v1/system/health
 ```
+
+故障恢复验证应依次停止/恢复 Redis、Worker 和 API，并检查 PostgreSQL 中 queued 消息、AgentRun 租约、Outbox 和死信仍可由 scheduler 或 `/system/recover-pending-jobs` 恢复。Codex 进程终止测试必须得到明确失败码，不能以伪造成功结果完成。
 
 集成Profiles在功能实现和安全评审完成后才启用：
 

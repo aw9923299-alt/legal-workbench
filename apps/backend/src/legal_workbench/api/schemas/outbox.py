@@ -22,3 +22,4 @@ class OutboxDeadLetterResponse(ApiModel):
 class RequeueDeadLetterResponse(ApiModel):
     dead_letter_id: UUID
     outbox_event_id: UUID
+    idempotent_replay: bool = False

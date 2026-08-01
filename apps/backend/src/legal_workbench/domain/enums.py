@@ -11,6 +11,13 @@ class CandidateStatus(StrEnum):
     REJECTED = "rejected"
 
 
+class CandidateResolutionAction(StrEnum):
+    LINK_EXISTING = "link_existing"
+    UPDATE_EXISTING = "update_existing"
+    INFORMATION_ONLY = "information_only"
+    IGNORE = "ignore"
+
+
 class LegalRelevance(StrEnum):
     RELEVANT = "relevant"
     POSSIBLY_RELEVANT = "possibly_relevant"

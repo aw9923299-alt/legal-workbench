@@ -102,8 +102,12 @@ interface FeishuIntegrationStatus {
 ## 3.3 消息研判与 AgentRun
 
 ```http
+GET  /api/v1/feishu/messages?status=&search=&category=&chatId=&from=&to=
+GET  /api/v1/feishu/messages/:messageId
 GET  /api/v1/agent-runs?status=<status>&limit=<1..200>
 GET  /api/v1/agent-runs/:runId
+POST /api/v1/agent-runs/:runId/retry
+POST /api/v1/agent-runs/:runId/cancel
 POST /api/v1/feishu/messages/:messageId/analyse
 POST /api/v1/feishu/messages/:messageId/retry-analysis
 GET  /api/v1/feishu/messages/:messageId/analysis
@@ -124,13 +128,11 @@ POST   /api/v1/inbox/candidates
 GET    /api/v1/inbox/candidates
 GET    /api/v1/inbox/candidates/:id
 POST   /api/v1/inbox/candidates/:id/confirm-create
-POST   /api/v1/inbox/candidates/:id/confirm-link
-POST   /api/v1/inbox/candidates/:id/confirm-update
-POST   /api/v1/inbox/candidates/:id/information-only
-POST   /api/v1/inbox/candidates/:id/ignore
-POST   /api/v1/inbox/candidates/:id/reanalyze
-POST   /api/v1/inbox/candidates/batch
+GET    /api/v1/inbox/candidates/:id/revisions
+POST   /api/v1/inbox/candidates/:id/resolve
 ```
+
+`resolve` 统一承载 `link_existing/update_existing/information_only/ignore`，避免为同一业务动作创建同义接口；关联/更新要求 `matterId`，并只登记可审计关系，不静默改写 Matter 已确认字段。重新分析使用消息或 AgentRun retry API。
 
 创建Candidate、`confirm-create`和新增WorkItem必须已建立认证 Session，写操作还必须携带：
 
@@ -475,14 +477,16 @@ interface DomainEventEnvelope<T> {
 GET /api/v1/events/stream
 ```
 
-事件包括：
+当前已实现事件：`system.health`、`message.ingested`、`agent-run.updated`、`candidate.created`、`outbox.failed`。事件携带脱敏健康快照，前端收到后使对应 Query 失效并重新按权限查询；断线后指数退避重连并启用 15 秒轮询。
 
-- 新消息候选；
-- Agent 状态更新；
-- 新审核项；
-- 发送结果；
-- 飞书连接告警；
-- 知识索引完成；
-- 任务期限临近。
+系统接口：
 
-SSE 只发送对象 ID 和最小摘要，前端再按权限查询详情。
+```http
+GET  /api/v1/system/health
+GET  /api/v1/system/metrics
+POST /api/v1/system/recover-pending-jobs
+GET  /api/v1/system/outbox/dead-letters
+POST /api/v1/system/outbox/dead-letters/:id/requeue
+```
+
+上述写操作要求认证 Actor、`Idempotency-Key`、Correlation ID 和审计；死信重入队保留原记录并创建新 Outbox 事件。

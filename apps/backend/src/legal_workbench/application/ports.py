@@ -38,6 +38,7 @@ from legal_workbench.domain.enums import (
     CandidateStatus,
     CommunicationStatus,
     DeadlineStatus,
+    FeishuMessageStatus,
     ReviewPackageStatus,
 )
 
@@ -182,6 +183,16 @@ class FeishuRepository(Protocol):
     async def list_context_messages(
         self, message: FeishuMessage, *, limit: int
     ) -> Sequence[FeishuMessage]: ...
+    async def list_messages(
+        self,
+        *,
+        statuses: Sequence[FeishuMessageStatus] | None,
+        search: str | None,
+        chat_id: str | None,
+        created_from: datetime | None,
+        created_to: datetime | None,
+        limit: int,
+    ) -> Sequence[FeishuMessage]: ...
     async def save_message(self, message: FeishuMessage) -> None: ...
     async def next_message_revision(self, message_id: UUID) -> int: ...
     async def add_message_version(self, version: FeishuMessageVersion) -> None: ...
@@ -192,6 +203,7 @@ class FeishuRepository(Protocol):
     async def list_pending_attachments(
         self, message_id: UUID
     ) -> Sequence[FeishuAttachment]: ...
+    async def list_attachments(self, message_id: UUID) -> Sequence[FeishuAttachment]: ...
     async def save_attachment(self, attachment: FeishuAttachment) -> None: ...
     async def list_queued_without_active_run(self, *, limit: int) -> Sequence[FeishuMessage]: ...
     async def get_connection(

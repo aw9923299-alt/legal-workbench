@@ -1,9 +1,15 @@
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 
-from legal_workbench.api.dependencies import get_actor_id
+from legal_workbench.api.auth import RequestActor
+from legal_workbench.api.dependencies import (
+    get_actor_id,
+    get_correlation_id,
+    get_idempotency_key,
+    get_request_actor,
+)
 from legal_workbench.api.schemas.outbox import (
     OutboxDeadLetterResponse,
     RequeueDeadLetterResponse,
@@ -29,15 +35,27 @@ async def list_dead_letters(
 )
 async def requeue_dead_letter(
     dead_letter_id: UUID,
-    _: Annotated[str, Depends(get_actor_id)],
+    request: Request,
+    response: Response,
+    actor: Annotated[RequestActor, Depends(get_request_actor)],
+    idempotency_key: Annotated[str, Depends(get_idempotency_key)],
 ) -> RequeueDeadLetterResponse:
     try:
-        outbox_event_id = await OutboxDispatcher().requeue_dead_letter(dead_letter_id)
+        result = await OutboxDispatcher().requeue_dead_letter(
+            dead_letter_id,
+            actor_id=actor.actor_id,
+            actor_source=actor.identity_source,
+            correlation_id=get_correlation_id(request),
+            idempotency_key=idempotency_key,
+        )
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if result.idempotent_replay:
+        response.status_code = status.HTTP_200_OK
     return RequeueDeadLetterResponse(
         dead_letter_id=dead_letter_id,
-        outbox_event_id=outbox_event_id,
+        outbox_event_id=result.outbox_event_id,
+        idempotent_replay=result.idempotent_replay,
     )

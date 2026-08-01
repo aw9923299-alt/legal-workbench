@@ -6,6 +6,7 @@ from uuid import UUID
 
 from legal_workbench.domain.enums import (
     BusinessImpact,
+    CandidateResolutionAction,
     CandidateStatus,
     Confidentiality,
     DeadlineSource,
@@ -81,6 +82,17 @@ class ConfirmCandidateCreateMatterCommand:
     summary: str | None
     objective: str | None
     initial_work_items: list[InitialWorkItemInput]
+
+
+@dataclass(frozen=True, slots=True)
+class ResolveCandidateCommand:
+    candidate_id: UUID
+    candidate_version: int
+    action: CandidateResolutionAction
+    matter_id: UUID | None
+    actor_id: str
+    correlation_id: str
+    idempotency_key: str
 
 
 @dataclass(frozen=True, slots=True)

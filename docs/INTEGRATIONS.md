@@ -20,6 +20,8 @@ Codex是唯一推理和生成AI。所有业务调用统一经过`CodexCliRuntime
 
 AgentRun、状态事件、Candidate 修订、租约和失败码全部存 PostgreSQL。Celery Beat 定期扫描丢失队列投递与过期租约并重建 Outbox；Redis 不保存唯一业务事实。
 
+工作台通过 `/api/v1/events/stream` 接收系统健康、消息、AgentRun、Candidate 和 Outbox 变化。SSE 只用于刷新提示；断线时由 TanStack Query 有限轮询 PostgreSQL 查询接口，因此 SSE 或 Redis 丢失不会丢业务状态。
+
 业务服务不得直接执行Codex CLI。
 
 ## 知识服务
@@ -50,4 +52,4 @@ AgentRun、状态事件、Candidate 修订、租约和失败码全部存 Postgre
 
 ## Mock与真实实现
 
-前端的候选、事项、任务和消息研判路径访问 FastAPI；与当前闭环无关的页面仍可包含演示数据。真实模式缺少后端、飞书或Codex配置时必须报错，不得静默回退演示数据。
+前端的收件箱、消息详情、Candidate 人工动作、Agent 运行中心和系统状态访问 FastAPI，不使用演示状态；与当前闭环无关的旧页面仍可能包含演示数据。真实模式缺少后端、飞书或Codex配置时必须报错，不得静默回退演示数据。

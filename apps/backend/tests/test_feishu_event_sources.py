@@ -4,12 +4,30 @@ import asyncio
 
 import pytest
 
+from legal_workbench.application.feishu_operations import FeishuOperationsService
+from legal_workbench.config import Settings
+from legal_workbench.domain.errors import InvalidStateTransitionError
 from legal_workbench.integrations.feishu_event_sources import (
     EventSourceStatus,
     LongConnectionFeishuEventSource,
     ReconnectBackoff,
 )
 from legal_workbench.integrations.feishu_sdk import sdk_event_to_payload
+
+
+@pytest.mark.asyncio
+async def test_manual_reconnect_is_fail_closed_when_real_feishu_is_disabled() -> None:
+    service = FeishuOperationsService(
+        settings=Settings(enable_real_feishu=False, _env_file=None),
+        uow_factory=None,  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(InvalidStateTransitionError, match="disabled"):
+        await service.request_reconnect(
+            actor_id="local-legal-user",
+            correlation_id="corr-disabled-reconnect",
+            idempotency_key="idem-disabled-reconnect",
+        )
 
 
 def test_reconnect_backoff_is_bounded_and_resets_after_success() -> None:

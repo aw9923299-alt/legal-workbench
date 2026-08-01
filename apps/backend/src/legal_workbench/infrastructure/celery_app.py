@@ -28,5 +28,9 @@ celery_app.conf.update(
             "task": "analysis.recover",
             "schedule": float(settings.analysis_recovery_interval_seconds),
         },
+        "scheduler-heartbeat-every-thirty-seconds": {
+            "task": "system.scheduler_heartbeat",
+            "schedule": 30.0,
+        },
     },
 )

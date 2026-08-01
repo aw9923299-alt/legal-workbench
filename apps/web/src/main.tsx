@@ -2,12 +2,25 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { ConfigProvider, App as AntApp, theme } from 'antd';
 import zhCN from 'antd/locale/zh_CN';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { BrowserRouter } from 'react-router-dom';
 import RootApp from './App';
+import { RealtimeProvider } from './services/RealtimeProvider';
 import './styles/global.css';
+
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: { staleTime: 3_000, retry: 1, refetchOnWindowFocus: true },
+    mutations: { retry: 0 },
+  },
+});
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
-    <ConfigProvider
+    <BrowserRouter>
+      <QueryClientProvider client={queryClient}>
+        <RealtimeProvider>
+          <ConfigProvider
       locale={zhCN}
       theme={{
         algorithm: theme.defaultAlgorithm,
@@ -30,10 +43,13 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
           Menu: { itemBorderRadius: 4 },
         },
       }}
-    >
-      <AntApp>
-        <RootApp />
-      </AntApp>
-    </ConfigProvider>
+          >
+            <AntApp>
+              <RootApp />
+            </AntApp>
+          </ConfigProvider>
+        </RealtimeProvider>
+      </QueryClientProvider>
+    </BrowserRouter>
   </React.StrictMode>,
 );

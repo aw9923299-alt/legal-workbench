@@ -2,7 +2,7 @@
 
 运行在本地 Mac 上的法务智能工作系统。系统从经过授权的飞书消息中发现工作，由受控的 Codex Agent 完成消息研判、事项归并、任务规划、专业分析、回复草拟、日报和复盘；所有发送给其他人员的内容必须经过法务审核。
 
-> 当前已实现 `FeishuEvent → FeishuMessage → Outbox → ContextSnapshot → AgentRun → MessageCandidate` 消息研判闭环，以及官方 SDK 长连接/Webhook 双入口、断线重连、消息版本与附件元数据、时间窗补偿接口。真实飞书与真实 Codex 均需显式开启并提供可用凭证；知识解析和专业 Agent 尚未实现。
+> 当前已实现 `FeishuEvent → FeishuMessage → Outbox → ContextSnapshot → AgentRun → MessageCandidate → 人工创建/关联 Matter` 受控闭环，以及官方 SDK 长连接/Webhook 双入口、断线重连、消息版本与附件元数据、时间窗补偿、运行中心、系统状态和 SSE/轮询恢复。真实飞书与真实 Codex 均需显式开启并提供可用凭证；知识解析和专业 Agent 尚未实现。
 
 ## 核心闭环
 
@@ -40,6 +40,8 @@
 - TypeScript；
 - Vite；
 - Ant Design。
+- React Router；
+- TanStack Query（服务端状态、缓存、刷新和错误处理）。
 
 ### 后端
 
@@ -165,20 +167,21 @@ npm run build
 - 乐观锁、行锁、事务级幂等锁、审计和事务Outbox；
 - HttpOnly 本地会话认证边界；只有显式 `local/development` 环境可签发本地 Session，开发 Actor Header 需显式开关；Compose 端口默认只绑定 `127.0.0.1`；
 - 收件箱与 Agent 详情页展示来源、状态、版本、置信度、理由、事实/推断、期限和缺失信息。
+- AI 收件箱、消息详情、Agent 运行中心和系统状态页使用真实 FastAPI 数据；支持状态/分类/时间/群聊筛选、Candidate 人工动作、运行重试/取消、补偿同步、遗留任务恢复和死信重新入队；
+- SSE 推送系统健康、消息、AgentRun、Candidate 和 Outbox 变化，断开后按指数退避重连并回退到有限频率轮询；
+- Agent stdout/stderr 常见凭证格式脱敏，运行目录只返回受控逻辑路径；所有新增写操作继续要求后端 Actor、Idempotency-Key、Correlation ID 和审计。
 
 部分实现：
 
 - 飞书开关关闭时真实入口 fail closed；长连接缺少 App ID/Secret、Webhook 缺少 Verification Token 时拒绝启动。当前环境未提供真实凭证，长连接与远端时间窗补偿仅通过 Fake/自动化测试验证；Webhook 加密载荷仍明确拒绝；
 - 容器 Worker 以专用 UID、最小环境变量和无知识目录挂载运行 Codex；主机模式仍依赖 Codex 自身只读沙箱，不声称是完整 OS 级隔离。
 - 当前宿主 CLI 为 `0.146.0-alpha.9.2`，与容器固定版本 `0.145.0-alpha.9` 不匹配，且隔离 Worker 未配置 API Key；因此真实 Codex 推理未执行，11 类消息仅通过 Fake Runtime + 真实 PostgreSQL 验证。
+- 当前 Registry 最新 `react-router-dom@7.18.2` 仍命中 RSC Action CSRF 公告 `GHSA-qwww-vcr4-c8h2`；本项目不启用 RSC/Server Actions，但在上游发布可安装修复版本前，`npm audit` 仍会报告 2 个 high，详见 `QA_REPORT.md`。
 
 ## 当前开发顺序
 
 1. 在测试飞书应用上验证长连接、撤回和按群聊时间窗补偿，并评审加密 Webhook；
 2. 在容器内使用真实凭证执行 Codex 安全冒烟与故障注入测试；
-3. 建立知识文件解析、全文检索和可追溯引用；
-4. 跑通合同审核端到端专业Agent闭环；
-5. 完善Communication发送回执、失败补偿和人工重发；
-6. 建立学习、评测、日报和事项复盘；
-7. 依次接入文案、人力、纠纷和知产Agent；
-8. 完善权限、备份、监控和Mac常驻运行。
+3. 完成生产会话签发、权限策略、代理级出网限制和备份恢复演练；
+4. 对消息查询和 SSE 做分页、事件游标与压力测试，并对前端大包做路由级分包；
+5. 上述核心闭环通过真实集成验收后，再单独规划知识检索和专业 Agent，不在本轮范围内扩展。

@@ -1,10 +1,16 @@
 import type {
   Communication,
   AgentRunRecord,
+  CandidateStatus,
+  CandidateRevision,
   Deadline,
   LegalMatter,
   MessageCandidate,
   MessageAnalysis,
+  FeishuConnection,
+  FeishuMessageDetail,
+  FeishuMessageStatus,
+  FeishuMessageSummary,
   Priority,
   PriorityConfirmation,
   ReviewDecision,
@@ -12,9 +18,11 @@ import type {
   ReviewRecord,
   WorkItem,
   WorkItemDependency,
+  SystemHealth,
 } from '../types/api';
 
-const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? '/api/v1';
+export const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? '/api/v1';
+export const apiEventStreamUrl = `${API_BASE_URL}/events/stream`;
 
 export class ApiError extends Error {
   constructor(
@@ -25,6 +33,42 @@ export class ApiError extends Error {
   ) {
     super(message);
   }
+}
+
+interface ApiErrorDetails {
+  message: string;
+  code?: string;
+  correlationId?: string;
+}
+
+export function formatApiErrorPayload(payload: unknown, status: number): ApiErrorDetails {
+  if (!payload || typeof payload !== 'object') return { message: `请求失败（${status}）` };
+  const value = payload as Record<string, unknown>;
+  const error = value.error && typeof value.error === 'object'
+    ? value.error as Record<string, unknown>
+    : undefined;
+  if (error) {
+    return {
+      message: typeof error.message === 'string' ? error.message : `请求失败（${status}）`,
+      code: typeof error.code === 'string' ? error.code : undefined,
+      correlationId: typeof error.correlationId === 'string' ? error.correlationId : undefined,
+    };
+  }
+  if (typeof value.detail === 'string') return { message: value.detail };
+  if (Array.isArray(value.detail)) {
+    const messages = value.detail.map((item) => {
+      if (!item || typeof item !== 'object') return String(item);
+      const detail = item as Record<string, unknown>;
+      const location = Array.isArray(detail.loc) ? detail.loc.join('.') : 'request';
+      const message = typeof detail.msg === 'string' ? detail.msg : 'Invalid value';
+      return `${location}：${message}`;
+    });
+    return { message: messages.join('；') };
+  }
+  if (value.detail && typeof value.detail === 'object') {
+    return { message: JSON.stringify(value.detail) };
+  }
+  return { message: `请求失败（${status}）` };
 }
 
 export function isDefinitiveMutationFailure(error: unknown): boolean {
@@ -147,15 +191,13 @@ async function request<T>(
     response = await fetch(`${API_BASE_URL}${path}`, requestInit);
   }
   if (!response.ok) {
-    const payload = (await response.json().catch(() => ({}))) as {
-      error?: { message?: string; code?: string; correlationId?: string };
-      detail?: string;
-    };
+    const payload: unknown = await response.json().catch(() => ({}));
+    const formatted = formatApiErrorPayload(payload, response.status);
     throw new ApiError(
-      payload.error?.message ?? payload.detail ?? `请求失败（${response.status}）`,
+      formatted.message,
       response.status,
-      payload.error?.code,
-      payload.error?.correlationId,
+      formatted.code,
+      formatted.correlationId,
     );
   }
   if (response.status === 204) return undefined as T;
@@ -187,8 +229,56 @@ export interface ConfirmCandidateInput {
 }
 
 export const legalApi = {
+  listMessages(filters: {
+    statuses?: FeishuMessageStatus[];
+    search?: string;
+    category?: string;
+    chatId?: string;
+    from?: string;
+    to?: string;
+    limit?: number;
+  } = {}): Promise<FeishuMessageSummary[]> {
+    const query = new URLSearchParams();
+    filters.statuses?.forEach((value) => query.append('status', value));
+    if (filters.search) query.set('search', filters.search);
+    if (filters.category) query.set('category', filters.category);
+    if (filters.chatId) query.set('chatId', filters.chatId);
+    if (filters.from) query.set('from', filters.from);
+    if (filters.to) query.set('to', filters.to);
+    query.set('limit', String(filters.limit ?? 200));
+    return request(`/feishu/messages?${query.toString()}`);
+  },
+
+  getMessage(messageId: string): Promise<FeishuMessageDetail> {
+    return request(`/feishu/messages/${messageId}`);
+  },
+
   listCandidates(status = 'pending_confirmation'): Promise<MessageCandidate[]> {
     return request(`/inbox/candidates?status=${encodeURIComponent(status)}&limit=100`);
+  },
+
+  getCandidate(candidateId: string): Promise<MessageCandidate> {
+    return request(`/inbox/candidates/${candidateId}`);
+  },
+
+  listCandidateRevisions(candidateId: string): Promise<CandidateRevision[]> {
+    return request(`/inbox/candidates/${candidateId}/revisions`);
+  },
+
+  resolveCandidate(candidateId: string, input: {
+    candidateVersion: number;
+    action: 'link_existing' | 'update_existing' | 'information_only' | 'ignore';
+    matterId?: string;
+  }, mutation?: MutationContext): Promise<{
+    candidateId: string;
+    status: CandidateStatus;
+    matterId: string | null;
+    version: number;
+    idempotentReplay: boolean;
+  }> {
+    return request(`/inbox/candidates/${candidateId}/resolve`, {
+      method: 'POST', body: JSON.stringify(input),
+    }, { write: true, mutation });
   },
 
   confirmCandidate(candidateId: string, input: ConfirmCandidateInput, mutation?: MutationContext): Promise<{
@@ -217,12 +307,88 @@ export const legalApi = {
     }, { write: true, mutation });
   },
 
-  listAgentRuns(): Promise<AgentRunRecord[]> {
-    return request('/agent-runs?limit=100', {}, { authenticated: true });
+  analyseMessage(messageId: string, mutation?: MutationContext): Promise<{
+    messageId: string;
+    messageStatus: string;
+    idempotentReplay: boolean;
+  }> {
+    return request(`/feishu/messages/${messageId}/analyse`, {
+      method: 'POST',
+    }, { write: true, mutation });
+  },
+
+  listAgentRuns(status?: AgentRunRecord['status']): Promise<AgentRunRecord[]> {
+    const query = new URLSearchParams({ limit: '100' });
+    if (status) query.set('status', status);
+    return request(`/agent-runs?${query.toString()}`, {}, { authenticated: true });
   },
 
   getAgentRun(runId: string): Promise<AgentRunRecord> {
     return request(`/agent-runs/${runId}`, {}, { authenticated: true });
+  },
+
+  retryAgentRun(runId: string, mutation?: MutationContext): Promise<{
+    messageId: string; messageStatus: string; idempotentReplay: boolean;
+  }> {
+    return request(`/agent-runs/${runId}/retry`, { method: 'POST' }, { write: true, mutation });
+  },
+
+  cancelAgentRun(runId: string, mutation?: MutationContext): Promise<{
+    runId: string; status: string; idempotentReplay: boolean;
+  }> {
+    return request(`/agent-runs/${runId}/cancel`, { method: 'POST' }, { write: true, mutation });
+  },
+
+  getSystemHealth(): Promise<SystemHealth> {
+    return request('/system/health');
+  },
+
+  getFeishuStatus(): Promise<FeishuConnection> {
+    return request('/integrations/feishu/status');
+  },
+
+  reconnectFeishu(mutation?: MutationContext): Promise<{ accepted: boolean }> {
+    return request('/integrations/feishu/reconnect', { method: 'POST' }, { write: true, mutation });
+  },
+
+  reconcileFeishu(windowMinutes: number, mutation?: MutationContext): Promise<{
+    status: string; windowMinutes: number; ingested: number; duplicates: number; message: string;
+  }> {
+    return request('/integrations/feishu/reconcile', {
+      method: 'POST', body: JSON.stringify({ windowMinutes }),
+    }, { write: true, mutation });
+  },
+
+  recoverPendingJobs(mutation?: MutationContext): Promise<{
+    missingRunsRequeued: number; staleRunsRequeued: number; deadLettered: number; idempotentReplay: boolean;
+  }> {
+    return request('/system/recover-pending-jobs', { method: 'POST' }, { write: true, mutation });
+  },
+
+  listOutboxDeadLetters(): Promise<Array<{
+    id: string;
+    originalEventId: string;
+    eventType: string;
+    aggregateType: string;
+    aggregateId: string;
+    correlationId: string;
+    attempts: number;
+    lastError: string;
+    failedAt: string;
+    requeuedAt: string | null;
+    requeuedEventId: string | null;
+  }>> {
+    return request('/system/outbox/dead-letters?limit=100');
+  },
+
+  requeueOutboxDeadLetter(deadLetterId: string, mutation?: MutationContext): Promise<{
+    deadLetterId: string;
+    outboxEventId: string;
+    idempotentReplay: boolean;
+  }> {
+    return request(`/system/outbox/dead-letters/${deadLetterId}/requeue`, {
+      method: 'POST',
+    }, { write: true, mutation });
   },
 
   listMatters(): Promise<LegalMatter[]> {

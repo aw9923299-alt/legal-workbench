@@ -12,6 +12,7 @@ from legal_workbench.domain.enums import (
     AgentRunStatus,
     AttachmentDownloadStatus,
     BusinessImpact,
+    CandidateResolutionAction,
     CandidateStatus,
     CommunicationChannel,
     CommunicationStatus,
@@ -168,6 +169,36 @@ class MessageCandidate:
         self.status = CandidateStatus.CONFIRMED
         self.confirmed_by = actor_id
         self.confirmed_at = utc_now()
+
+    def resolve(
+        self,
+        *,
+        action: CandidateResolutionAction,
+        actor_id: str,
+        expected_version: int,
+    ) -> None:
+        if self.version != expected_version:
+            raise EntityVersionConflictError(
+                "The message candidate was changed by another operation.",
+                details={"expectedVersion": expected_version, "actualVersion": self.version},
+            )
+        if self.status not in {
+            CandidateStatus.PENDING_ANALYSIS,
+            CandidateStatus.PENDING_CONFIRMATION,
+        }:
+            raise InvalidStateTransitionError(
+                "Only a pending candidate can be resolved.",
+                details={"candidateId": str(self.id), "status": self.status.value},
+            )
+        self.status = {
+            CandidateResolutionAction.LINK_EXISTING: CandidateStatus.LINKED,
+            CandidateResolutionAction.UPDATE_EXISTING: CandidateStatus.LINKED,
+            CandidateResolutionAction.INFORMATION_ONLY: CandidateStatus.INFORMATION_ONLY,
+            CandidateResolutionAction.IGNORE: CandidateStatus.IGNORED,
+        }[action]
+        self.confirmed_by = actor_id
+        self.confirmed_at = utc_now()
+        self.version += 1
 
     def replace_pending_analysis(
         self,
@@ -849,6 +880,7 @@ class AgentRun:
             AgentRunStatus.COMPLETED,
             AgentRunStatus.NEEDS_MORE_INFORMATION,
             AgentRunStatus.FAILED,
+            AgentRunStatus.CANCELLED,
         },
         AgentRunStatus.FAILED: {
             AgentRunStatus.QUEUED,

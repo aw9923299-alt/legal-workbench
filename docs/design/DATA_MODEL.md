@@ -43,8 +43,8 @@ interface FeishuMessage {
     | 'candidate_created'
     | 'ignored'
     | 'analysis_failed'
-    | 'dead_letter'
-    | 'unsupported';
+    | 'dead_letter';
+  unsupportedReason?: string;
   contextSnapshotId?: string;
   lastAgentRunId?: string;
   analysisAttempts: number;
@@ -169,6 +169,8 @@ interface MessageCandidate {
 ```
 
 同一 `feishu_message_id` 对 `pending_confirmation/confirmed/linked` 建立部分唯一索引，防止重复有效 Candidate。消息研判结果无论置信度高低都不自动建立 Matter。
+
+`candidate_revisions` 为每次合法分析追加 `revision/agent_run_id/analysis_payload/created_at/superseded_at/superseded_by`。当前 Candidate 可随待确认重分析推进版本，但旧 revision 不修改；已经人工处理的 Candidate 不被重新分析静默覆盖。
 
 ## 2.5 LegalMatter
 
@@ -688,6 +690,12 @@ learning_records
 rule_candidates
 audit_events
 outbox_events
+outbox_dead_letters
+integration_connections
+feishu_message_versions
+feishu_attachments
+agent_run_status_events
+candidate_revisions
 ```
 
 使用 `version` 字段进行乐观锁；异步事件采用事务 Outbox，避免数据库提交成功但队列消息丢失。

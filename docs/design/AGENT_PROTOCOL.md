@@ -468,3 +468,7 @@ draft → trial → active → paused → retired
 - Celery任务只传递ID和版本，不传递完整合同正文；
 - 应用服务从 PostgreSQL 读取授权快照，提交准备事务后由 Runtime 在独立目录组装输入；
 - 输出先通过 Pydantic 和业务规则校验；消息研判创建 MessageCandidate，后续专业 Agent 创建 DraftArtifact。
+- 首次输出校验失败只允许基于同一 ContextSnapshot 和错误摘要修复一次；不使用正则或手工拼接修 JSON；
+- AgentRun 每次领域状态迁移追加事件；API 返回前对 stdout/stderr 常见 Token/API Key 格式脱敏，并隐藏宿主运行目录前缀；
+- 页面显示 Prompt/Runtime/AgentDefinition 版本、授权来源、租约、校验错误和 Candidate 修订，但不允许通过页面注入任意 Shell、网络或文件权限；
+- `cancel` 是确定性状态门禁：取消后即使外部进程稍后返回，结果也不得创建 Candidate；`retry` 创建新的可审计尝试，不覆盖历史 Run。

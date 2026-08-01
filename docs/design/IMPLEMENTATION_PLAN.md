@@ -60,7 +60,7 @@ legal-workbench/
 
 验收：空库可升级；重复请求不重复建单；version冲突返回409；Outbox与业务写入原子提交。
 
-## 阶段2：候选确认API与前端（创建事项路径已完成）
+## 阶段2：候选确认API与前端（核心闭环已完成）
 
 已完成：
 
@@ -74,8 +74,12 @@ legal-workbench/
 - 一条Candidate生成多个WorkItem；
 - 优先级和完成时间确认；
 - 前端 API 查询层与消息研判相关加载/错误/重试状态。
+- 统一 `resolve` API 支持关联、登记更新、仅供知悉和忽略，所有动作保留人工身份、幂等和审计；
+- React Router + TanStack Query 的 AI 收件箱、消息详情、AgentRun 列表/详情和系统状态页；
+- SSE 五类事件、断线退避和有限轮询回退；
+- Candidate 分析版本对比、人工创建/关联 Matter 和死信恢复操作。
 
-尚未完成：候选关联/更新/知悉/忽略的全部独立确认 API；前端仍保留与本闭环无关的演示数据。
+部分实现：`update_existing` 当前登记 Candidate 与既有 Matter 的更新关系，不直接修改事项字段；与本闭环无关的旧页面仍可能保留演示数据。
 
 验收：刷新可恢复；人工确认值不被自动覆盖；端到端测试覆盖主流程。
 
@@ -112,7 +116,7 @@ legal-workbench/
 - Codex CLI 版本/隔离认证健康检查、Prompt 注入边界和一次 Schema 修复重试；
 - AgentRun 心跳、租约、只追加状态历史、超时、尝试、错误分类、指数退避和死信；
 - Candidate revision 历史及 Redis/Worker 丢失后的 PostgreSQL 定时恢复；
-- 收件箱和 AgentRun 详情。
+- 收件箱、消息详情、AgentRun 运行中心、系统状态及人工处理闭环。
 
 已通过模拟验证：11 类消息 Fake Runtime + PostgreSQL 冒烟、Prompt 注入、截断、输出修复、Candidate revision、队列/租约/死信恢复和 0006 迁移往返。
 

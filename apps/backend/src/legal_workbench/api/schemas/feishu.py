@@ -4,6 +4,7 @@ from uuid import UUID
 from pydantic import Field
 
 from legal_workbench.api.schemas.base import ApiModel
+from legal_workbench.domain.enums import AgentRunStatus, CandidateStatus, FeishuMessageStatus
 
 
 class FeishuEventIngestedResponse(ApiModel):
@@ -42,3 +43,79 @@ class ReconcileResponse(ApiModel):
 
 class OperationAcceptedResponse(ApiModel):
     accepted: bool = True
+
+
+class FeishuMessageSummaryResponse(ApiModel):
+    id: UUID
+    message_id: str
+    tenant_key: str | None
+    chat_id: str | None
+    thread_id: str | None
+    parent_message_id: str | None
+    root_message_id: str | None
+    sender_id: str | None
+    sender_type: str | None
+    message_type: str
+    plain_text: str | None
+    sent_at: datetime | None
+    edited_at: datetime | None
+    recalled_at: datetime | None
+    status: FeishuMessageStatus
+    unsupported_reason: str | None
+    analysis_attempts: int
+    failure_code: str | None
+    failure_message: str | None
+    agent_run_id: UUID | None
+    agent_status: AgentRunStatus | None
+    candidate_id: UUID | None
+    candidate_status: CandidateStatus | None
+    confidence: float | None
+    suggested_category: str | None
+    suggested_deadline: str | None
+
+
+class FeishuMessageVersionResponse(ApiModel):
+    id: UUID
+    revision: int
+    event_id: UUID
+    plain_text: str
+    structured_content: dict[str, object]
+    attachments: list[dict[str, object]]
+    content_hash: str
+    edited_at: datetime | None
+    recalled_at: datetime | None
+    is_recalled: bool
+    created_at: datetime
+
+
+class FeishuAttachmentResponse(ApiModel):
+    id: UUID
+    file_key: str
+    file_name: str
+    mime_type: str | None
+    size: int | None
+    sha256: str | None
+    local_path: str | None
+    download_status: str
+    download_error: str | None
+    authorized_for_analysis: bool
+
+
+class CandidateRevisionResponse(ApiModel):
+    id: UUID
+    candidate_id: UUID
+    revision: int
+    agent_run_id: UUID
+    analysis_payload: dict[str, object]
+    created_at: datetime
+    superseded_at: datetime | None
+    superseded_by: UUID | None
+
+
+class FeishuMessageDetailResponse(FeishuMessageSummaryResponse):
+    structured_content: dict[str, object]
+    raw_payload: dict[str, object]
+    context_messages: list[FeishuMessageSummaryResponse]
+    versions: list[FeishuMessageVersionResponse]
+    attachments: list[FeishuAttachmentResponse]
+    candidate_revisions: list[CandidateRevisionResponse]

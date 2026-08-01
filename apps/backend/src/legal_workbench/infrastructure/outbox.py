@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -15,7 +16,9 @@ from legal_workbench.domain.enums import CommunicationStatus
 from legal_workbench.infrastructure.celery_app import celery_app
 from legal_workbench.infrastructure.database import get_session_factory
 from legal_workbench.infrastructure.models import (
+    AuditEventModel,
     CommunicationModel,
+    IdempotencyRecordModel,
     OutboxDeadLetterModel,
     OutboxEventModel,
 )
@@ -33,6 +36,12 @@ class ClaimedOutboxEvent:
     payload: dict[str, object]
     correlation_id: str
     attempts: int
+
+
+@dataclass(frozen=True, slots=True)
+class RequeuedDeadLetter:
+    outbox_event_id: UUID
+    idempotent_replay: bool
 
 
 class UnsupportedOutboxEventError(RuntimeError):
@@ -104,11 +113,36 @@ class OutboxDispatcher:
             )
             return list((await session.execute(statement)).scalars().all())
 
-    async def requeue_dead_letter(self, dead_letter_id: UUID) -> UUID:
+    async def requeue_dead_letter(
+        self,
+        dead_letter_id: UUID,
+        *,
+        actor_id: str,
+        actor_source: str,
+        correlation_id: str,
+        idempotency_key: str,
+    ) -> RequeuedDeadLetter:
+        operation = f"requeue_outbox_dead_letter:{dead_letter_id}"
+        request_hash = hashlib.sha256(str(dead_letter_id).encode()).hexdigest()
         async with self._session_factory() as session, session.begin():
-            record = await session.get(OutboxDeadLetterModel, dead_letter_id, with_for_update=True)
+            record = await session.get(
+                OutboxDeadLetterModel, dead_letter_id, with_for_update=True
+            )
             if record is None:
                 raise LookupError("Outbox dead letter was not found.")
+            existing = await session.scalar(
+                select(IdempotencyRecordModel)
+                .where(
+                    IdempotencyRecordModel.operation == operation,
+                    IdempotencyRecordModel.idempotency_key == idempotency_key,
+                )
+                .with_for_update()
+            )
+            if existing is not None:
+                return RequeuedDeadLetter(
+                    outbox_event_id=UUID(str(existing.response_payload["outboxEventId"])),
+                    idempotent_replay=True,
+                )
             if record.requeued_at is not None:
                 raise RuntimeError("Outbox dead letter has already been requeued.")
             event_id = uuid4()
@@ -127,7 +161,35 @@ class OutboxDispatcher:
             )
             record.requeued_at = datetime.now(UTC)
             record.requeued_event_id = event_id
-            return event_id
+            response_payload: dict[str, object] = {
+                "deadLetterId": str(dead_letter_id),
+                "outboxEventId": str(event_id),
+            }
+            session.add(
+                AuditEventModel(
+                    id=uuid4(),
+                    aggregate_type="outbox_dead_letter",
+                    aggregate_id=dead_letter_id,
+                    event_type="outbox_dead_letter_requeued",
+                    actor_id=actor_id,
+                    actor_source=actor_source,
+                    payload=response_payload,
+                    correlation_id=correlation_id,
+                )
+            )
+            session.add(
+                IdempotencyRecordModel(
+                    id=uuid4(),
+                    operation=operation,
+                    idempotency_key=idempotency_key,
+                    request_hash=request_hash,
+                    response_payload=response_payload,
+                )
+            )
+            return RequeuedDeadLetter(
+                outbox_event_id=event_id,
+                idempotent_replay=False,
+            )
 
     async def _claim_batch(self) -> list[ClaimedOutboxEvent]:
         now = datetime.now(UTC)
@@ -321,6 +383,7 @@ OUTBOX_HANDLERS: dict[str, OutboxHandler] = {
     "FeishuMessageAnalysisRequested": _handle_feishu_message,
     "LegalMatterCreated": _handle_internal_notification,
     "MessageCandidateCreated": _handle_internal_notification,
+    "MessageCandidateResolved": _handle_internal_notification,
     "WorkItemCreated": _handle_internal_notification,
     "ReviewPackageCreated": _handle_internal_notification,
     "ReviewPackageReviewed": _handle_internal_notification,

@@ -17,6 +17,7 @@ from legal_workbench.domain.enums import (
     IntegrationConnectionMode,
     IntegrationConnectionStatus,
 )
+from legal_workbench.domain.errors import InvalidStateTransitionError
 from legal_workbench.integrations.feishu_client import FeishuApiClient, FeishuApiError
 from legal_workbench.integrations.feishu_event_sources import (
     EventSourceHealth,
@@ -104,6 +105,10 @@ class FeishuOperationsService:
     async def request_reconnect(
         self, *, actor_id: str, correlation_id: str, idempotency_key: str
     ) -> None:
+        if not self._settings.enable_real_feishu:
+            raise InvalidStateTransitionError(
+                "Real Feishu integration is disabled; reconnect was not attempted."
+            )
         connection = await self.get_connection()
         connection.status = IntegrationConnectionStatus.STARTING
         connection.last_error_code = "MANUAL_RECONNECT_REQUESTED"
