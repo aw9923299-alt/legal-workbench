@@ -102,12 +102,20 @@ interface ContextSnapshot {
   threadMetadata: Record<string, unknown>;
   permissionSnapshot: Record<string, unknown>;
   content: Record<string, unknown>;
+  builderVersion: string;
+  selectionPolicyVersion: string;
+  currentMessageVersion: number;
+  attachmentVersionHash: string;
+  truncated: boolean;
+  truncationReason?: string;
+  originalSize: number;
+  includedSize: number;
   contentHash: string;
   createdAt: string;
 }
 ```
 
-快照一经创建不可修改。当前消息必选，父消息和同线程最近消息由确定性规则限量选取；附件仅记录元数据。`(source_type, source_id, content_hash)` 唯一，并通过事务级 advisory lock 避免并发重复。
+快照一经创建不可修改。当前消息必选，父消息、根消息和同线程最近消息由确定性规则限量选取；附件仅记录元数据。复用哈希同时包含消息/附件版本、上下文排序、Builder 版本和选择策略版本；消息数、单条字符、总字符和附件数的截断原因及原始/纳入大小均持久化。`(source_type, source_id, content_hash)` 唯一，并通过事务级 advisory lock 避免并发重复。
 
 0004 迁移不会按旧版客户端提供的 `content_hash/source_ids` 合并历史审计行；每条旧快照以自身 UUID 回填 `source_id`，因此重复旧数据仍被完整保留。0003 Candidate 中可能存在的外部 `agent_run_id` 先保存到 `analysis_payload.legacyAgentRunId`，downgrade 时恢复。
 
@@ -388,11 +396,21 @@ interface AgentRun {
   maxAttempts: number;
   failureCode?: string;
   failureMessage?: string;
+  runtimeVersion?: string;
+  agentDefinitionVersion: string;
+  promptVersion: string;
+  validationErrors: string[];
+  repairAttempted: boolean;
+  tokenUsage?: Record<string, number>;
+  workerId?: string;
+  leaseExpiresAt?: string;
   correlationId: string;
   createdBy: string;
   version: number;
 }
 ```
+
+`agent_run_status_events` 对每次领域状态迁移只追加记录时间、前后状态、Correlation ID、尝试次数和失败摘要。`candidate_revisions` 对同一 Candidate 保存递增 revision、AgentRun、完整分析 Payload 与 superseded 关系；迁移 `20260801_0006` 可升降级。
 
 ### 2.12.1 AgentRunSource
 

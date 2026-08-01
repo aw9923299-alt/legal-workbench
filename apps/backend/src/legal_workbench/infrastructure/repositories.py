@@ -2,18 +2,21 @@ from __future__ import annotations
 
 import json
 from collections.abc import Sequence
+from datetime import datetime
 from decimal import Decimal
 from hashlib import sha256
-from uuid import UUID
+from uuid import UUID, uuid4
 
-from sqlalchemy import Select, func, or_, select
+from sqlalchemy import Select, exists, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from legal_workbench.domain.entities import (
     AgentDefinition,
     AgentRun,
     AgentRunSource,
+    AgentRunStatusChange,
     AuditEvent,
+    CandidateRevision,
     Communication,
     ContextSnapshot,
     Deadline,
@@ -41,6 +44,7 @@ from legal_workbench.domain.enums import (
     CandidateStatus,
     CommunicationStatus,
     DeadlineStatus,
+    FeishuMessageStatus,
     MatterCategory,
     ReviewDecision,
     ReviewPackageStatus,
@@ -49,8 +53,10 @@ from legal_workbench.infrastructure.models import (
     AgentDefinitionModel,
     AgentRunModel,
     AgentRunSourceModel,
+    AgentRunStatusEventModel,
     AuditEventModel,
     CandidateMatterLinkModel,
+    CandidateRevisionModel,
     CommunicationModel,
     ContextSnapshotModel,
     DeadlineModel,
@@ -89,6 +95,14 @@ class SqlAlchemyContextSnapshotRepository:
                 permission_snapshot=snapshot.permission_snapshot,
                 generated_at=snapshot.generated_at,
                 content_hash=snapshot.content_hash,
+                builder_version=snapshot.builder_version,
+                selection_policy_version=snapshot.selection_policy_version,
+                current_message_version=snapshot.current_message_version,
+                attachment_version_hash=snapshot.attachment_version_hash,
+                truncated=snapshot.truncated,
+                truncation_reason=snapshot.truncation_reason,
+                original_size=snapshot.original_size,
+                included_size=snapshot.included_size,
                 source_id=(
                     snapshot.source_id
                     or (snapshot.source_ids[0] if snapshot.source_ids else str(snapshot.id))
@@ -133,6 +147,14 @@ class SqlAlchemyContextSnapshotRepository:
             attachment_ids=model.attachment_ids,
             thread_metadata=model.thread_metadata,
             content=model.content,
+            builder_version=model.builder_version,
+            selection_policy_version=model.selection_policy_version,
+            current_message_version=model.current_message_version,
+            attachment_version_hash=model.attachment_version_hash,
+            truncated=model.truncated,
+            truncation_reason=model.truncation_reason,
+            original_size=model.original_size,
+            included_size=model.included_size,
             created_at=model.created_at,
         )
 
@@ -253,6 +275,56 @@ class SqlAlchemyMessageCandidateRepository:
         )
         model = (await self._session.execute(statement)).scalar_one_or_none()
         return None if model is None else self._to_domain(model)
+
+    async def append_revision(self, revision: CandidateRevision) -> None:
+        self._session.add(
+            CandidateRevisionModel(
+                id=revision.id,
+                candidate_id=revision.candidate_id,
+                revision=revision.revision,
+                agent_run_id=revision.agent_run_id,
+                analysis_payload=revision.analysis_payload,
+                created_at=revision.created_at,
+                superseded_at=revision.superseded_at,
+                superseded_by=revision.superseded_by,
+            )
+        )
+        # The self-referential FK is checked immediately, so persist the new
+        # revision before pointing the prior current revision at it.
+        await self._session.flush()
+        await self._session.execute(
+            update(CandidateRevisionModel)
+            .where(
+                CandidateRevisionModel.candidate_id == revision.candidate_id,
+                CandidateRevisionModel.id != revision.id,
+                CandidateRevisionModel.superseded_at.is_(None),
+            )
+            .values(
+                superseded_at=revision.created_at,
+                superseded_by=revision.id,
+            )
+        )
+
+    async def list_revisions(self, candidate_id: UUID) -> Sequence[CandidateRevision]:
+        statement = (
+            select(CandidateRevisionModel)
+            .where(CandidateRevisionModel.candidate_id == candidate_id)
+            .order_by(CandidateRevisionModel.revision.desc())
+        )
+        models = (await self._session.execute(statement)).scalars().all()
+        return [
+            CandidateRevision(
+                id=model.id,
+                candidate_id=model.candidate_id,
+                revision=model.revision,
+                agent_run_id=model.agent_run_id,
+                analysis_payload=model.analysis_payload,
+                created_at=model.created_at,
+                superseded_at=model.superseded_at,
+                superseded_by=model.superseded_by,
+            )
+            for model in models
+        ]
 
     @staticmethod
     def _to_domain(model: MessageCandidateModel) -> MessageCandidate:
@@ -375,12 +447,34 @@ class SqlAlchemyAgentRunRepository:
             failure_message=run.failure_message,
             correlation_id=run.correlation_id,
             created_by=run.created_by,
+            runtime_version=run.runtime_version,
+            agent_definition_version=run.agent_definition_version,
+            prompt_version=run.prompt_version,
+            validation_errors=run.validation_errors,
+            repair_attempted=run.repair_attempted,
+            token_usage=run.token_usage,
+            worker_id=run.worker_id,
+            lease_expires_at=run.lease_expires_at,
             created_at=run.created_at,
             updated_at=run.updated_at,
             version=run.version,
         )
         self._tracked[run.id] = model
         self._session.add(model)
+        self._session.add(
+            AgentRunStatusEventModel(
+                id=uuid4(),
+                agent_run_id=run.id,
+                from_status=None,
+                to_status=run.status,
+                changed_at=run.created_at,
+                correlation_id=run.correlation_id,
+                attempt_number=run.attempt_number,
+                failure_code=run.failure_code,
+                failure_message=run.failure_message,
+            )
+        )
+        run.drain_status_changes()
 
     async def get(self, run_id: UUID) -> AgentRun | None:
         model = await self._session.get(AgentRunModel, run_id)
@@ -416,8 +510,32 @@ class SqlAlchemyAgentRunRepository:
         model.attempt_number = run.attempt_number
         model.failure_code = run.failure_code
         model.failure_message = run.failure_message
+        model.runtime_version = run.runtime_version
+        model.agent_definition_version = run.agent_definition_version
+        model.prompt_version = run.prompt_version
+        model.validation_errors = run.validation_errors
+        model.repair_attempted = run.repair_attempted
+        model.token_usage = run.token_usage
+        model.worker_id = run.worker_id
+        model.lease_expires_at = run.lease_expires_at
         model.updated_at = run.updated_at
         model.version = run.version
+        self._session.add_all(
+            [
+                AgentRunStatusEventModel(
+                    id=change.id,
+                    agent_run_id=change.agent_run_id,
+                    from_status=change.from_status,
+                    to_status=change.to_status,
+                    changed_at=change.changed_at,
+                    correlation_id=change.correlation_id,
+                    attempt_number=change.attempt_number,
+                    failure_code=change.failure_code,
+                    failure_message=change.failure_message,
+                )
+                for change in run.drain_status_changes()
+            ]
+        )
 
     async def list(self, *, status: AgentRunStatus | None, limit: int) -> Sequence[AgentRun]:
         statement: Select[tuple[AgentRunModel]] = select(AgentRunModel)
@@ -434,6 +552,59 @@ class SqlAlchemyAgentRunRepository:
             .order_by(AgentRunModel.created_at.desc())
         )
         models = (await self._session.execute(statement)).scalars().all()
+        return [self._to_domain(model) for model in models]
+
+    async def list_status_events(
+        self, run_id: UUID
+    ) -> Sequence[AgentRunStatusChange]:
+        statement = (
+            select(AgentRunStatusEventModel)
+            .where(AgentRunStatusEventModel.agent_run_id == run_id)
+            .order_by(
+                AgentRunStatusEventModel.changed_at,
+                AgentRunStatusEventModel.id,
+            )
+        )
+        models = (await self._session.execute(statement)).scalars().all()
+        return [
+            AgentRunStatusChange(
+                id=model.id,
+                agent_run_id=model.agent_run_id,
+                from_status=model.from_status,
+                to_status=model.to_status,
+                changed_at=model.changed_at,
+                correlation_id=model.correlation_id,
+                attempt_number=model.attempt_number,
+                failure_code=model.failure_code,
+                failure_message=model.failure_message,
+            )
+            for model in models
+        ]
+
+    async def list_stale(
+        self,
+        *,
+        statuses: Sequence[AgentRunStatus],
+        older_than: datetime,
+        limit: int,
+    ) -> Sequence[AgentRun]:
+        statement = (
+            select(AgentRunModel)
+            .where(
+                AgentRunModel.status.in_(list(statuses)),
+                func.coalesce(
+                    AgentRunModel.heartbeat_at,
+                    AgentRunModel.updated_at,
+                )
+                < older_than,
+            )
+            .order_by(AgentRunModel.updated_at)
+            .limit(limit)
+            .with_for_update(skip_locked=True)
+        )
+        models = (await self._session.execute(statement)).scalars().all()
+        for model in models:
+            self._tracked[model.id] = model
         return [self._to_domain(model) for model in models]
 
     @staticmethod
@@ -461,6 +632,14 @@ class SqlAlchemyAgentRunRepository:
             max_attempts=model.max_attempts,
             failure_code=model.failure_code,
             failure_message=model.failure_message,
+            runtime_version=model.runtime_version,
+            agent_definition_version=model.agent_definition_version,
+            prompt_version=model.prompt_version,
+            validation_errors=model.validation_errors,
+            repair_attempted=model.repair_attempted,
+            token_usage=model.token_usage,
+            worker_id=model.worker_id,
+            lease_expires_at=model.lease_expires_at,
             correlation_id=model.correlation_id,
             created_by=model.created_by,
             created_at=model.created_at,
@@ -1275,6 +1454,37 @@ class SqlAlchemyFeishuRepository:
             self._tracked_messages[model.id] = model
         return [self._message_to_domain(model) for model in models]
 
+    async def list_queued_without_active_run(
+        self, *, limit: int
+    ) -> Sequence[FeishuMessage]:
+        active_run_exists = exists(
+            select(AgentRunModel.id).where(
+                AgentRunModel.feishu_message_id == FeishuMessageModel.id,
+                AgentRunModel.status.in_(
+                    [
+                        AgentRunStatus.QUEUED,
+                        AgentRunStatus.PREPARING,
+                        AgentRunStatus.RUNNING,
+                        AgentRunStatus.VALIDATING,
+                    ]
+                ),
+            )
+        )
+        statement = (
+            select(FeishuMessageModel)
+            .where(
+                FeishuMessageModel.status == FeishuMessageStatus.QUEUED_FOR_ANALYSIS,
+                ~active_run_exists,
+            )
+            .order_by(FeishuMessageModel.updated_at)
+            .limit(limit)
+            .with_for_update(skip_locked=True)
+        )
+        models = (await self._session.execute(statement)).scalars().all()
+        for model in models:
+            self._tracked_messages[model.id] = model
+        return [self._message_to_domain(model) for model in models]
+
     async def save_message(self, message: FeishuMessage) -> None:
         model = self._tracked_messages.get(message.id)
         if model is None:
@@ -1566,6 +1776,17 @@ class SqlAlchemyOutboxEventRepository:
                 occurred_at=event.occurred_at,
             )
         )
+
+    async def exists_pending(self, *, event_type: str, aggregate_id: UUID) -> bool:
+        statement = select(
+            exists().where(
+                OutboxEventModel.event_type == event_type,
+                OutboxEventModel.aggregate_id == aggregate_id,
+                OutboxEventModel.published_at.is_(None),
+                OutboxEventModel.dead_lettered_at.is_(None),
+            )
+        )
+        return bool((await self._session.execute(statement)).scalar_one())
 
 
 class SqlAlchemyIdempotencyRepository:

@@ -16,7 +16,9 @@
 
 ## Codex Runtime
 
-Codex是唯一推理和生成AI。所有业务调用统一经过`CodexCliRuntime`，由 Celery Worker 调用，负责AgentDefinition、提示词版本、单次工作目录、授权来源、工具权限、超时、重试、Schema和审计。当前仅`message_judgement`已实现。
+Codex是唯一推理和生成AI。所有业务调用统一经过`CodexCliRuntime`，由 Celery Worker 调用，负责AgentDefinition、提示词版本、单次工作目录、授权来源、工具权限、超时、重试、Schema和审计。当前仅`message_judgement@2.0.0`已实现。启动前检查固定 CLI 版本、隔离 API Key 和运行目录；正文始终作为不可信业务证据，失败输出最多使用同一 ContextSnapshot 修复一次。
+
+AgentRun、状态事件、Candidate 修订、租约和失败码全部存 PostgreSQL。Celery Beat 定期扫描丢失队列投递与过期租约并重建 Outbox；Redis 不保存唯一业务事实。
 
 业务服务不得直接执行Codex CLI。
 

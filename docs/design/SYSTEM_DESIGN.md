@@ -6,7 +6,7 @@
 
 ### 1.1 实现状态（2026-08-01）
 
-- **已实现**：飞书官方 SDK 长连接/Verification Token Webhook 双入口、原始事件/消息幂等落库、连接状态、消息版本、附件元数据与受控下载、时间窗补偿、Outbox 可靠投递、消息上下文快照、`message_judgement` AgentDefinition/AgentRun/Source、受控 Codex CLI Runtime、结果校验、Candidate 待确认和前端展示。
+- **已实现**：飞书官方 SDK 长连接/Verification Token Webhook 双入口、原始事件/消息幂等落库、连接状态、消息版本、附件元数据与受控下载、时间窗补偿、Outbox 可靠投递、限界且版本化的消息上下文快照、`message_judgement@2.0.0`、Codex 启动健康检查、一次受控输出修复、AgentRun 状态历史/租约、Candidate 修订历史和 PostgreSQL 恢复扫描。
 - **部分实现**：真实飞书凭证未在当前环境联调，Webhook 加密载荷仍拒绝；容器 Runtime 已尽量缩小 OS/环境边界，宿主机模式仍依赖 Codex 只读 sandbox。
 - **占位实现**：`DraftArtifact` 已有通用模型，消息研判主产物仍是 `MessageCandidate`。
 - **尚未实现**：飞书加密 Webhook；知识解析/检索；事项归并、任务规划和专业 Agent；自动外发。
@@ -105,6 +105,7 @@ FeishuMessage
 关系约束：
 
 - 一条消息同时至多存在一个有效候选；人工重新分析保留历史 AgentRun；
+- Redis/Worker 丢失后由 PostgreSQL 中的消息状态、AgentRun 租约与 Outbox 恢复，扫描任务使用 advisory lock；
 - 多条消息可关联一个事项；
 - 一个事项包含多个WorkItem、Deadline、Dependency和AgentRun；
 - Agent只产生DraftArtifact；

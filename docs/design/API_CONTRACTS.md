@@ -113,7 +113,9 @@ GET  /api/v1/feishu/messages/:messageId/analysis
 
 若待确认 Candidate 已存在，重新分析的合法相关结果原位更新其 AgentRun、建议和版本；若新结果为无关，则旧待确认 Candidate 转为 `rejected`，不可继续确认。已由人工确认或关联的 Candidate 不被重新分析覆盖。
 
-`analysis` 返回：飞书消息来源与处理状态、ContextSnapshot 摘要、AgentRun 状态/版本/尝试/心跳/错误、研判 JSON、Candidate ID 与 `canRetry`。AgentRun 详情还返回实际授权来源列表、Prompt 快照和受限 stdout/stderr，用于审计。
+`analysis` 返回：飞书消息来源与处理状态、ContextSnapshot 摘要、AgentRun 状态/版本/尝试/心跳/错误、研判 JSON、Candidate ID 与 `canRetry`。AgentRun 详情还返回实际授权来源列表、Prompt/Runtime/AgentDefinition 版本、状态历史、租约、校验错误、修复标志、可用时的 Token 用量和受限 stdout/stderr，用于审计。Candidate 详情返回递增分析 revision 与 superseded 关系。
+
+`POST /api/v1/system/recover-pending-jobs` 与后台定时任务复用同一 PostgreSQL recovery service；写接口要求 Actor、Idempotency-Key、Correlation ID、权限和审计。恢复操作只重建 Outbox/状态，不在 API 线程运行 Codex。
 
 ## 4. 消息候选接口
 

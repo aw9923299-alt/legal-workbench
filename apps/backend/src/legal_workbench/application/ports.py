@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Sequence
+from datetime import datetime
 from types import TracebackType
 from typing import Protocol
 from uuid import UUID
@@ -9,7 +10,9 @@ from legal_workbench.domain.entities import (
     AgentDefinition,
     AgentRun,
     AgentRunSource,
+    AgentRunStatusChange,
     AuditEvent,
+    CandidateRevision,
     Communication,
     ContextSnapshot,
     Deadline,
@@ -64,6 +67,8 @@ class MessageCandidateRepository(Protocol):
         confirmed_by: str,
     ) -> None: ...
     async def get_active_for_message(self, message_id: UUID) -> MessageCandidate | None: ...
+    async def append_revision(self, revision: CandidateRevision) -> None: ...
+    async def list_revisions(self, candidate_id: UUID) -> Sequence[CandidateRevision]: ...
 
 
 class AgentDefinitionRepository(Protocol):
@@ -79,6 +84,16 @@ class AgentRunRepository(Protocol):
     async def save(self, run: AgentRun) -> None: ...
     async def list(self, *, status: AgentRunStatus | None, limit: int) -> Sequence[AgentRun]: ...
     async def list_by_message(self, message_id: UUID) -> Sequence[AgentRun]: ...
+    async def list_status_events(
+        self, run_id: UUID
+    ) -> Sequence[AgentRunStatusChange]: ...
+    async def list_stale(
+        self,
+        *,
+        statuses: Sequence[AgentRunStatus],
+        older_than: datetime,
+        limit: int,
+    ) -> Sequence[AgentRun]: ...
 
 
 class AgentRunSourceRepository(Protocol):
@@ -178,6 +193,7 @@ class FeishuRepository(Protocol):
         self, message_id: UUID
     ) -> Sequence[FeishuAttachment]: ...
     async def save_attachment(self, attachment: FeishuAttachment) -> None: ...
+    async def list_queued_without_active_run(self, *, limit: int) -> Sequence[FeishuMessage]: ...
     async def get_connection(
         self, *, integration_type: str, connection_mode: object
     ) -> IntegrationConnection | None: ...
@@ -190,6 +206,7 @@ class AuditEventRepository(Protocol):
 
 class OutboxEventRepository(Protocol):
     async def add(self, event: OutboxEvent) -> None: ...
+    async def exists_pending(self, *, event_type: str, aggregate_id: UUID) -> bool: ...
 
 
 class IdempotencyRepository(Protocol):

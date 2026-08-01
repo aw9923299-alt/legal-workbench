@@ -54,7 +54,12 @@ async def _handle_feishu_message(_: OutboxDispatcher, event: ClaimedOutboxEvent)
     celery_app.send_task(
         "feishu.process_message",
         args=[str(event.aggregate_id), actor_id, actor_source, event.correlation_id],
-        kwargs={"force_new_run": bool(event.payload.get("forceNewRun", False))},
+        kwargs={
+            "force_new_run": bool(event.payload.get("forceNewRun", False)),
+            "recover_interrupted_run": bool(
+                event.payload.get("recoverInterruptedRun", False)
+            ),
+        },
         headers={"correlation_id": event.correlation_id},
     )
 

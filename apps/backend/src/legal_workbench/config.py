@@ -60,6 +60,7 @@ class Settings(BaseSettings):
     knowledge_root: str = "/data/knowledge"
     codex_runs_root: str = "/data/codex-runs"
     codex_command: str = "codex"
+    codex_expected_version: str = "0.145.0-alpha.9"
     codex_run_timeout_seconds: int = 900
     codex_sandbox_uid: int | None = None
     codex_sandbox_gid: int | None = None
@@ -83,9 +84,17 @@ class Settings(BaseSettings):
 
     context_max_messages: int = 20
     context_max_text_characters: int = 20000
+    context_max_single_message_characters: int = 8000
+    context_max_attachments: int = 10
+    context_builder_version: str = "2.0.0"
+    context_selection_policy_version: str = "thread-v2"
     message_analysis_manual_review_threshold: float = 0.75
     message_analysis_retry_base_seconds: int = 30
     message_analysis_retry_max_seconds: int = 900
+    agent_run_lease_seconds: int = 60
+    analysis_recovery_interval_seconds: int = 30
+    analysis_recovery_stale_seconds: int = 120
+    analysis_recovery_batch_size: int = 100
 
     @field_validator("codex_sandbox_uid", "codex_sandbox_gid", mode="before")
     @classmethod

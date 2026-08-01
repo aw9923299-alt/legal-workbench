@@ -134,6 +134,28 @@ class ContextSnapshotModel(UuidPrimaryKeyMixin, TimestampMixin, Base):
     )
     generated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    builder_version: Mapped[str] = mapped_column(
+        String(40), nullable=False, default="1.0.0", server_default="1.0.0"
+    )
+    selection_policy_version: Mapped[str] = mapped_column(
+        String(40), nullable=False, default="thread-v1", server_default="thread-v1"
+    )
+    current_message_version: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default="1"
+    )
+    attachment_version_hash: Mapped[str] = mapped_column(
+        String(64), nullable=False, default="", server_default=""
+    )
+    truncated: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=FALSE_DEFAULT
+    )
+    truncation_reason: Mapped[str | None] = mapped_column(Text)
+    original_size: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    included_size: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
 
     candidates: Mapped[list[MessageCandidateModel]] = relationship(
         back_populates="context_snapshot", cascade="all, delete-orphan"
@@ -892,6 +914,72 @@ class AgentRunModel(UuidPrimaryKeyMixin, TimestampMixin, VersionedMixin, Base):
     failure_message: Mapped[str | None] = mapped_column(Text)
     correlation_id: Mapped[str] = mapped_column(String(80), nullable=False)
     created_by: Mapped[str] = mapped_column(String(160), nullable=False)
+    runtime_version: Mapped[str | None] = mapped_column(String(80))
+    agent_definition_version: Mapped[str] = mapped_column(
+        String(40), nullable=False, default="", server_default=""
+    )
+    prompt_version: Mapped[str] = mapped_column(
+        String(40), nullable=False, default="", server_default=""
+    )
+    validation_errors: Mapped[list[str]] = mapped_column(
+        JSONB, nullable=False, default=list, server_default=JSON_EMPTY_LIST
+    )
+    repair_attempted: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=FALSE_DEFAULT
+    )
+    token_usage: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    worker_id: Mapped[str | None] = mapped_column(String(160), index=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), index=True
+    )
+
+
+class AgentRunStatusEventModel(UuidPrimaryKeyMixin, Base):
+    __tablename__ = "agent_run_status_events"
+    __table_args__ = (
+        Index("ix_agent_run_status_events_run_changed", "agent_run_id", "changed_at"),
+    )
+
+    agent_run_id: Mapped[UUID] = mapped_column(
+        ForeignKey("agent_runs.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    from_status: Mapped[AgentRunStatus | None] = mapped_column(
+        enum_type(AgentRunStatus, name="agent_run_from_status", length=32)
+    )
+    to_status: Mapped[AgentRunStatus] = mapped_column(
+        enum_type(AgentRunStatus, name="agent_run_to_status", length=32), nullable=False
+    )
+    changed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    correlation_id: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    attempt_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    failure_code: Mapped[str | None] = mapped_column(String(80))
+    failure_message: Mapped[str | None] = mapped_column(Text)
+
+
+class CandidateRevisionModel(UuidPrimaryKeyMixin, Base):
+    __tablename__ = "candidate_revisions"
+    __table_args__ = (
+        UniqueConstraint(
+            "candidate_id", "revision", name="uq_candidate_revisions_revision"
+        ),
+        Index("ix_candidate_revisions_candidate_created", "candidate_id", "created_at"),
+    )
+
+    candidate_id: Mapped[UUID] = mapped_column(
+        ForeignKey("message_candidates.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    agent_run_id: Mapped[UUID] = mapped_column(
+        ForeignKey("agent_runs.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    analysis_payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    superseded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    superseded_by: Mapped[UUID | None] = mapped_column(
+        ForeignKey("candidate_revisions.id", ondelete="SET NULL")
+    )
 
 
 class AgentRunSourceModel(UuidPrimaryKeyMixin, Base):

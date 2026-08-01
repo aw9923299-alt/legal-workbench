@@ -717,7 +717,40 @@ class ContextSnapshot:
     attachment_ids: list[str] = field(default_factory=list)
     thread_metadata: dict[str, object] = field(default_factory=dict)
     content: dict[str, object] = field(default_factory=dict)
+    builder_version: str = "1.0.0"
+    selection_policy_version: str = "thread-v1"
+    current_message_version: int = 1
+    attachment_version_hash: str = ""
+    truncated: bool = False
+    truncation_reason: str | None = None
+    original_size: int = 0
+    included_size: int = 0
     created_at: datetime = field(default_factory=utc_now)
+
+
+@dataclass(slots=True)
+class AgentRunStatusChange:
+    id: UUID
+    agent_run_id: UUID
+    from_status: AgentRunStatus | None
+    to_status: AgentRunStatus
+    changed_at: datetime
+    correlation_id: str
+    attempt_number: int
+    failure_code: str | None = None
+    failure_message: str | None = None
+
+
+@dataclass(slots=True)
+class CandidateRevision:
+    id: UUID
+    candidate_id: UUID
+    revision: int
+    agent_run_id: UUID
+    analysis_payload: dict[str, object]
+    created_at: datetime = field(default_factory=utc_now)
+    superseded_at: datetime | None = None
+    superseded_by: UUID | None = None
 
 
 @dataclass(slots=True)
@@ -781,9 +814,20 @@ class AgentRun:
     timeout_at: datetime | None = None
     failure_code: str | None = None
     failure_message: str | None = None
+    runtime_version: str | None = None
+    agent_definition_version: str = ""
+    prompt_version: str = ""
+    validation_errors: list[str] = field(default_factory=list)
+    repair_attempted: bool = False
+    token_usage: dict[str, int] | None = None
+    worker_id: str | None = None
+    lease_expires_at: datetime | None = None
     created_at: datetime = field(default_factory=utc_now)
     updated_at: datetime = field(default_factory=utc_now)
     version: int = 1
+    pending_status_changes: list[AgentRunStatusChange] = field(
+        default_factory=list, repr=False
+    )
 
     _TRANSITIONS: ClassVar[dict[AgentRunStatus, set[AgentRunStatus]]] = {
         AgentRunStatus.QUEUED: {
@@ -833,7 +877,8 @@ class AgentRun:
             raise DomainValidationError("Agent prompt snapshot is required.")
 
     def transition_to(self, target: AgentRunStatus, *, now: datetime | None = None) -> None:
-        if target not in self._TRANSITIONS[self.status]:
+        previous_status = self.status
+        if target not in self._TRANSITIONS[previous_status]:
             raise InvalidStateTransitionError(
                 f"AgentRun cannot transition from {self.status.value} to {target.value}."
             )
@@ -850,6 +895,24 @@ class AgentRun:
             self.finished_at = changed_at
         self.updated_at = changed_at
         self.version += 1
+        self.pending_status_changes.append(
+            AgentRunStatusChange(
+                id=uuid4(),
+                agent_run_id=self.id,
+                from_status=previous_status,
+                to_status=target,
+                changed_at=changed_at,
+                correlation_id=self.correlation_id,
+                attempt_number=self.attempt_number,
+                failure_code=self.failure_code,
+                failure_message=self.failure_message,
+            )
+        )
+
+    def drain_status_changes(self) -> list[AgentRunStatusChange]:
+        changes = list(self.pending_status_changes)
+        self.pending_status_changes.clear()
+        return changes
 
     def heartbeat(self, *, now: datetime | None = None) -> None:
         if self.status not in {AgentRunStatus.PREPARING, AgentRunStatus.RUNNING}:

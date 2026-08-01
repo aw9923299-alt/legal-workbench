@@ -23,6 +23,7 @@ from legal_workbench.domain.entities import (
     AgentRun,
     AgentRunSource,
     AuditEvent,
+    CandidateRevision,
     ContextSnapshot,
     FeishuMessage,
     MessageCandidate,
@@ -206,6 +207,20 @@ class CandidateRepository:
             None,
         )
 
+    async def append_revision(self, revision: CandidateRevision) -> None:
+        for existing in self.state.candidate_revisions:
+            if existing.candidate_id == revision.candidate_id and existing.superseded_at is None:
+                existing.superseded_at = revision.created_at
+                existing.superseded_by = revision.id
+        self.state.candidate_revisions.append(revision)
+
+    async def list_revisions(self, candidate_id: UUID) -> Sequence[CandidateRevision]:
+        return [
+            value
+            for value in self.state.candidate_revisions
+            if value.candidate_id == candidate_id
+        ]
+
 
 class AppendRepository:
     def __init__(self, values: list[object]) -> None:
@@ -254,6 +269,7 @@ class FakeState:
         self.runs: dict[UUID, AgentRun] = {}
         self.sources: list[AgentRunSource] = []
         self.candidates: dict[UUID, MessageCandidate] = {}
+        self.candidate_revisions: list[CandidateRevision] = []
         self.audit_events: list[object] = []
         self.outbox_events: list[object] = []
         self.locks: list[tuple[str, str]] = []
@@ -332,6 +348,7 @@ async def test_valid_output_commits_before_runtime_and_creates_candidate(tmp_pat
     assert run.input_payload == {"fakeRuntime": True}
     assert run.working_directory == str(state.output_path.parent)
     assert state.messages[message.id].status == FeishuMessageStatus.CANDIDATE_CREATED
+    assert len(state.candidate_revisions) == 1
     assert any(isinstance(event, AuditEvent) for event in state.audit_events)
     assert any(isinstance(event, OutboxEvent) for event in state.outbox_events)
 
@@ -408,6 +425,8 @@ async def test_reanalysis_that_becomes_irrelevant_rejects_pending_candidate(tmp_
     assert state.candidates[first.candidate_id].status == CandidateStatus.REJECTED
     assert state.messages[message.id].status == FeishuMessageStatus.IGNORED
     assert len(state.runs) == 2
+    assert len(state.candidate_revisions) == 2
+    assert state.candidate_revisions[0].superseded_by == state.candidate_revisions[1].id
 
 
 @pytest.mark.asyncio

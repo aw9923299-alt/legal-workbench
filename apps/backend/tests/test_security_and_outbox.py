@@ -200,3 +200,4 @@ def test_message_analysis_api_contracts_are_registered() -> None:
     assert "/api/v1/integrations/feishu/status" in paths
     assert "/api/v1/integrations/feishu/reconnect" in paths
     assert "/api/v1/integrations/feishu/reconcile" in paths
+    assert "/api/v1/system/health" in paths

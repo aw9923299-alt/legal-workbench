@@ -24,12 +24,13 @@ from legal_workbench.agents.runtime import (
     AgentRuntimeError,
 )
 from legal_workbench.application.context_snapshots import ContextSnapshotBuilder
-from legal_workbench.application.ports import UnitOfWorkFactory
+from legal_workbench.application.ports import UnitOfWork, UnitOfWorkFactory
 from legal_workbench.domain.entities import (
     AgentDefinition,
     AgentRun,
     AgentRunSource,
     AuditEvent,
+    CandidateRevision,
     ContextSnapshot,
     IdempotencyRecord,
     MessageCandidate,
@@ -59,6 +60,7 @@ class AnalyseFeishuMessageCommand:
     correlation_id: str
     force_new_run: bool = False
     recover_interrupted_run: bool = False
+    worker_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -216,6 +218,7 @@ class AnalyseFeishuMessageHandler:
         runs_root: str | Path,
         manual_review_threshold: float,
         default_definition: AgentDefinition | None = None,
+        lease_seconds: int = 30,
     ) -> None:
         self._uow_factory = uow_factory
         self._runtime = runtime
@@ -223,6 +226,7 @@ class AnalyseFeishuMessageHandler:
         self._runs_root = Path(runs_root)
         self._manual_review_threshold = manual_review_threshold
         self._default_definition = default_definition or build_message_judgement_definition()
+        self._lease_seconds = lease_seconds
 
     async def execute(self, command: AnalyseFeishuMessageCommand) -> AnalyseFeishuMessageResult:
         try:
@@ -288,6 +292,10 @@ class AnalyseFeishuMessageHandler:
             execution.raw_stderr,
             run.input_payload,
             run.working_directory,
+            runtime_version=execution.runtime_version,
+            validation_errors=list(execution.validation_errors),
+            repair_attempted=execution.repair_attempted,
+            token_usage=execution.token_usage,
         )
 
     async def prepare(self, command: AnalyseFeishuMessageCommand) -> PreparedAnalysis:
@@ -514,6 +522,11 @@ class AnalyseFeishuMessageHandler:
                 timeout_at=datetime.now(UTC) + timedelta(seconds=definition.timeout_seconds),
                 correlation_id=command.correlation_id,
                 created_by=command.actor_id,
+                agent_definition_version=definition.version,
+                prompt_version=definition.version,
+                worker_id=command.worker_id,
+                lease_expires_at=datetime.now(UTC)
+                + timedelta(seconds=self._lease_seconds),
             )
             await uow.agent_runs.add(run)
             await uow.agent_run_sources.add_many(self._sources(run, snapshot))
@@ -560,6 +573,10 @@ class AnalyseFeishuMessageHandler:
                 )
             run.transition_to(AgentRunStatus.PREPARING)
             run.transition_to(AgentRunStatus.RUNNING)
+            run.worker_id = command.worker_id or run.worker_id
+            run.lease_expires_at = datetime.now(UTC) + timedelta(
+                seconds=self._lease_seconds
+            )
             message.transition_to(FeishuMessageStatus.ANALYSING)
             await uow.agent_runs.save(run)
             await uow.feishu.save_message(message)
@@ -584,6 +601,9 @@ class AnalyseFeishuMessageHandler:
             if run is None:
                 return
             run.heartbeat()
+            run.lease_expires_at = datetime.now(UTC) + timedelta(
+                seconds=self._lease_seconds
+            )
             await uow.agent_runs.save(run)
             await uow.commit()
 
@@ -597,6 +617,10 @@ class AnalyseFeishuMessageHandler:
         raw_stderr: str,
         input_payload: dict[str, object],
         working_directory: str,
+        runtime_version: str | None,
+        validation_errors: list[str],
+        repair_attempted: bool,
+        token_usage: dict[str, int] | None,
     ) -> AnalyseFeishuMessageResult:
         from legal_workbench.agents.message_judgement import MessageJudgementResult
 
@@ -616,6 +640,11 @@ class AnalyseFeishuMessageHandler:
             run.working_directory = working_directory
             run.failure_code = None
             run.failure_message = None
+            run.runtime_version = runtime_version
+            run.validation_errors = validation_errors
+            run.repair_attempted = repair_attempted
+            run.token_usage = token_usage
+            run.lease_expires_at = None
             run.transition_to(AgentRunStatus.COMPLETED)
             candidate_id: UUID | None = None
             existing = await uow.candidates.get_active_for_message(message.id)
@@ -721,6 +750,14 @@ class AnalyseFeishuMessageHandler:
                     message.transition_to(FeishuMessageStatus.CANDIDATE_CREATED)
                 else:
                     message.transition_to(FeishuMessageStatus.IGNORED)
+            revision_candidate_id = existing.id if existing is not None else candidate_id
+            if revision_candidate_id is not None:
+                await self._append_candidate_revision(
+                    uow,
+                    candidate_id=revision_candidate_id,
+                    agent_run_id=run.id,
+                    analysis_payload=output_payload,
+                )
             await uow.agent_runs.save(run)
             await uow.feishu.save_message(message)
             await uow.audit_events.add(
@@ -749,6 +786,28 @@ class AnalyseFeishuMessageHandler:
                 idempotent_replay=False,
             )
 
+    @staticmethod
+    async def _append_candidate_revision(
+        uow: UnitOfWork,
+        *,
+        candidate_id: UUID,
+        agent_run_id: UUID,
+        analysis_payload: dict[str, object],
+    ) -> None:
+        existing_revisions = await uow.candidates.list_revisions(candidate_id)
+        revision_number = (
+            max((value.revision for value in existing_revisions), default=0) + 1
+        )
+        await uow.candidates.append_revision(
+            CandidateRevision(
+                id=uuid4(),
+                candidate_id=candidate_id,
+                revision=revision_number,
+                agent_run_id=agent_run_id,
+                analysis_payload=analysis_payload,
+            )
+        )
+
     async def _persist_failure(
         self,
         run_id: UUID,
@@ -771,6 +830,9 @@ class AnalyseFeishuMessageHandler:
             run.working_directory = working_directory
             run.failure_code = error.code
             run.failure_message = str(error)[:4000]
+            run.validation_errors = list(error.validation_errors)
+            run.repair_attempted = error.repair_attempted
+            run.lease_expires_at = None
             target = {
                 "AGENT_RUNTIME_TIMEOUT": AgentRunStatus.TIMED_OUT,
                 "AGENT_RUNTIME_CANCELLED": AgentRunStatus.CANCELLED,

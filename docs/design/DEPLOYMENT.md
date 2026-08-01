@@ -101,7 +101,8 @@ Codex Runner：
 - 超时先终止再强杀；
 - stdout/stderr、退出码和Schema结果写入技术日志；
 - 失败不得生成正式Artifact；
-- 运行租约过期后标记abandoned并人工或自动恢复。
+- `queued` 超时后重建 Outbox；`preparing/running` 租约过期后以 `AGENT_LEASE_EXPIRED` 标记失败并自动重试，耗尽进入 `dead_letter`；
+- Celery Beat 默认每 30 秒使用 PostgreSQL advisory lock 扫描，Redis 清空后仍可从事实表恢复。
 
 ## 9. 健康检查
 

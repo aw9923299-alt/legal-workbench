@@ -38,9 +38,22 @@ FeishuEvent → FeishuMessage → FeishuMessageReceived Outbox
 - 前端显示 Agent 版本、状态、理由、置信度、已确认事实、推断、期限候选和缺失信息；
 - 一次前端业务操作在自动网络重试和用户再次点击间，通过 `sessionStorage` 复用同一 `Idempotency-Key`，直到明确响应、请求内容变化或用户取消。
 
+## 阶段二增量结果：Codex 消息解析加固
+
+- **已实现**：CLI 存在性、固定版本、隔离认证和运行目录可写检查，健康状态区分 `available/unauthenticated/version_mismatch/misconfigured/unreachable`，不把“已安装”当作可推理；
+- **已实现**：ContextSnapshot v2 将当前/父/根/线程消息、参与者、附件元数据、消息版本、Builder/选择策略版本、内容哈希和截断指标持久化，创建后不可修改；
+- **已实现**：AgentRun 的 `queued → preparing → running → validating → completed/failed` 每次迁移追加状态事件，并记录 Worker、租约、Runtime/Agent/Prompt 版本、校验错误、修复次数和可用时的 Token 用量；
+- **已实现**：飞书正文被标记为不可信业务证据；Prompt 明确禁止执行消息命令、Shell、环境变量读取、未授权文件读取、数据库修改、飞书回复和自动建 Matter；
+- **已实现**：JSON、Pydantic 和业务规则失败后最多使用同一快照修复一次；第二次失败不创建 Candidate，禁止正则或手工拼接修 JSON；
+- **已实现**：`candidate_revisions` 保存每次分析 Payload、Run、修订号和 superseded 关系；重新分析不再无痕覆盖；
+- **已实现**：PostgreSQL 恢复服务扫描无活动 Run 的排队消息、陈旧 queued Run 和过期 preparing/running 租约，通过 Outbox 重派，耗尽后进入 `dead_letter`；
+- **已通过模拟验证**：11 类消息 Fake Runtime 冒烟全部成功；闲聊、仅供知悉和 Prompt 注入不创建 Candidate，其他合法请求均完成严格校验；
+- **已通过真实 PostgreSQL 验证**：迁移 `20260801_0005 → 0006 → 0005 → 0006` 成功；集成测试验证状态历史与 Candidate revision 均落库；
+- **尚未真实集成验证**：宿主 CLI `0.146.0-alpha.9.2` 与配置 `0.145.0-alpha.9` 不匹配；即使按宿主版本检查，隔离环境仍为 `missing_runtime_api_key`。未发起真实模型推理请求。
+
 ## 数据库与运行时验证
 
-- PostgreSQL 18 临时数据库上执行 `alembic upgrade head → downgrade -1 → upgrade head`，阶段一最终版本为 `20260801_0005 (head)`；
+- PostgreSQL 18 临时数据库上执行 `alembic upgrade head → downgrade -1 → upgrade head`，当前版本为 `20260801_0006 (head)`；
 - 在 `20260801_0003` 插入两个历史重复 ContextSnapshot 和一个历史 Candidate 外部 Agent UUID 后执行升级/降级，快照没有被合并删除，历史 UUID 可完整恢复；
 - PostgreSQL 集成测试验证 `FeishuMessage → ContextSnapshot → AgentRun → MessageCandidate`，结果为 `2 passed, 62 deselected`；
 - Worker 镜像构建成功，包含固定版本 `codex-cli 0.145.0-alpha.9`；

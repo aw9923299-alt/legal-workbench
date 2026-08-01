@@ -108,11 +108,15 @@ legal-workbench/
 
 - AgentDefinition/AgentRun/AgentRunSource/DraftArtifact 模型与版本；
 - 独立运行目录、无工具白名单、受控来源与 Schema/业务校验；
-- ContextSnapshot 确定性选取与 `message_judgement@1.0.0`；
-- AgentRun 心跳、超时、尝试、错误分类、指数退避和死信；
+- ContextSnapshot v2 确定性选取、版本/排序复用键、多维限界与 `message_judgement@2.0.0`；
+- Codex CLI 版本/隔离认证健康检查、Prompt 注入边界和一次 Schema 修复重试；
+- AgentRun 心跳、租约、只追加状态历史、超时、尝试、错误分类、指数退避和死信；
+- Candidate revision 历史及 Redis/Worker 丢失后的 PostgreSQL 定时恢复；
 - 收件箱和 AgentRun 详情。
 
-尚未实现：事项归并、任务规划、优先级建议和结果汇总 Agent；真实 Codex 凭证冒烟测试。
+已通过模拟验证：11 类消息 Fake Runtime + PostgreSQL 冒烟、Prompt 注入、截断、输出修复、Candidate revision、队列/租约/死信恢复和 0006 迁移往返。
+
+尚未验证/实现：当前宿主 CLI 版本与容器固定版本不一致，隔离 Worker 无 API Key，因此真实 Codex 推理未执行；事项归并、任务规划、优先级建议和结果汇总 Agent 不在本轮范围。
 
 ## 阶段6：知识库
 
