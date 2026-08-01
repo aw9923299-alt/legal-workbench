@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 
@@ -15,7 +15,7 @@ router = APIRouter(prefix="/integrations/feishu", tags=["feishu"])
 @router.post("/events")
 async def receive_feishu_event(
     request: Request,
-    uow_factory: SqlAlchemyUnitOfWorkFactory = Depends(get_uow_factory),
+    uow_factory: Annotated[SqlAlchemyUnitOfWorkFactory, Depends(get_uow_factory)],
 ) -> dict[str, Any] | FeishuEventIngestedResponse:
     payload = await request.json()
     if not isinstance(payload, dict):

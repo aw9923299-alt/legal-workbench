@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 from hashlib import sha256
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from legal_workbench.application.commands import IngestFeishuEventCommand
 from legal_workbench.application.ports import UnitOfWorkFactory
@@ -47,7 +47,7 @@ def _parse_content(value: object) -> dict[str, object]:
 
 def _extract_message(
     *,
-    event_db_id,
+    event_db_id: UUID,
     tenant_key: str | None,
     payload: dict[str, object],
 ) -> FeishuMessage | None:

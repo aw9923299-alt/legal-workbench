@@ -42,10 +42,13 @@ async def domain_error_handler(request: Request, exc: Exception) -> JSONResponse
     if isinstance(domain_error, EntityNotFoundError):
         status_code = status.HTTP_404_NOT_FOUND
     elif isinstance(
-        domain_error, (EntityVersionConflictError, IdempotencyConflictError)
+        domain_error,
+        (
+            EntityVersionConflictError,
+            IdempotencyConflictError,
+            InvalidStateTransitionError,
+        ),
     ):
-        status_code = status.HTTP_409_CONFLICT
-    elif isinstance(domain_error, InvalidStateTransitionError):
         status_code = status.HTTP_409_CONFLICT
     else:
         status_code = status.HTTP_400_BAD_REQUEST

@@ -51,7 +51,7 @@ class OutboxDispatcher:
         for event in events:
             try:
                 await self._dispatch(event)
-            except Exception as exc:  # noqa: BLE001 - failures are persisted for retry/dead-letter
+            except Exception as exc:
                 await self._record_failure(event, exc)
             else:
                 await self._mark_published(event.id)

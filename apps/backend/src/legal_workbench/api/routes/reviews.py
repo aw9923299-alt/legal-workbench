@@ -16,8 +16,8 @@ from legal_workbench.api.schemas.reviews import (
     ReviewPackageCreatedResponse,
     ReviewPackageDecisionRequest,
     ReviewPackageResponse,
-    ReviewRecordResponse,
     ReviewRecordedResponse,
+    ReviewRecordResponse,
     SubmitReviewPackageRequest,
 )
 from legal_workbench.application.commands import (

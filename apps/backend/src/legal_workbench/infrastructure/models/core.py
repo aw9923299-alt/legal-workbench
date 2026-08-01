@@ -9,7 +9,6 @@ from sqlalchemy import (
     Boolean,
     CheckConstraint,
     DateTime,
-    Enum as SqlEnum,
     Float,
     ForeignKey,
     Index,
@@ -19,6 +18,11 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
+)
+from sqlalchemy import (
+    Enum as SqlEnum,
+)
+from sqlalchemy import (
     text as sql_text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
@@ -26,10 +30,10 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from legal_workbench.domain.enums import (
     BusinessImpact,
-    CommunicationChannel,
-    CommunicationStatus,
     CandidateMatterRelation,
     CandidateStatus,
+    CommunicationChannel,
+    CommunicationStatus,
     Confidentiality,
     DeadlineSource,
     DeadlineStatus,
@@ -65,7 +69,7 @@ JSON_EMPTY_OBJECT = sql_text("'{}'::jsonb")
 FALSE_DEFAULT = sql_text("false")
 
 
-def enum_type(enum_class: type[Any], *, name: str, length: int) -> SqlEnum[Any]:
+def enum_type(enum_class: type[Any], *, name: str, length: int) -> SqlEnum:
     return SqlEnum(
         enum_class,
         values_callable=lambda values: [item.value for item in values],

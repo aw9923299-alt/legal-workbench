@@ -5,6 +5,7 @@ from types import TracebackType
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from legal_workbench.application.ports import UnitOfWork
 from legal_workbench.infrastructure.database import get_session_factory
 from legal_workbench.infrastructure.repositories import (
     SqlAlchemyAuditEventRepository,
@@ -24,24 +25,10 @@ from legal_workbench.infrastructure.repositories import (
 )
 
 
-class SqlAlchemyUnitOfWork:
+class SqlAlchemyUnitOfWork(UnitOfWork):
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self._session_factory = session_factory
         self._session: AsyncSession | None = None
-        self.context_snapshots: SqlAlchemyContextSnapshotRepository
-        self.candidates: SqlAlchemyMessageCandidateRepository
-        self.matters: SqlAlchemyLegalMatterRepository
-        self.work_items: SqlAlchemyWorkItemRepository
-        self.priority_confirmations: SqlAlchemyPriorityConfirmationRepository
-        self.deadlines: SqlAlchemyDeadlineRepository
-        self.dependencies: SqlAlchemyDependencyRepository
-        self.review_packages: SqlAlchemyReviewPackageRepository
-        self.review_records: SqlAlchemyReviewRecordRepository
-        self.communications: SqlAlchemyCommunicationRepository
-        self.feishu: SqlAlchemyFeishuRepository
-        self.audit_events: SqlAlchemyAuditEventRepository
-        self.outbox_events: SqlAlchemyOutboxEventRepository
-        self.idempotency: SqlAlchemyIdempotencyRepository
 
     async def __aenter__(self) -> SqlAlchemyUnitOfWork:
         self._session = self._session_factory()
@@ -105,5 +92,5 @@ class SqlAlchemyUnitOfWorkFactory:
     ) -> None:
         self._session_factory = session_factory
 
-    def __call__(self) -> SqlAlchemyUnitOfWork:
+    def __call__(self) -> UnitOfWork:
         return SqlAlchemyUnitOfWork(self._session_factory or get_session_factory())

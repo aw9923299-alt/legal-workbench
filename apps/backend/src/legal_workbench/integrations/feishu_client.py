@@ -88,7 +88,7 @@ class FeishuApiClient:
             token = str(data.get("tenant_access_token") or "")
             if not token:
                 raise FeishuApiError("Feishu token response did not contain a token.")
-            expires_in = int(data.get("expire") or 7200)
+            expires_in = int(str(data.get("expire") or 7200))
             self._token = token
             self._token_expires_at = now + timedelta(seconds=max(60, expires_in - 120))
             return token

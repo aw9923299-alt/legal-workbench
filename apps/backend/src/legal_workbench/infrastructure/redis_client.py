@@ -1,5 +1,5 @@
 from functools import lru_cache
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from legal_workbench.config import get_settings
 
@@ -11,7 +11,10 @@ if TYPE_CHECKING:
 def get_redis_client() -> "Redis":
     from redis.asyncio import Redis
 
-    return Redis.from_url(get_settings().redis_url, decode_responses=True)
+    return cast(
+        "Redis",
+        Redis.from_url(get_settings().redis_url, decode_responses=True),
+    )
 
 
 async def redis_is_ready() -> bool:
