@@ -606,7 +606,7 @@ pending_send → sending → sent
 9. 审计事件只追加，不通过普通更新接口覆盖。
 10. 规则候选未通过法务审批和回归评测不得启用。
 
-## 6. PostgreSQL 表建议
+## 6. PostgreSQL表与Python映射
 
 首期建议表：
 
@@ -637,3 +637,13 @@ outbox_events
 ```
 
 使用 `version` 字段进行乐观锁；异步事件采用事务 Outbox，避免数据库提交成功但队列消息丢失。
+
+
+### 持久化约定
+
+- API/Agent契约使用Pydantic；领域模型与SQLAlchemy映射分离；
+- `raw_payload`、Agent原始输出等非稳定结构使用JSONB；
+- 高频筛选字段使用明确列和组合索引，不把全部业务字段塞入JSONB；
+- 知识片段包含`search_vector tsvector`、trigram索引和可空`embedding vector`；
+- `audit_events`、`review_records`和`outbox_events`采用追加式写入；
+- 所有用户可修改聚合包含`version`和`updated_at`。

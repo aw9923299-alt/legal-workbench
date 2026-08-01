@@ -1,68 +1,45 @@
 # 集成与运行边界
 
-完整 API 契约见 [`docs/design/API_CONTRACTS.md`](./design/API_CONTRACTS.md)，Agent 契约见 [`docs/design/AGENT_PROTOCOL.md`](./design/AGENT_PROTOCOL.md)。
+完整API契约见 [`docs/design/API_CONTRACTS.md`](./design/API_CONTRACTS.md)，Agent契约见 [`docs/design/AGENT_PROTOCOL.md`](./design/AGENT_PROTOCOL.md)。
 
-## 1. 飞书适配器
+## 飞书适配器
 
-负责：
+负责机器人私聊、指定群聊@消息、手动转发和已有事项线程；完成事件签名、幂等落库、线程上下文、附件、编辑/撤回、断线重连、补偿同步、审核后发送和回执。
 
-- 机器人私聊、指定群聊和 @消息接入；
-- 事件幂等落库；
-- 线程上下文和附件；
-- 消息编辑、撤回和权限变化；
-- 断线重连和补偿同步；
-- 审核后消息发送和回执。
+事件接收线程只做校验、持久化和投递，不运行Codex。
 
-事件接收线程不得直接运行 Codex。
+## Codex Runtime
 
-## 2. Codex Runtime
+Codex是唯一推理和生成AI。所有调用统一经过`codex-runner`，负责AgentDefinition、提示词版本、单次工作目录、授权文件、工具权限、超时、重试、Schema和审计。
 
-Codex 是唯一 AI 执行核心。所有调用统一经过 `codex-runner`，负责：
+业务服务不得直接执行Codex CLI。
 
-- AgentDefinition 和提示词版本；
-- 单次运行上下文和文件授权；
-- 工具权限；
-- 超时、重试和隔离；
-- JSON Schema 校验；
-- 日志和审计。
+## 知识服务
 
-系统不建设其他模型提供方适配层，但业务服务仍不得直接调用 Codex CLI。
+知识服务基于PostgreSQL提供：
 
-## 3. 知识服务
-
-知识服务提供受控混合检索：
-
-- PostgreSQL 元数据和全文检索；
-- Qdrant 向量召回；
-- 文件版本、生效状态、适用主体和保密等级过滤；
+- 元数据和权限过滤；
 - 正式制度、模板、历史事项和审核样例分域；
+- 全文检索和`pg_trgm`；
+- 可选pgvector字段；
+- 文件版本、生效状态、适用主体和保密等级；
 - 引用定位和检索审计。
 
-Agent不能直接访问 Qdrant 或扫描整个本地目录。
+不使用Qdrant或外部Embedding服务。Agent不能直接扫描整个本地目录或绕过知识服务查询数据库。
 
-## 4. 外发门禁
+## 外发门禁
 
-发送接口只接受已批准 ReviewRecord，不接受任意正文。服务端验证：
+发送接口只接受已批准的Artifact引用，不接受任意正文。服务端验证审核决定、版本哈希、接收人、会话、幂等键、事项当前状态和飞书权限。
 
-- 审核决定；
-- 版本哈希；
-- 接收人和会话；
-- 幂等键；
-- 最新事实变化；
-- 飞书权限。
+## 配置边界
 
-没有审核记录时发送服务必须拒绝。
+前端环境变量只能包含公开配置。以下内容必须由Python后端持有：
 
-## 5. 前端配置
+- 飞书App Secret和验证信息；
+- Codex凭证和命令配置；
+- PostgreSQL/Redis连接信息；
+- 本地知识目录和加密配置。
 
-以下内容不得进入 Vite 前端环境变量：
+## Mock与真实实现
 
-- 飞书 App Secret；
-- Codex 凭证；
-- 数据库连接串；
-- Qdrant/Redis 密码；
-- 本地知识目录的敏感配置。
-
-## 6. Mock 与真实实现
-
-前端演示允许 Mock；正式模式缺少后端或 Codex/飞书配置时必须显式报错，不得静默回退到 Mock。
+前端允许显式Mock模式。真实模式缺少后端、飞书或Codex配置时必须报错，不得静默回退Mock。

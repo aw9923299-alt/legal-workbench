@@ -2,12 +2,12 @@
 
 ## 1. 总体原则
 
-- 前端只通过 BFF/API 访问领域能力；
+- 前端只通过 FastAPI application API 访问领域能力；
 - 外部系统结构在适配层转换，不进入页面和领域模型；
 - 写接口必须支持幂等和乐观锁；
 - 异步处理通过 Outbox + Worker；
 - 所有外发统一经过审核门禁；
-- OpenAPI 作为前后端契约，Zod/JSON Schema 用于运行时校验。
+- OpenAPI作为前后端契约；后端使用Pydantic校验，前端客户端由OpenAPI生成或显式映射。
 
 建议 API 前缀：`/api/v1`。
 
@@ -90,6 +90,7 @@ interface FeishuIntegrationStatus {
 ## 4. 消息候选接口
 
 ```http
+POST   /api/v1/inbox/candidates
 GET    /api/v1/inbox/candidates
 GET    /api/v1/inbox/candidates/:id
 POST   /api/v1/inbox/candidates/:id/confirm-create
@@ -100,6 +101,15 @@ POST   /api/v1/inbox/candidates/:id/ignore
 POST   /api/v1/inbox/candidates/:id/reanalyze
 POST   /api/v1/inbox/candidates/batch
 ```
+
+创建Candidate、`confirm-create`和新增WorkItem必须携带：
+
+```http
+X-Actor-ID: <legal-user-id>
+Idempotency-Key: <unique-request-key>
+```
+
+相同幂等键和相同请求体返回原始结果；相同键用于不同请求体返回`409`。幂等检查通过PostgreSQL事务级advisory lock串行化，避免并发请求同时越过首次查询。
 
 创建事项请求：
 
@@ -149,6 +159,8 @@ POST   /api/v1/work-items/:workItemId/submit-review
 POST   /api/v1/work-items/:workItemId/complete
 POST   /api/v1/work-items/:workItemId/cancel
 ```
+
+新增WorkItem同样必须携带`X-Actor-ID`和`Idempotency-Key`。系统对Matter行加锁，保证并发新增时`sequenceOrder`稳定，并将业务写入、审计、Outbox和幂等记录在同一事务提交。
 
 等待请求：
 
@@ -305,14 +317,14 @@ interface KnowledgeSearchResult {
   locator: string;
   text: string;
   keywordScore: number;
-  vectorScore: number;
+  vectorScore?: number;
   metadataScore: number;
   effectiveStatus: string;
   citationId: string;
 }
 ```
 
-Agent只能通过该接口检索，不直接查询 Qdrant。
+Agent只能通过该接口检索，不直接查询PostgreSQL表或扫描本地目录。向量召回未启用时`vectorScore`为空。
 
 ## 12. 学习和规则接口
 

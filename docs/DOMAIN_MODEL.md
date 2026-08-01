@@ -52,3 +52,13 @@ RuleCandidate        待审批和评测的规则候选
 - 证据；
 - 生成者/确认人；
 - 时间和版本。
+
+## 5. Python与PostgreSQL映射
+
+- 领域对象使用普通Python类或dataclass表达，不依赖SQLAlchemy；
+- Pydantic模型用于API、事件和Agent契约；
+- SQLAlchemy模型只负责持久化映射；
+- PostgreSQL枚举优先使用受控字符串和CHECK约束，避免频繁修改数据库ENUM；
+- 聚合根使用`version`乐观锁；
+- 审核、审计和事件采用追加式记录；
+- 知识片段使用`tsvector`、`pg_trgm`和可空`vector`字段。

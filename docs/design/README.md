@@ -1,23 +1,38 @@
-# 法务工作台设计文档索引
+# 法务工作台正式设计索引
 
-本目录是“法务工作台”从高保真前端原型演进为本地可运行系统的正式实现基线。除非有新的架构决策记录覆盖，本目录中的约束优先于早期讨论稿和页面 Mock。
+本文档目录是项目的权威设计基线。README和其他概览文档只能摘要引用，不得维护相互冲突的第二套架构。
 
-## 文档导航
+## 阅读顺序
 
-| 文档 | 用途 |
-|---|---|
-| [SYSTEM_DESIGN.md](./SYSTEM_DESIGN.md) | 总体产品边界、模块职责、主流程、异常处理与扩展原则 |
-| [DATA_MODEL.md](./DATA_MODEL.md) | 核心实体、关系、状态机、字段来源和数据库建议 |
-| [AGENT_PROTOCOL.md](./AGENT_PROTOCOL.md) | Codex Runtime、核心 Agent 拆分、专业 Agent 协议、权限和质量体系 |
-| [API_CONTRACTS.md](./API_CONTRACTS.md) | BFF/API、事件、幂等、审核和飞书通信接口契约 |
-| [DEPLOYMENT.md](./DEPLOYMENT.md) | Mac + Docker Compose 部署、恢复、监控、备份和安全隔离 |
-| [IMPLEMENTATION_PLAN.md](./IMPLEMENTATION_PLAN.md) | 可执行开发阶段、首条垂直闭环、验收标准与依赖顺序 |
-| [DECISIONS.md](./DECISIONS.md) | 已确认的关键架构决策及其后果 |
+1. [`SYSTEM_DESIGN.md`](./SYSTEM_DESIGN.md)：产品闭环、逻辑分层和职责边界；
+2. [`BACKEND_ENGINEERING.md`](./BACKEND_ENGINEERING.md)：Python模块化单体、事务和进程角色；
+3. [`DATA_MODEL.md`](./DATA_MODEL.md)：实体、关系、状态机和不变量；
+4. [`AGENT_PROTOCOL.md`](./AGENT_PROTOCOL.md)：Codex Agent统一协议和质量门槛；
+5. [`KNOWLEDGE_RETRIEVAL.md`](./KNOWLEDGE_RETRIEVAL.md)：PostgreSQL全文、pg_trgm和可选pgvector；
+6. [`API_CONTRACTS.md`](./API_CONTRACTS.md)：HTTP、事件和错误契约；
+7. [`DEPLOYMENT.md`](./DEPLOYMENT.md)：Docker Compose、Mac守护、备份和恢复；
+8. [`IMPLEMENTATION_PLAN.md`](./IMPLEMENTATION_PLAN.md)：阶段、顺序和验收；
+9. [`DECISIONS.md`](./DECISIONS.md)：已确认的ADR。
 
-## 文档使用规则
+## 当前技术基线
 
-1. 开发前先阅读 `AGENTS.md`、本索引及与任务相关的设计文档。
-2. 任何影响领域模型、Agent 输入输出、审核门禁、飞书权限或数据保留的改动，必须同步更新本目录。
-3. 页面字段必须能映射到正式领域对象，不得为展示方便重新引入“一个 Task 承载所有状态”的模型。
-4. 所有外发内容统一经过 `ReviewPackage → ReviewRecord → Communication` 门禁。
-5. Codex 是唯一 AI 执行核心；确定性状态、权限、重试、排序硬规则和发送动作由本地服务负责。
+```text
+React + TypeScript
+Python 3.12 + FastAPI + Pydantic
+SQLAlchemy 2 + Psycopg 3 + Alembic
+PostgreSQL 18 + pgvector
+Celery + Redis
+Docker Compose + launchd
+Codex-only AI policy
+```
+
+## 变更规则
+
+以下变化必须新增或更新ADR：
+
+- 引入新的AI或Embedding服务；
+- 更换主数据库；
+- 绕过人工外发审核；
+- 拆分独立微服务；
+- 修改核心领域链路；
+- 修改知识资料的权限、保留或Legal Hold规则。

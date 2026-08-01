@@ -1,56 +1,29 @@
-# GitHub 与 Codex 协作流程
+# GitHub 与 Claude Code / Codex 协作流程
 
-## 1. 默认分支
+## 默认分支
 
 - 默认分支：`main`；
-- 功能分支：`feat/<scope>`；
-- 修复分支：`fix/<scope>`；
-- 文档分支：`docs/<scope>`。
+- 开发分支：`feat/<scope>`、`fix/<scope>`、`docs/<scope>`或`agent/<scope>`。
 
-## 2. 分支保护建议
+## 分支保护
 
-仓库稳定后建议为 `main` 启用：
+仓库稳定后为`main`启用：
 
-- 必须通过 `CI / frontend`；
-- 必须通过 Pull Request 合并；
-- 禁止 force push；
-- 禁止删除默认分支；
-- 至少一名人工审阅者批准高风险改动；
-- 涉及飞书权限、外发、删除、Agent 写回或敏感字段时必须人工复核。
+- 必须通过`CI / frontend`、`CI / backend`和`CI / compose`；
+- 必须通过Pull Request合并；
+- 禁止force push和删除默认分支；
+- 数据库迁移、飞书权限、外发、删除、Agent工具权限和敏感字段改动必须人工审阅。
 
-## 3. Codex 工作方式
+## Agent开发任务
 
-每次只给 Codex 一个清晰迭代目标。任务中应包含：
+每次任务应包含：用户问题、领域对象、不变量、不做什么、迁移要求、验收、测试和Draft PR要求。首次实现任务使用`docs/CODEX_START_PROMPT.md`。
 
-- 具体用户问题；
-- 领域规则；
-- 不做什么；
-- 验收标准；
-- 需要运行的检查；
-- 交付方式为 Draft PR。
+## 合并前检查
 
-首次任务可使用 `docs/CODEX_START_PROMPT.md`。
-
-## 4. 推荐标签
-
-- `enhancement`
-- `bug`
-- `documentation`
-- `security`
-- `permissions`
-- `feishu`
-- `ai-evaluation`
-- `agent`
-- `legal-domain`
-- `needs-human-review`
-
-## 5. 合并前检查
-
-- CI 通过；
-- PR 描述完整；
+- 设计与代码一致；
+- Alembic升级可执行且有回滚/前向修复策略；
+- API和Agent契约已版本化；
+- 幂等、并发、失败和审计已覆盖；
 - 无真实敏感数据和密钥；
-- AI/权限/审计影响已说明；
-- 新增功能有测试；
-- 页面有截图或录屏；
-- 文档与代码行为一致；
-- 高风险动作仍保留人工审批。
+- 外发仍保留人工审核；
+- CI全部通过。

@@ -1,130 +1,77 @@
 # 测试与质量要求
 
-详细 Agent 质量体系见 [`docs/design/AGENT_PROTOCOL.md`](./design/AGENT_PROTOCOL.md)。
+## 测试分层
 
-## 1. 单元测试
+### Python单元测试
 
-重点覆盖：
+重点覆盖领域状态机、候选幂等确认、事项与任务不变量、优先级规则、人工覆盖、审核门禁、乐观锁、Outbox和知识过滤。
 
-- MessageCandidate 状态和幂等确认；
-- LegalMatter/WorkItem 独立状态机；
-- Deadline、Dependency 和等待字段约束；
-- 硬优先级规则和人工覆盖；
-- 人工确认值不可被 Codex 覆盖；
-- ReviewPackage/ReviewRecord/Communication 门禁；
-- 版本哈希和乐观锁；
-- Agent 输出 Schema；
-- 知识版本、生效状态和权限过滤；
-- 事件重复、重试和 Outbox。
+### Python集成测试
 
-## 2. 组件测试
+使用临时PostgreSQL/Redis环境验证：
 
-- 消息候选新建、关联、更新、知悉和忽略；
-- 多事项拆分；
-- 优先级/完成时间确认弹窗；
-- 事项详情 WorkItem 操作；
-- 审核包的背景、事实、依据、理由、风险和草稿；
-- 修改后通过和审核原因；
-- 无审核记录时发送按钮和服务拒绝；
-- Agent 冲突和补充材料状态；
-- 加载、空、失败、无权限和重试。
+- Alembic从空库升级；
+- Repository和事务；
+- 唯一幂等键；
+- version冲突；
+- Outbox发布和Celery重投；
+- health/readiness；
+- API错误码和OpenAPI契约。
 
-## 3. 端到端测试
+### 前端组件测试
 
-首条本地路径：
+覆盖候选确认、优先级弹窗、事项详情、审核包、冲突、补充材料以及加载/空/失败/无权限状态。
+
+### 端到端测试
 
 ```text
-打开消息收件箱
-→ 查看候选依据
-→ 创建事项和两个 WorkItem
-→ 确认优先级和计划完成时间
-→ 打开事项详情
-→ 生成 Mock Agent 结果
-→ 打开审核包
-→ 修改后通过
+候选消息
+→ 创建事项和两个WorkItem
+→ 确认优先级
+→ 生成Mock DraftArtifact
+→ 审核包修改后通过
 → 模拟发送
-→ 查看时间线和审核记录
+→ 时间线和审计记录
 ```
 
-合同垂直闭环接入后追加：
+## 必测异常
 
-```text
-飞书合同消息
-→ 附件版本
-→ 合同 Agent
-→ 引用
-→ 审核包
-→ 发送回执
-→ 学习记录
-→ 日报
-```
-
-## 4. 必测异常
-
-- 同一飞书事件重复到达；
-- 创建请求超时但服务端成功；
+- 同一事件或API请求重复到达；
+- 创建超时但服务端已成功；
+- version冲突；
 - 一条消息涉及多个事项；
-- 已关闭事项收到新消息；
-- 文件新版本替代旧版本；
-- 原消息撤回或权限取消；
-- Codex 超时、非零退出、输出非法；
-- Agent 请求越权文件；
-- 不同 Agent 结论冲突；
-- 发送超时但实际可能成功；
-- 人工审核后事实发生变化；
-- 过期制度被检索；
-- Mac 网络中断和容器重启；
-- 队列重投和死信重放；
-- 任务在另一个窗口被更新。
+- 已关闭事项重新开启；
+- 文件版本替代和权限撤销；
+- Codex超时、非法输出和越权；
+- Agent结论冲突；
+- 发送结果未知；
+- 审核后事实变化；
+- 失效制度进入候选；
+- Mac断网、容器重启、队列重投和死信重放。
 
-## 5. Agent 评测
+## Agent评测
 
-每个 Agent 固定评测集至少检查：
+检查事实准确率、关键问题覆盖、高风险遗漏、引用覆盖、无依据推断、过期资料、缺失信息识别、重大修改率和越权次数。不得只看执行成功率或文本编辑距离。
 
-- 事实准确率；
-- 关键问题覆盖率；
-- 高风险遗漏率；
-- 引用覆盖率；
-- 无依据推断率；
-- 过期资料引用率；
-- 缺失信息识别率；
-- 法务重大修改率；
-- 越权工具调用次数。
-
-不得仅以“执行成功”或文本编辑距离评价质量。
-
-## 6. 响应式和可访问性
-
-至少检查：
-
-- 1920 × 1080；
-- 1440 × 900；
-- 1280 × 800；
-- 窄屏退化布局；
-- 键盘焦点；
-- 长文本、引用和冲突展示；
-- 深色模式状态可辨识。
-
-## 7. 提交前命令
-
-当前：
+## 提交前命令
 
 ```bash
+npm install
 npm run typecheck
 npm run build
-```
 
-测试框架接入后：
+python -m pip install -e 'apps/backend[dev]'
+python -m ruff check apps/backend/src apps/backend/tests
+python -m mypy --config-file apps/backend/pyproject.toml apps/backend/src
+python -m pytest apps/backend/tests
 
-```bash
-npm run test
-npm run test:e2e
-```
-
-后端和 Docker 接入后追加：
-
-```bash
 docker compose config
-docker compose up -d
-npm run test:integration
+```
+
+涉及数据库或Compose时还应执行：
+
+```bash
+docker compose up -d postgres redis
+alembic -c apps/backend/alembic.ini upgrade head
+curl http://localhost:8000/api/v1/health/live
 ```

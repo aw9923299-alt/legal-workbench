@@ -86,10 +86,77 @@ npm run dev
 - Mac + Docker Compose 可靠性；
 - API、领域事件、异常和实施计划。
 
-## 2026-08-01 仓库交付验证
+## 2026-08-01 Python/PostgreSQL 工程基线更新
 
-- 完整 React 前端原型和正式设计文档已写入远程 `main`；
-- 正式设计提交：`fa9542f`（`docs: define local Codex legal workbench architecture`）；
-- 已安装 `.github/workflows/ci.yml`，对 `main` push 和 Pull Request 执行依赖安装、类型检查和生产构建；
-- 一次性导入载荷和导入工作流已从最终分支删除；
-- 临时导入 Pull Request 已关闭。
+本次完成：
+
+- 前端迁移至`apps/web`并保留根目录npm workspace命令；
+- 新增`apps/backend` Python 3.12模块化单体；
+- 新增FastAPI live/ready健康检查；
+- 新增SQLAlchemy、Psycopg、Alembic和Celery基础；
+- 新增PostgreSQL 18 + pgvector + Redis Docker Compose；
+- 首个迁移启用`vector`、`pg_trgm`和`unaccent`；
+- 新增Python/前端/Compose CI；
+- 正式文档删除TypeScript后端和Qdrant基线，改为PostgreSQL单一事实库；
+- 明确不引入外部Embedding服务，首期使用全文检索和`pg_trgm`。
+
+本地已完成静态检查；依赖安装、真实Docker拉取和完整CI需在具备正常网络的环境验证。
+
+### 本次验证结果
+
+已通过：
+
+- `python -m compileall`：后端源码、测试和Alembic迁移语法通过；
+- `pyproject.toml`、JSON、Compose YAML和CI YAML解析；
+- `git diff --check`；
+- Markdown相对链接检查；
+- 旧TypeScript后端和Qdrant设计残留检查；
+- Python包使用setuptools完成editable构建；
+- `test_agent_models.py`通过。
+
+未完成：
+
+- 完整Python依赖安装：当前内部PyPI代理缺少Celery、Redis、structlog、pgvector等依赖；
+- 完整pytest、Ruff和mypy：受上述依赖限制；
+- 前端typecheck/build：当前环境未安装React、Ant Design等npm依赖；
+- `docker compose config/up`：当前执行环境没有Docker命令。
+
+GitHub CI已配置在正常公网包源环境执行前端、后端和Compose检查。
+
+## 2026-08-01 首个后端垂直切片
+
+已实现并检查：
+
+- SQLAlchemy 2 正式映射：ContextSnapshot、MessageCandidate、LegalMatter、WorkItem；
+- CandidateMatterLink、AuditEvent、OutboxEvent、IdempotencyRecord；
+- Alembic `20260801_0002` 首批业务表迁移及完整降级顺序；
+- Candidate确认创建Matter和多个初始WorkItem的原子用例；
+- PostgreSQL行锁、事务级advisory幂等锁、SQLAlchemy乐观锁、审计和事务Outbox；
+- Candidate/Matter/WorkItem查询和写入API；
+- 应用层单元测试、幂等冲突测试、version冲突测试和ORM元数据测试；
+- CI中的真实PostgreSQL迁移及HTTP端到端集成测试。
+
+本地已执行：
+
+- `python -m compileall`：通过；
+- 核心垂直切片与ORM测试：12项通过；
+- PostgreSQL HTTP集成测试：已加入，当前本地环境按配置跳过；
+- `alembic upgrade head --sql`：通过，成功生成PostgreSQL离线DDL；
+- Python文件100字符行宽检查：通过；
+- `git diff --check`：通过。
+
+当前环境的内部Python包源仍缺少`structlog`、`redis`、`psycopg`等公开依赖，且没有Docker命令，因此未在本环境执行完整测试套件和真实PostgreSQL迁移。声明依赖完整的CI或本地Docker环境应继续执行Ruff、mypy、全量pytest及真实数据库升级/降级验证。
+
+## 2026-08-01 完整法务工作流与飞书接入
+
+已实现：
+
+- 前端接入Candidate、Matter、WorkItem、优先级、Deadline、Dependency和审核接口；
+- PriorityConfirmation、Deadline、WorkItemDependency正式模型与迁移；
+- ReviewPackage、ReviewRecord、Communication及外发审核门禁；
+- Outbox并发领取、指数退避、重试、死信和重新入队；
+- 飞书原始事件和消息按event_id、tenant_key/message_id幂等落库；
+- Communication正文哈希校验，防止审核后正文被静默修改；
+- Celery Beat定时发布Outbox，Compose增加scheduler角色。
+
+本轮按功能优先要求未新增测试，完成了Python语法、Alembic离线升级/降级、TypeScript语法、TOML/JSON/YAML和`git diff --check`等静态检查。完整运行验证仍需在具备Docker及公网依赖源的环境执行。

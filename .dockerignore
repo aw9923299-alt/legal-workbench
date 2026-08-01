@@ -1,0 +1,13 @@
+.git
+.github
+**/.DS_Store
+**/__pycache__
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache
+**/.venv
+**/node_modules
+**/dist
+**/coverage
+.env
+data/codex-runs/*

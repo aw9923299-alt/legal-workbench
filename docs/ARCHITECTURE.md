@@ -1,92 +1,47 @@
 # 系统架构概览
 
-本文件保留为架构快速入口。完整设计见 [`docs/design/SYSTEM_DESIGN.md`](./design/SYSTEM_DESIGN.md) 和 [`docs/design/DEPLOYMENT.md`](./design/DEPLOYMENT.md)。
+完整设计见 [`docs/design/SYSTEM_DESIGN.md`](./design/SYSTEM_DESIGN.md)、[`BACKEND_ENGINEERING.md`](./design/BACKEND_ENGINEERING.md) 和 [`DEPLOYMENT.md`](./design/DEPLOYMENT.md)。
 
-## 1. 核心架构
-
-```text
-Web Frontend
-   ↓
-API / Application Service
-   ↓
-Legal Domain + Manager Orchestrator
-   ↓
-Workers + Codex Runtime + Knowledge Service
-   ↓
-PostgreSQL + Redis + Qdrant + Local File Storage
-```
-
-## 2. 管家拆分
-
-前端对用户呈现统一“法务管家”，内部由确定性编排器协调：
-
-- 消息研判 Agent；
-- 事项归并 Agent；
-- 任务规划 Agent；
-- 优先级建议 Agent；
-- 结果汇总 Agent；
-- 日报与工作复盘 Agent。
-
-专业 Agent只产出草稿交付物，不直接修改正式记录或发送消息。
-
-## 3. 运行组件
+## 核心架构
 
 ```text
-web
-api
-feishu-connector
-worker
-codex-runner
-file-indexer
-postgres
-redis
-qdrant
-watchdog
+React Web
+   ↓ HTTP / SSE
+FastAPI API
+   ↓
+Application Use Cases + Manager Orchestrator
+   ↓
+Domain Policies / Agent Runtime / Integration Adapters / Celery Workers
+   ↓
+PostgreSQL 18 + pgvector + Redis + Local File Storage
 ```
 
-初期后端可采用模块化单体，通过不同进程/容器运行，不要求立即拆成多个独立仓库或微服务。
+后端采用一个Python模块化单体，通过不同进程角色运行API、Worker、飞书连接、文件索引和Codex Runner。初期不拆独立微服务或独立仓库。
 
-## 4. 核心链路
+## 运行组件
+
+- `web`：React工作台；
+- `api`：FastAPI、用例、审核门禁和查询接口；
+- `worker`：Celery后台任务、重试、日报和索引；
+- `feishu-connector`：受控飞书事件和发送适配；
+- `codex-runner`：唯一Codex执行入口；
+- `file-indexer`：本地资料解析和索引；
+- `postgres`：业务事实、审计、全文检索、知识元数据和可选向量；
+- `redis`：队列、锁、短期缓存和延时任务。
+
+## 确定性服务与Agent边界
+
+确定性服务负责状态、硬期限、权限、幂等、事务、重试、审核门禁和发送；Codex Agent负责语义理解、专业分析、回复草拟、日报归纳和复盘建议。
+
+## 知识检索
+
+首期采用：
 
 ```text
-FeishuMessage
-→ ContextSnapshot
-→ MessageCandidate
-→ LegalMatter + WorkItem
-→ AgentExecutionPlan
-→ AgentRun + DraftArtifact
-→ ReviewPackage + ReviewRecord
-→ Communication
+Metadata Filter
++ PostgreSQL Full Text Search
++ pg_trgm Similarity
++ Codex reranking/selection
 ```
 
-## 5. 确定性服务边界
-
-确定性服务负责：
-
-- 飞书连接、幂等、重试和发送；
-- 状态迁移、硬期限和审核门禁；
-- 权限、审计、文件版本和备份；
-- 队列、死信和恢复。
-
-Codex Agent负责：
-
-- 消息理解和关联建议；
-- 任务规划和软优先级；
-- 专业分析、回复草拟；
-- 审核差异分析、日报和复盘归纳。
-
-## 6. 前端演进
-
-建议逐步迁移为：
-
-```text
-src/
-├─ app/
-├─ features/
-├─ entities/
-├─ shared/
-├─ services/
-└─ mocks/
-```
-
-当前不为目录美观一次性重构。先引入路由、应用服务和正式领域类型，再按功能迁移。
+pgvector扩展已启用，但向量字段必须可空；在没有经批准的本地向量生成方案前，不把向量召回作为上线前置条件。

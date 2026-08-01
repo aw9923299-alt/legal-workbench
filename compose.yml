@@ -1,0 +1,181 @@
+name: legal-workbench
+
+services:
+  postgres:
+    image: pgvector/pgvector:0.8.5-pg18-bookworm
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-legal_workbench}
+      POSTGRES_USER: ${POSTGRES_USER:-legal_workbench}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me-local-only}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-legal_workbench} -d ${POSTGRES_DB:-legal_workbench}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build:
+      context: .
+      dockerfile: infra/docker/backend.Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      LEGAL_WORKBENCH_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-legal_workbench}:${POSTGRES_PASSWORD:-change-me-local-only}@postgres:5432/${POSTGRES_DB:-legal_workbench}
+      LEGAL_WORKBENCH_REDIS_URL: redis://redis:6379/0
+    command:
+      - /bin/sh
+      - -c
+      - alembic -c apps/backend/alembic.ini upgrade head && uvicorn legal_workbench.main:app --host 0.0.0.0 --port 8000
+    ports:
+      - "${API_PORT:-8000}:8000"
+    volumes:
+      - ./data/knowledge:/data/knowledge:ro
+      - ./data/codex-runs:/data/codex-runs
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/health/live', timeout=3)"
+      interval: 15s
+      timeout: 5s
+      retries: 10
+
+  worker:
+    build:
+      context: .
+      dockerfile: infra/docker/backend.Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      LEGAL_WORKBENCH_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-legal_workbench}:${POSTGRES_PASSWORD:-change-me-local-only}@postgres:5432/${POSTGRES_DB:-legal_workbench}
+      LEGAL_WORKBENCH_REDIS_URL: redis://redis:6379/0
+    command:
+      - celery
+      - -A
+      - legal_workbench.infrastructure.celery_app:celery_app
+      - worker
+      - --loglevel=INFO
+      - --concurrency=2
+    volumes:
+      - ./data/knowledge:/data/knowledge:ro
+      - ./data/codex-runs:/data/codex-runs
+    depends_on:
+      api:
+        condition: service_healthy
+
+  scheduler:
+    build:
+      context: .
+      dockerfile: infra/docker/backend.Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      LEGAL_WORKBENCH_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-legal_workbench}:${POSTGRES_PASSWORD:-change-me-local-only}@postgres:5432/${POSTGRES_DB:-legal_workbench}
+      LEGAL_WORKBENCH_REDIS_URL: redis://redis:6379/0
+    command:
+      - celery
+      - -A
+      - legal_workbench.infrastructure.celery_app:celery_app
+      - beat
+      - --loglevel=INFO
+    depends_on:
+      api:
+        condition: service_healthy
+
+  web:
+    build:
+      context: .
+      dockerfile: infra/docker/web.Dockerfile
+      args:
+        VITE_API_BASE_URL: http://localhost:${API_PORT:-8000}/api/v1
+    restart: unless-stopped
+    ports:
+      - "${WEB_PORT:-5173}:80"
+    depends_on:
+      api:
+        condition: service_healthy
+
+  codex-runner:
+    build:
+      context: .
+      dockerfile: infra/docker/backend.Dockerfile
+    profiles: ["agents"]
+    restart: "no"
+    env_file:
+      - .env
+    environment:
+      LEGAL_WORKBENCH_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-legal_workbench}:${POSTGRES_PASSWORD:-change-me-local-only}@postgres:5432/${POSTGRES_DB:-legal_workbench}
+      LEGAL_WORKBENCH_REDIS_URL: redis://redis:6379/0
+    command: ["python", "-m", "legal_workbench.agents.runner"]
+    volumes:
+      - ./data/knowledge:/data/knowledge:ro
+      - ./data/codex-runs:/data/codex-runs
+    depends_on:
+      api:
+        condition: service_healthy
+
+  feishu-connector:
+    build:
+      context: .
+      dockerfile: infra/docker/backend.Dockerfile
+    profiles: ["integrations"]
+    restart: "no"
+    env_file:
+      - .env
+    environment:
+      LEGAL_WORKBENCH_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-legal_workbench}:${POSTGRES_PASSWORD:-change-me-local-only}@postgres:5432/${POSTGRES_DB:-legal_workbench}
+      LEGAL_WORKBENCH_REDIS_URL: redis://redis:6379/0
+    command: ["python", "-m", "legal_workbench.integrations.feishu_connector"]
+    depends_on:
+      api:
+        condition: service_healthy
+
+  file-indexer:
+    build:
+      context: .
+      dockerfile: infra/docker/backend.Dockerfile
+    profiles: ["integrations"]
+    restart: "no"
+    env_file:
+      - .env
+    environment:
+      LEGAL_WORKBENCH_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-legal_workbench}:${POSTGRES_PASSWORD:-change-me-local-only}@postgres:5432/${POSTGRES_DB:-legal_workbench}
+      LEGAL_WORKBENCH_REDIS_URL: redis://redis:6379/0
+    command: ["python", "-m", "legal_workbench.integrations.file_indexer"]
+    volumes:
+      - ./data/knowledge:/data/knowledge:ro
+    depends_on:
+      api:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+  redis_data:
