@@ -111,18 +111,36 @@ class CreateCandidateHandler:
                     )
                 return _candidate_result_from_replay(replay)
 
-            snapshot = ContextSnapshot(
-                id=uuid4(),
+            source_id = command.source_ids[0]
+            await uow.lock_idempotency(
+                operation="context_snapshot",
+                key=f"{command.source_type}:{source_id}:{command.content_hash}",
+            )
+            snapshot = await uow.context_snapshots.find_by_source_hash(
                 source_type=command.source_type,
-                source_ids=command.source_ids,
-                message_ids=command.message_ids,
-                file_ids=command.file_ids,
-                relevant_matter_ids=command.relevant_matter_ids,
-                participant_ids=command.participant_ids,
-                permission_snapshot=command.permission_snapshot,
-                generated_at=command.generated_at,
+                source_id=source_id,
                 content_hash=command.content_hash,
             )
+            if snapshot is None:
+                snapshot = ContextSnapshot(
+                    id=uuid4(),
+                    source_type=command.source_type,
+                    source_id=source_id,
+                    source_ids=command.source_ids,
+                    message_ids=command.message_ids,
+                    file_ids=command.file_ids,
+                    relevant_matter_ids=command.relevant_matter_ids,
+                    participant_ids=command.participant_ids,
+                    permission_snapshot=command.permission_snapshot,
+                    generated_at=command.generated_at,
+                    content_hash=command.content_hash,
+                )
+                await uow.context_snapshots.add(snapshot)
+            elif not self._snapshot_matches(snapshot, command):
+                raise DomainValidationError(
+                    "ContextSnapshot content hash conflicts with different snapshot data.",
+                    details={"sourceType": command.source_type, "sourceId": source_id},
+                )
             candidate = MessageCandidate.create(
                 context_snapshot_id=snapshot.id,
                 status=command.status,
@@ -137,7 +155,6 @@ class CreateCandidateHandler:
                 evidence_refs=command.evidence_refs,
                 agent_run_id=command.agent_run_id,
             )
-            await uow.context_snapshots.add(snapshot)
             await uow.candidates.add(candidate)
             event_payload: dict[str, object] = {
                 "candidateId": str(candidate.id),
@@ -180,6 +197,20 @@ class CreateCandidateHandler:
             await uow.commit()
         return CandidateCreatedResult(
             candidate_id=candidate.id, version=candidate.version
+        )
+
+    @staticmethod
+    def _snapshot_matches(
+        snapshot: ContextSnapshot, command: CreateCandidateCommand
+    ) -> bool:
+        return (
+            snapshot.source_ids == command.source_ids
+            and snapshot.message_ids == command.message_ids
+            and snapshot.file_ids == command.file_ids
+            and snapshot.relevant_matter_ids == command.relevant_matter_ids
+            and snapshot.participant_ids == command.participant_ids
+            and snapshot.permission_snapshot == command.permission_snapshot
+            and snapshot.generated_at == command.generated_at
         )
 
 

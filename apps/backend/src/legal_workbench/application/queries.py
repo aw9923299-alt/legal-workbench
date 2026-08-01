@@ -1,10 +1,16 @@
 from collections.abc import Sequence
+from dataclasses import dataclass
 from uuid import UUID
 
 from legal_workbench.application.ports import UnitOfWorkFactory
 from legal_workbench.domain.entities import (
+    AgentDefinition,
+    AgentRun,
+    AgentRunSource,
     Communication,
+    ContextSnapshot,
     Deadline,
+    FeishuMessage,
     LegalMatter,
     MessageCandidate,
     PriorityConfirmation,
@@ -14,6 +20,7 @@ from legal_workbench.domain.entities import (
     WorkItemDependency,
 )
 from legal_workbench.domain.enums import (
+    AgentRunStatus,
     CandidateStatus,
     CommunicationStatus,
     DeadlineStatus,
@@ -41,6 +48,90 @@ class CandidateQueryService:
     ) -> Sequence[MessageCandidate]:
         async with self._uow_factory() as uow:
             return await uow.candidates.list(status=status, limit=limit)
+
+
+@dataclass(frozen=True, slots=True)
+class AgentRunDetails:
+    run: AgentRun
+    definition: AgentDefinition
+    sources: Sequence[AgentRunSource]
+
+
+@dataclass(frozen=True, slots=True)
+class FeishuMessageAnalysisDetails:
+    message: FeishuMessage
+    snapshot: ContextSnapshot | None
+    run: AgentRun | None
+    definition: AgentDefinition | None
+    sources: Sequence[AgentRunSource]
+    candidate: MessageCandidate | None
+
+
+class AgentRunQueryService:
+    def __init__(self, uow_factory: UnitOfWorkFactory) -> None:
+        self._uow_factory = uow_factory
+
+    async def get(self, run_id: UUID) -> AgentRunDetails:
+        async with self._uow_factory() as uow:
+            run = await uow.agent_runs.get(run_id)
+            if run is None:
+                raise EntityNotFoundError(
+                    "Agent run was not found.", details={"runId": str(run_id)}
+                )
+            definition = await uow.agent_definitions.get(run.agent_definition_id)
+            if definition is None:
+                raise EntityNotFoundError("Agent definition was not found.")
+            sources = await uow.agent_run_sources.list_by_run(run.id)
+            return AgentRunDetails(run=run, definition=definition, sources=sources)
+
+    async def list(self, *, status: AgentRunStatus | None, limit: int) -> Sequence[AgentRunDetails]:
+        async with self._uow_factory() as uow:
+            runs = await uow.agent_runs.list(status=status, limit=limit)
+            details: list[AgentRunDetails] = []
+            for run in runs:
+                definition = await uow.agent_definitions.get(run.agent_definition_id)
+                if definition is None:
+                    continue
+                details.append(
+                    AgentRunDetails(
+                        run=run,
+                        definition=definition,
+                        sources=await uow.agent_run_sources.list_by_run(run.id),
+                    )
+                )
+            return details
+
+
+class FeishuMessageAnalysisQueryService:
+    def __init__(self, uow_factory: UnitOfWorkFactory) -> None:
+        self._uow_factory = uow_factory
+
+    async def get(self, message_id: UUID) -> FeishuMessageAnalysisDetails:
+        async with self._uow_factory() as uow:
+            message = await uow.feishu.get_message_by_id(message_id)
+            if message is None:
+                raise EntityNotFoundError(
+                    "Feishu message was not found.",
+                    details={"code": "FEISHU_MESSAGE_NOT_FOUND"},
+                )
+            snapshot = (
+                await uow.context_snapshots.get(message.context_snapshot_id)
+                if message.context_snapshot_id
+                else None
+            )
+            runs = await uow.agent_runs.list_by_message(message.id)
+            run = runs[0] if runs else None
+            definition = await uow.agent_definitions.get(run.agent_definition_id) if run else None
+            sources = await uow.agent_run_sources.list_by_run(run.id) if run else []
+            candidate = await uow.candidates.get_active_for_message(message.id)
+            return FeishuMessageAnalysisDetails(
+                message=message,
+                snapshot=snapshot,
+                run=run,
+                definition=definition,
+                sources=sources,
+                candidate=candidate,
+            )
 
 
 class MatterQueryService:
@@ -105,9 +196,7 @@ class WorkItemQueryService:
                 raise EntityNotFoundError("Work item was not found.")
             return await uow.deadlines.list_by_work_item(work_item_id, status=status)
 
-    async def list_dependencies(
-        self, work_item_id: UUID
-    ) -> Sequence[WorkItemDependency]:
+    async def list_dependencies(self, work_item_id: UUID) -> Sequence[WorkItemDependency]:
         async with self._uow_factory() as uow:
             if await uow.work_items.get(work_item_id) is None:
                 raise EntityNotFoundError("Work item was not found.")
@@ -133,9 +222,7 @@ class ReviewQueryService:
         limit: int = 50,
     ) -> Sequence[ReviewPackage]:
         async with self._uow_factory() as uow:
-            return await uow.review_packages.list(
-                status=status, matter_id=matter_id, limit=limit
-            )
+            return await uow.review_packages.list(status=status, matter_id=matter_id, limit=limit)
 
     async def list_records(self, package_id: UUID) -> Sequence[ReviewRecord]:
         async with self._uow_factory() as uow:

@@ -4,6 +4,13 @@
 
 本协议用于约束所有 Codex Agent 的注册、输入、执行、输出、权限、审核和质量评价。新增 Agent 必须遵循本协议，不得直接在页面组件、Worker 或业务服务中拼接自由文本并调用 Codex。
 
+### 1.1 实现状态
+
+- **已实现**：持久化 AgentDefinition/AgentRun/AgentRunSource/DraftArtifact，以及第一个 `message_judgement` Agent、严格 Pydantic Schema、Celery 调度和 `CodexCliRuntime`。
+- **部分实现**：容器模式使用专用 UID、最小环境变量和工作目录约束；宿主机模式不具备可证明的 OS 级读取白名单。
+- **占位实现**：DraftArtifact 本轮仅建模，未开发通用产物 UI。
+- **尚未实现**：事项归并、任务规划、优先级建议、结果汇总、知识检索和所有专业 Agent。本文中对这些 Agent 的约束是后续设计要求，不代表已上线。
+
 ## 2. Agent 分层
 
 ## 2.1 核心 Agent
@@ -37,30 +44,36 @@
 
 ## 3. Codex Runtime
 
-`codex-runner` 是唯一 Codex 调用入口。
+`CodexCliRuntime` 是当前唯一业务 Codex 调用入口，由 Celery `feishu.process_message` Worker 调用。旧的独立 runner 占位进程不承载业务执行。
 
 ### 3.1 每次运行必须隔离
 
 每个 AgentRun 创建独立目录：
 
 ```text
-/runs/<run-id>/
-├─ input/request.json
-├─ input/context/
-├─ input/files/
-├─ prompt/system.md
-├─ prompt/task.md
-├─ output/result.json
-├─ output/artifacts/
-└─ logs/runtime.jsonl
+data/codex-runs/<run-id>/                 # 第一次尝试
+├─ input.json
+├─ prompt.md
+├─ output.schema.json
+├─ allowed_sources/
+├─ output.json
+├─ stdout.log
+├─ stderr.log
+├─ metadata.json
+├─ empty_home/
+└─ attempts/002/...                    # 后续尝试，不覆盖历史
 ```
 
 运行结束后：
 
-- 输入和输出哈希写入数据库；
-- 临时明文按保留策略清理；
-- 必需交付物复制到受控存储；
+- input/output、stdout/stderr、提示词快照和 metadata 保留作为审计材料；
+- 文件使用 0600，目录使用 0700；
+- 密钥、Feishu Token、数据库/Redis URL 不写入运行目录；
 - 不复用长期 Codex 会话。
+
+Runtime 使用 `codex exec --ephemeral --ignore-user-config --ignore-rules --strict-config --sandbox read-only`，并显式禁用 Shell/统一执行/快照、代码模式、多 Agent、Apply Patch、网络搜索、MCP Apps、浏览器、Computer Use、插件和技能发现。确定性构造的授权快照以标记为不可信证据的 JSON 同时写入 `input.json` 和 stdin；Codex 不需要、也不能通过工具自行寻找输入。它实现超时 terminate/kill、心跳、stdout/stderr 大小限制和环境变量白名单；子进程的 `HOME` 与 `CODEX_HOME` 均固定为本次运行的空目录，父进程的 Codex 配置/认证目录不会被继承，首期认证只允许通过白名单中的 `OPENAI_API_KEY` 注入。Docker Worker 还将子进程降权到 `codex-agent` UID/GID，并不挂载知识目录；Worker 当前固定 `--concurrency=1`，每次运行期间把目录交给子用户，结束后收回所有权，避免同容器并发子进程互读运行目录。
+
+**边界说明**：Codex CLI 只读 sandbox 不等于一个经证明的主机文件读取白名单，主机模式仍受父进程 OS 权限影响。为调用 Codex 模型，进程仍需到 Codex/OpenAI 服务的传输网络；“禁用网络”在当前实现中指禁用 Agent 可控的 Web/浏览器/MCP 工具，并不等于容器零出网。生产部署仍应增加目的地址 allowlist/代理或独立容器网络策略。高敏感数据的真实执行应优先使用专用容器/用户，不得将当前实现宣称为完全隔离。
 
 ### 3.2 工具权限
 
@@ -72,7 +85,7 @@ AgentDefinition 声明可用工具，例如：
 - `matter.read_snapshot`；
 - `artifact.write_draft`。
 
-默认禁止：
+当前消息研判 Runtime 的命令行强制禁用；AgentDefinition 中的 `allowedTools=[]` 不是唯一安全控制。默认禁止：
 
 - 任意 Shell；
 - 任意网络访问；
@@ -97,25 +110,23 @@ AgentDefinition 声明可用工具，例如：
 ```ts
 interface AgentDefinition {
   id: string;
+  key: string;
   name: string;
-  role: 'core' | 'professional' | 'support';
   description: string;
   version: string;
-  promptVersion: string;
-  inputSchemaVersion: string;
-  outputSchemaVersion: string;
-  supportedMatterCategories: string[];
+  promptTemplate: string;
+  inputSchema: Record<string, unknown>;
+  outputSchema: Record<string, unknown>;
   allowedTools: string[];
   allowedKnowledgeScopes: string[];
-  allowedArtifactTypes: string[];
   timeoutSeconds: number;
   maxRetries: number;
-  concurrencyLimit: number;
-  riskLevel: 'low' | 'medium' | 'high';
   requiresHumanReview: boolean;
   status: 'draft' | 'trial' | 'active' | 'paused' | 'retired';
 }
 ```
+
+`key + version` 数据库唯一；只有 `active` 版本可执行。每次 AgentRun 保留完整 prompt 快照，定义升级不改写历史。
 
 配置文件建议位于`apps/backend/agent_definitions/`或后续独立受控目录：
 
@@ -146,7 +157,29 @@ examples/
 evaluation/
 ```
 
+### 4.1 已激活定义：`message_judgement@1.0.0`
+
+该 Agent 只处理消息法务相关性、消息作用、行动性、建议标题/分类/期限、事实/推断、缺失信息、理由和置信度。`allowedTools=[]`、`allowedKnowledgeScopes=[]`、`requiresHumanReview=true`。
+
+输入同样由 Pydantic `MessageJudgementInput` 定义完整字段并生成持久化 `input_schema`；Runtime 执行前先核对定义中的 Schema 与该版本运行契约完全一致，再校验实际 payload，额外字段或权限布尔值不合法会在启动 Codex 前失败。
+
+输出 JSON 顶层严格为：
+
+```text
+legalRelevance, messageRole, actionability, suggestedTitle,
+categoryCandidates, deadlineCandidates, confirmedFacts,
+inferredFacts, missingInformation, reasons, confidence
+```
+
+- Pydantic 使用 `extra=forbid`，所有置信度限制在 0–1；
+- 必须输出纯 JSON，不得使用 Markdown 代码块；
+- 每条 `confirmedFacts` 必须带 `sourceMessageId`，且 ID 必须在快照的 `allowedMessageIds` 内；
+- 事实与推断严格分字段；输出或业务规则失败时不创建 Candidate；
+- `irrelevant` 或 `actionability=ignore` 不创建 Candidate；其他合法结果只创建 `pending_confirmation` Candidate，不自动建 Matter。
+
 ## 5. 统一输入协议
+
+本节是后续事项/专业 Agent 的通用目标协议。当前消息研判使用更小的 `runId + contextSnapshot + constraints` 输入，不接收 Matter、WorkItem 或知识库查询权限。
 
 ```ts
 interface AgentRequest {
@@ -200,6 +233,8 @@ interface KnowledgePolicy {
 ```
 
 ## 6. 统一输出协议
+
+本节是后续专业 Agent 的通用目标协议；当前 `message_judgement` 以第 4.1 节和代码中的 Pydantic Schema 为准。
 
 ```ts
 interface AgentResult {
@@ -403,11 +438,13 @@ Dispute Agent ──┘
 
 ## 12. 发布和版本治理
 
-Agent 状态：
+Agent 发布流程的目标状态：
 
 ```text
 draft → trial → active → paused → retired
 ```
+
+当前持久化枚举为 `draft/trial/active/paused/retired`；仅 `active` 可正式执行。完整的评测发布自动化仍属后续能力。
 
 从 `trial` 进入 `active` 前必须：
 
@@ -427,5 +464,5 @@ draft → trial → active → paused → retired
 - JSON Schema由Pydantic导出并版本化；
 - AgentDefinition保存在Git并同步入PostgreSQL注册表；
 - Celery任务只传递ID和版本，不传递完整合同正文；
-- Codex Runner从PostgreSQL读取授权快照并在独立目录组装输入；
-- 输出先通过Pydantic校验，再创建DraftArtifact。
+- 应用服务从 PostgreSQL 读取授权快照，提交准备事务后由 Runtime 在独立目录组装输入；
+- 输出先通过 Pydantic 和业务规则校验；消息研判创建 MessageCandidate，后续专业 Agent 创建 DraftArtifact。

@@ -24,7 +24,7 @@ PostgreSQL 18 + pgvector + Redis + Local File Storage
 - `api`：FastAPI、用例、审核门禁和查询接口；
 - `worker`：Celery后台任务、重试、日报和索引；
 - `feishu-connector`：受控飞书事件和发送适配；
-- `codex-runner`：唯一Codex执行入口；
+- `worker + CodexCliRuntime`：当前唯一业务Codex执行入口；
 - `file-indexer`：本地资料解析和索引；
 - `postgres`：业务事实、审计、全文检索、知识元数据和可选向量；
 - `redis`：队列、锁、短期缓存和延时任务。

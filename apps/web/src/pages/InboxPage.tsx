@@ -17,7 +17,13 @@ import {
 } from 'antd';
 import { ReloadOutlined } from '@ant-design/icons';
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { legalApi, type ConfirmCandidateInput } from '../services/api';
+import {
+  clearMutationContext,
+  getOrCreateMutationContext,
+  isDefinitiveMutationFailure,
+  legalApi,
+  type ConfirmCandidateInput,
+} from '../services/api';
 import {
   candidateStatusLabels,
   categoryLabels,
@@ -25,7 +31,7 @@ import {
   priorityLabels,
   riskLabels,
 } from '../services/apiLabels';
-import type { MatterCategory, MessageCandidate, Priority } from '../types/api';
+import type { MatterCategory, MessageAnalysis, MessageCandidate, MessageJudgementResult, Priority } from '../types/api';
 
 const { Title, Text, Paragraph } = Typography;
 
@@ -44,19 +50,31 @@ interface ConfirmFormValues {
   estimatedMinutes?: number;
 }
 
-export default function InboxPage({ onMatterCreated }: { onMatterCreated?: (matterId: string) => void }) {
+export default function InboxPage({ onMatterCreated, onOpenAgentRun }: { onMatterCreated?: (matterId: string) => void; onOpenAgentRun?: (runId: string) => void }) {
   const [items, setItems] = useState<MessageCandidate[]>([]);
+  const [analyses, setAnalyses] = useState<Record<string, MessageAnalysis>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [active, setActive] = useState<MessageCandidate>();
   const [submitting, setSubmitting] = useState(false);
+  const [retryingId, setRetryingId] = useState<string>();
   const [form] = Form.useForm<ConfirmFormValues>();
 
   const load = useCallback(async () => {
     setLoading(true);
     setError(undefined);
     try {
-      setItems(await legalApi.listCandidates());
+      const candidates = await legalApi.listCandidates();
+      setItems(candidates);
+      const loaded = await Promise.all(candidates.map(async (candidate) => {
+        if (!candidate.feishuMessageId) return null;
+        try {
+          return [candidate.id, await legalApi.getMessageAnalysis(candidate.feishuMessageId)] as const;
+        } catch {
+          return null;
+        }
+      }));
+      setAnalyses(Object.fromEntries(loaded.filter((value): value is readonly [string, MessageAnalysis] => value !== null)));
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : '加载候选消息失败');
     } finally {
@@ -65,6 +83,24 @@ export default function InboxPage({ onMatterCreated }: { onMatterCreated?: (matt
   }, []);
 
   useEffect(() => { void load(); }, [load]);
+
+  const retryAnalysis = async (candidate: MessageCandidate) => {
+    if (!candidate.feishuMessageId) return;
+    setRetryingId(candidate.id);
+    const actionKey = `retry-analysis:${candidate.feishuMessageId}`;
+    const mutation = getOrCreateMutationContext(actionKey, { forceNewRun: true });
+    try {
+      await legalApi.retryMessageAnalysis(candidate.feishuMessageId, mutation);
+      clearMutationContext(actionKey);
+      message.success('已提交重新分析，原 AgentRun 将保留');
+      await load();
+    } catch (reason) {
+      if (isDefinitiveMutationFailure(reason)) clearMutationContext(actionKey);
+      message.error(reason instanceof Error ? reason.message : '重新分析失败');
+    } finally {
+      setRetryingId(undefined);
+    }
+  };
 
   const openConfirm = (candidate: MessageCandidate) => {
     const proposedCategory = candidate.categoryProposals.find(
@@ -107,17 +143,22 @@ export default function InboxPage({ onMatterCreated }: { onMatterCreated?: (matt
         prioritySource: 'legal_confirmed',
         nextAction: values.nextAction,
         priorityReasons: ['法务在工作台确认'],
+        estimatedMinutes: values.estimatedMinutes,
       }],
     };
     setSubmitting(true);
+    const actionKey = `confirm-candidate:${active.id}`;
+    const mutation = getOrCreateMutationContext(actionKey, payload);
     try {
-      const result = await legalApi.confirmCandidate(active.id, payload);
+      const result = await legalApi.confirmCandidate(active.id, payload, mutation);
+      clearMutationContext(actionKey);
       message.success(`已创建事项 ${result.matterNumber}`);
       setActive(undefined);
       form.resetFields();
       await load();
       onMatterCreated?.(result.matterId);
     } catch (reason) {
+      if (isDefinitiveMutationFailure(reason)) clearMutationContext(actionKey);
       message.error(reason instanceof Error ? reason.message : '创建事项失败');
     } finally {
       setSubmitting(false);
@@ -140,7 +181,15 @@ export default function InboxPage({ onMatterCreated }: { onMatterCreated?: (matt
         <div className="inbox-stream">
           {!loading && items.length === 0 && <Empty description="暂无待确认候选消息" />}
           {items.map((item) => (
-            <CandidateCard key={item.id} item={item} onConfirm={() => openConfirm(item)} />
+            <CandidateCard
+              key={item.id}
+              item={item}
+              analysis={analyses[item.id]}
+              onConfirm={() => openConfirm(item)}
+              onRetry={() => void retryAnalysis(item)}
+              retrying={retryingId === item.id}
+              onOpenAgentRun={onOpenAgentRun}
+            />
           ))}
         </div>
       </Spin>
@@ -152,7 +201,10 @@ export default function InboxPage({ onMatterCreated }: { onMatterCreated?: (matt
         okText="创建事项"
         cancelText="取消"
         confirmLoading={submitting}
-        onCancel={() => setActive(undefined)}
+        onCancel={() => {
+          if (active) clearMutationContext(`confirm-candidate:${active.id}`);
+          setActive(undefined);
+        }}
         onOk={() => void confirm()}
       >
         <Alert
@@ -196,11 +248,20 @@ export default function InboxPage({ onMatterCreated }: { onMatterCreated?: (matt
   );
 }
 
-function CandidateCard({ item, onConfirm }: { item: MessageCandidate; onConfirm: () => void }) {
+function CandidateCard({ item, analysis, onConfirm, onRetry, retrying, onOpenAgentRun }: {
+  item: MessageCandidate;
+  analysis?: MessageAnalysis;
+  onConfirm: () => void;
+  onRetry: () => void;
+  retrying: boolean;
+  onOpenAgentRun?: (runId: string) => void;
+}) {
   const category = useMemo(() => {
     const value = item.categoryProposals.find((proposal) => typeof proposal.category === 'string')?.category;
     return typeof value === 'string' ? categoryLabels[value] ?? value : '待分类';
   }, [item.categoryProposals]);
+  const judgement = (analysis?.analysisResult ?? item.analysisPayload) as Partial<MessageJudgementResult>;
+  const run = analysis?.agentRun;
 
   return (
     <Card className="inbox-card" bordered={false}>
@@ -211,12 +272,21 @@ function CandidateCard({ item, onConfirm }: { item: MessageCandidate; onConfirm:
             <Tag>{category}</Tag>
             <Tag>{item.messageRole}</Tag>
             <Tag color={item.legalRelevance === 'relevant' ? 'green' : 'gold'}>{item.legalRelevance}</Tag>
+            {item.requiresManualReview && <Tag color="orange">必须人工确认</Tag>}
           </Space>
           <Title level={4}>{item.titleProposal ?? '未命名候选事项'}</Title>
           <Paragraph type="secondary">建议动作：{item.recommendedAction}</Paragraph>
-          {item.evidenceRefs.length > 0 && (
-            <div className="rationale-box"><strong>证据与来源</strong>{item.evidenceRefs.map((value) => <span key={value}>· {displayValue(value)}</span>)}</div>
-          )}
+          <div className="analysis-meta">
+            <span>飞书来源：{analysis?.message.messageId ?? item.feishuMessageId ?? '未关联'}</span>
+            <span>分析状态：{analysis?.messageStatus ?? run?.status ?? 'completed'}</span>
+            <span>Agent：{run ? `${run.agentKey} v${run.agentVersion}` : 'message_judgement'}</span>
+          </div>
+          <AnalysisSection title="研判理由" values={judgement.reasons} />
+          <AnalysisSection title="已确认事实" values={judgement.confirmedFacts?.map((fact) => `${fact.statement}（来源 ${fact.sourceMessageId}）`)} />
+          <AnalysisSection title="推断事实" values={judgement.inferredFacts?.map((fact) => `${fact.statement}（${fact.basis}，${Math.round(fact.confidence * 100)}%）`)} />
+          <AnalysisSection title="截止时间候选" values={judgement.deadlineCandidates?.map((deadline) => `${deadline.rawText} → ${deadline.resolvedAt ?? '待确认'}（${deadline.deadlineType}）`)} />
+          <AnalysisSection title="缺失信息" values={judgement.missingInformation} />
+          {item.evidenceRefs.length > 0 && <AnalysisSection title="证据消息" values={item.evidenceRefs.map(displayValue)} />}
         </div>
         <div className="confidence-panel">
           <Text type="secondary">置信度</Text>
@@ -225,8 +295,15 @@ function CandidateCard({ item, onConfirm }: { item: MessageCandidate; onConfirm:
       </div>
       <div className="inbox-card-actions">
         <Button type="primary" onClick={onConfirm}>确认并创建事项</Button>
+        {item.feishuMessageId && <Button loading={retrying} onClick={onRetry}>重新分析</Button>}
+        {item.agentRunId && <Button type="link" onClick={() => onOpenAgentRun?.(item.agentRunId!)}>AgentRun 详情</Button>}
         <Text type="secondary">版本 {item.version} · {item.id}</Text>
       </div>
     </Card>
   );
+}
+
+function AnalysisSection({ title, values }: { title: string; values?: string[] }) {
+  if (!values?.length) return null;
+  return <div className="rationale-box"><strong>{title}</strong>{values.map((value, index) => <span key={`${title}-${index}`}>· {value}</span>)}</div>;
 }

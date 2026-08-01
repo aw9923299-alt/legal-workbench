@@ -17,7 +17,7 @@ redis     队列和短期协调
 可选Profiles：
 
 ```text
-agents        codex-runner
+agents        worker 内受控 CodexCliRuntime
 integrations  feishu-connector、file-indexer
 ```
 

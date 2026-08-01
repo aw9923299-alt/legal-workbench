@@ -34,7 +34,22 @@ interface FeishuMessage {
   plainText?: string;
   rawPayloadEncrypted: string;
   contentHash: string;
-  syncStatus: 'received' | 'processed' | 'ignored' | 'failed';
+  status:
+    | 'received'
+    | 'queued_for_analysis'
+    | 'context_prepared'
+    | 'agent_queued'
+    | 'analysing'
+    | 'candidate_created'
+    | 'ignored'
+    | 'analysis_failed'
+    | 'dead_letter';
+  contextSnapshotId?: string;
+  lastAgentRunId?: string;
+  analysisAttempts: number;
+  failureCode?: string;
+  failureMessage?: string;
+  version: number;
   createdAt: string;
 }
 ```
@@ -75,18 +90,23 @@ interface FileAsset {
 ```ts
 interface ContextSnapshot {
   id: string;
-  triggerMessageId: string;
+  sourceType: string;
+  sourceId: string;
+  snapshotVersion: number;
   messageIds: string[];
-  fileIds: string[];
-  relevantMatterIds: string[];
   participantIds: string[];
+  attachmentIds: string[];
+  threadMetadata: Record<string, unknown>;
   permissionSnapshot: Record<string, unknown>;
-  generatedAt: string;
+  content: Record<string, unknown>;
   contentHash: string;
+  createdAt: string;
 }
 ```
 
-快照一经创建不可修改。需要补充上下文时创建新版本。
+快照一经创建不可修改。当前消息必选，父消息和同线程最近消息由确定性规则限量选取；附件仅记录元数据。`(source_type, source_id, content_hash)` 唯一，并通过事务级 advisory lock 避免并发重复。
+
+0004 迁移不会按旧版客户端提供的 `content_hash/source_ids` 合并历史审计行；每条旧快照以自身 UUID 回填 `source_id`，因此重复旧数据仍被完整保留。0003 Candidate 中可能存在的外部 `agent_run_id` 先保存到 `analysis_payload.legacyAgentRunId`，downgrade 时恢复。
 
 ## 2.4 MessageCandidate
 
@@ -129,10 +149,15 @@ interface MessageCandidate {
   evidenceRefs: string[];
   confidence: number;
   agentRunId: string;
+  feishuMessageId: string;
+  requiresManualReview: boolean;
+  analysisPayload: Record<string, unknown>;
   confirmedBy?: string;
   confirmedAt?: string;
 }
 ```
+
+同一 `feishu_message_id` 对 `pending_confirmation/confirmed/linked` 建立部分唯一索引，防止重复有效 Candidate。消息研判结果无论置信度高低都不自动建立 Matter。
 
 ## 2.5 LegalMatter
 
@@ -278,22 +303,23 @@ interface Dependency {
 
 ## 2.10 AgentDefinition
 
-详细协议见 `AGENT_PROTOCOL.md`。
+详细协议见 `AGENT_PROTOCOL.md`。`AgentDefinition` 以 `(key, version)` 唯一。正式执行仅允许 `active` 版本；AgentRun 同时保留定义引用和完整 `promptSnapshot`，后续版本不能改写历史运行。
 
 ```ts
 interface AgentDefinition {
   id: string;
+  key: string;
   name: string;
-  role: 'core' | 'professional' | 'support';
   version: string;
-  promptVersion: string;
-  inputSchemaVersion: string;
-  outputSchemaVersion: string;
+  description: string;
+  status: 'draft' | 'trial' | 'active' | 'paused' | 'retired';
+  promptTemplate: string;
+  inputSchema: Record<string, unknown>;
+  outputSchema: Record<string, unknown>;
   allowedTools: string[];
   allowedKnowledgeScopes: string[];
   timeoutSeconds: number;
   maxRetries: number;
-  status: 'draft' | 'trial' | 'active' | 'paused' | 'retired';
   requiresHumanReview: boolean;
 }
 ```
@@ -328,33 +354,46 @@ interface AgentPlanStep {
 ```ts
 interface AgentRun {
   id: string;
-  planId?: string;
-  planStepId?: string;
-  matterId: string;
+  matterId?: string;
   workItemId?: string;
+  feishuMessageId?: string;
   agentDefinitionId: string;
-  agentVersion: string;
-  promptVersion: string;
   contextSnapshotId: string;
   status:
     | 'queued'
+    | 'preparing'
     | 'running'
+    | 'validating'
+    | 'completed'
     | 'needs_more_information'
-    | 'conflict_detected'
-    | 'succeeded'
     | 'failed'
+    | 'timed_out'
     | 'cancelled'
     | 'dead_letter';
-  idempotencyKey: string;
-  inputHash: string;
-  outputHash?: string;
-  retryCount: number;
+  objective: string;
+  inputPayload: Record<string, unknown>;
+  outputPayload: Record<string, unknown>;
+  rawStdout?: string;
+  rawStderr?: string;
+  promptSnapshot: string;
+  workingDirectory: string;
   startedAt?: string;
+  heartbeatAt?: string;
   finishedAt?: string;
+  timeoutAt?: string;
+  attemptNumber: number;
+  maxAttempts: number;
   failureCode?: string;
   failureMessage?: string;
+  correlationId: string;
+  createdBy: string;
+  version: number;
 }
 ```
+
+### 2.12.1 AgentRunSource
+
+`AgentRunSource` 只追加记录本次实际授权使用的来源：`feishu_message`、`context_snapshot`、`attachment`、`knowledge_document`、`historical_matter`、`approved_example`。消息研判当前记录快照、当前/父/线程消息及附件元数据，并保留来源版本、SHA-256 和引用元数据。
 
 ## 2.13 DraftArtifact
 
@@ -363,24 +402,18 @@ Agent 只能产出草稿，不直接生成正式外发记录。
 ```ts
 interface DraftArtifact {
   id: string;
-  matterId: string;
-  workItemId?: string;
   agentRunId: string;
-  type:
-    | 'analysis'
-    | 'contract_review'
-    | 'copy_review'
-    | 'material_list'
-    | 'reply_draft'
-    | 'report_draft'
-    | 'retrospective_draft';
+  artifactType: string;
+  title: string;
+  content: string;
+  structuredPayload: Record<string, unknown>;
   version: number;
-  status: 'draft' | 'superseded' | 'submitted_for_review' | 'approved' | 'rejected';
-  content: Record<string, unknown>;
-  citationIds: string[];
+  status: 'draft' | 'superseded' | 'submitted' | 'approved' | 'rejected';
   createdAt: string;
 }
 ```
+
+本轮仅建立通用持久化边界，消息研判的业务产物直接进入 `MessageCandidate`。
 
 ## 2.14 ReviewPackage
 
@@ -568,12 +601,11 @@ todo → in_progress → pending_review → done
 ## 4.4 AgentRun
 
 ```text
-queued → running → succeeded
-                 ├→ needs_more_information
-                 ├→ conflict_detected
-                 ├→ failed → queued(重试)
-                 └→ cancelled
-失败超过阈值 → dead_letter
+queued → preparing → running → validating → completed
+   └→ cancelled       │          ├→ needs_more_information
+                      ├→ failed ───────┘
+                      └→ timed_out
+failed/timed_out → queued(重试) 或 dead_letter
 ```
 
 ## 4.5 ReviewPackage
@@ -624,6 +656,7 @@ agent_definitions
 agent_execution_plans
 agent_plan_steps
 agent_runs
+agent_run_sources
 draft_artifacts
 review_packages
 review_records

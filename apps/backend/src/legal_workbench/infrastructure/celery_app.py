@@ -17,7 +17,7 @@ celery_app.conf.update(
     task_serializer="json",
     result_serializer="json",
     accept_content=["json"],
-    timezone="Asia/Singapore",
+    timezone="UTC",
     enable_utc=True,
     beat_schedule={
         "publish-outbox-every-five-seconds": {

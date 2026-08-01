@@ -1,7 +1,17 @@
+from enum import StrEnum
 from functools import lru_cache
+from typing import Self
 
-from pydantic import Field
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class RuntimeEnvironment(StrEnum):
+    LOCAL = "local"
+    DEVELOPMENT = "development"
+    TEST = "test"
+    STAGING = "staging"
+    PRODUCTION = "production"
 
 
 class Settings(BaseSettings):
@@ -16,15 +26,14 @@ class Settings(BaseSettings):
     )
 
     app_name: str = "法务工作台 API"
-    environment: str = "development"
+    environment: RuntimeEnvironment = RuntimeEnvironment.DEVELOPMENT
     api_prefix: str = "/api/v1"
     log_level: str = "INFO"
     cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost:5173"])
 
     database_url: str = Field(
         default=(
-            "postgresql+psycopg://legal_workbench:legal_workbench"
-            "@localhost:5432/legal_workbench"
+            "postgresql+psycopg://legal_workbench:legal_workbench@localhost:5432/legal_workbench"
         )
     )
     redis_url: str = "redis://localhost:6379/0"
@@ -40,10 +49,18 @@ class Settings(BaseSettings):
     codex_runs_root: str = "/data/codex-runs"
     codex_command: str = "codex"
     codex_run_timeout_seconds: int = 900
+    codex_sandbox_uid: int | None = None
+    codex_sandbox_gid: int | None = None
 
     enable_real_feishu: bool = False
     enable_real_codex: bool = False
     enable_external_send: bool = False
+
+    local_actor_id: str = "local-legal-user"
+    session_secret: str = "development-only-change-me"
+    session_cookie_name: str = "legal_workbench_session"
+    session_ttl_seconds: int = 43200
+    allow_development_actor_header: bool = False
 
     outbox_batch_size: int = 50
     outbox_lock_seconds: int = 60
@@ -51,6 +68,46 @@ class Settings(BaseSettings):
     outbox_retry_base_seconds: int = 15
     outbox_retry_max_seconds: int = 3600
     outbox_worker_id: str = "local-outbox-worker"
+
+    context_max_messages: int = 20
+    context_max_text_characters: int = 20000
+    message_analysis_manual_review_threshold: float = 0.75
+    message_analysis_retry_base_seconds: int = 30
+    message_analysis_retry_max_seconds: int = 900
+
+    @field_validator("codex_sandbox_uid", "codex_sandbox_gid", mode="before")
+    @classmethod
+    def normalize_optional_process_ids(cls, value: object) -> object:
+        return None if value == "" else value
+
+    @model_validator(mode="after")
+    def validate_security_boundaries(self) -> Self:
+        if self.enable_real_feishu and not (
+            self.feishu_verification_token or ""
+        ).strip():
+            raise ValueError(
+                "Real Feishu integration currently requires a verification token; "
+                "encrypted callbacks are not implemented."
+            )
+        if self.environment not in {
+            RuntimeEnvironment.LOCAL,
+            RuntimeEnvironment.DEVELOPMENT,
+        } and (
+            self.session_secret == "development-only-change-me"
+            or len(self.session_secret.strip()) < 32
+        ):
+            raise ValueError(
+                "Non-local environments require an explicit session secret of at least 32 "
+                "characters."
+            )
+        if (
+            self.environment == RuntimeEnvironment.PRODUCTION
+            and self.allow_development_actor_header
+        ):
+            raise ValueError("Development actor headers cannot be enabled in production.")
+        if not 0 <= self.message_analysis_manual_review_threshold <= 1:
+            raise ValueError("Message analysis manual-review threshold must be between 0 and 1.")
+        return self
 
 
 @lru_cache(maxsize=1)

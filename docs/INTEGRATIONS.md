@@ -10,7 +10,7 @@
 
 ## Codex Runtime
 
-Codex是唯一推理和生成AI。所有调用统一经过`codex-runner`，负责AgentDefinition、提示词版本、单次工作目录、授权文件、工具权限、超时、重试、Schema和审计。
+Codex是唯一推理和生成AI。所有业务调用统一经过`CodexCliRuntime`，由 Celery Worker 调用，负责AgentDefinition、提示词版本、单次工作目录、授权来源、工具权限、超时、重试、Schema和审计。当前仅`message_judgement`已实现。
 
 业务服务不得直接执行Codex CLI。
 
@@ -42,4 +42,4 @@ Codex是唯一推理和生成AI。所有调用统一经过`codex-runner`，负�
 
 ## Mock与真实实现
 
-前端允许显式Mock模式。真实模式缺少后端、飞书或Codex配置时必须报错，不得静默回退Mock。
+前端的候选、事项、任务和消息研判路径访问 FastAPI；与当前闭环无关的页面仍可包含演示数据。真实模式缺少后端、飞书或Codex配置时必须报错，不得静默回退演示数据。

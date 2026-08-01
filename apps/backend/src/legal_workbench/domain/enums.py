@@ -163,12 +163,55 @@ class CandidateMatterRelation(StrEnum):
 
 class AgentRunStatus(StrEnum):
     QUEUED = "queued"
+    PREPARING = "preparing"
     RUNNING = "running"
-    NEEDS_INPUT = "needs_input"
-    CONFLICT = "conflict"
-    SUCCEEDED = "succeeded"
+    VALIDATING = "validating"
+    COMPLETED = "completed"
+    NEEDS_MORE_INFORMATION = "needs_more_information"
     FAILED = "failed"
+    TIMED_OUT = "timed_out"
+    CANCELLED = "cancelled"
     DEAD_LETTER = "dead_letter"
+
+
+class MessageAnalysisFailureCode(StrEnum):
+    FEISHU_MESSAGE_NOT_FOUND = "FEISHU_MESSAGE_NOT_FOUND"
+    FEISHU_MESSAGE_NOT_AUTHORIZED = "FEISHU_MESSAGE_NOT_AUTHORIZED"
+    CONTEXT_BUILD_FAILED = "CONTEXT_BUILD_FAILED"
+    AGENT_DEFINITION_NOT_FOUND = "AGENT_DEFINITION_NOT_FOUND"
+    AGENT_DEFINITION_DISABLED = "AGENT_DEFINITION_DISABLED"
+    AGENT_RUNTIME_START_FAILED = "AGENT_RUNTIME_START_FAILED"
+    AGENT_RUNTIME_TIMEOUT = "AGENT_RUNTIME_TIMEOUT"
+    AGENT_RUNTIME_CANCELLED = "AGENT_RUNTIME_CANCELLED"
+    AGENT_OUTPUT_MISSING = "AGENT_OUTPUT_MISSING"
+    AGENT_OUTPUT_INVALID_JSON = "AGENT_OUTPUT_INVALID_JSON"
+    AGENT_OUTPUT_SCHEMA_INVALID = "AGENT_OUTPUT_SCHEMA_INVALID"
+    AGENT_OUTPUT_BUSINESS_RULE_INVALID = "AGENT_OUTPUT_BUSINESS_RULE_INVALID"
+    CANDIDATE_ALREADY_EXISTS = "CANDIDATE_ALREADY_EXISTS"
+    UNSUPPORTED_OUTBOX_EVENT = "UNSUPPORTED_OUTBOX_EVENT"
+
+
+class AgentDefinitionStatus(StrEnum):
+    DRAFT = "draft"
+    TRIAL = "trial"
+    ACTIVE = "active"
+    PAUSED = "paused"
+    RETIRED = "retired"
+
+
+class AgentRunSourceType(StrEnum):
+    FEISHU_MESSAGE = "feishu_message"
+    CONTEXT_SNAPSHOT = "context_snapshot"
+    ATTACHMENT = "attachment"
+    KNOWLEDGE_DOCUMENT = "knowledge_document"
+    HISTORICAL_MATTER = "historical_matter"
+    APPROVED_EXAMPLE = "approved_example"
+
+
+class DraftArtifactStatus(StrEnum):
+    DRAFT = "draft"
+    SUPERSEDED = "superseded"
+    APPROVED = "approved"
 
 
 class ReviewPackageType(StrEnum):
@@ -222,6 +265,10 @@ class FeishuEventStatus(StrEnum):
 class FeishuMessageStatus(StrEnum):
     RECEIVED = "received"
     QUEUED_FOR_ANALYSIS = "queued_for_analysis"
-    ANALYZED = "analyzed"
+    CONTEXT_PREPARED = "context_prepared"
+    AGENT_QUEUED = "agent_queued"
+    ANALYSING = "analysing"
+    CANDIDATE_CREATED = "candidate_created"
     IGNORED = "ignored"
-    FAILED = "failed"
+    ANALYSIS_FAILED = "analysis_failed"
+    DEAD_LETTER = "dead_letter"

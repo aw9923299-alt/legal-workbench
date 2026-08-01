@@ -1,8 +1,10 @@
 import type {
   Communication,
+  AgentRunRecord,
   Deadline,
   LegalMatter,
   MessageCandidate,
+  MessageAnalysis,
   Priority,
   PriorityConfirmation,
   ReviewDecision,
@@ -13,7 +15,6 @@ import type {
 } from '../types/api';
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? '/api/v1';
-const DEFAULT_ACTOR_ID = 'local-legal-user';
 
 export class ApiError extends Error {
   constructor(
@@ -26,24 +27,125 @@ export class ApiError extends Error {
   }
 }
 
-function createIdempotencyKey(): string {
+export function isDefinitiveMutationFailure(error: unknown): boolean {
+  return error instanceof ApiError
+    && error.status >= 400
+    && error.status < 500
+    && error.status !== 408
+    && error.status !== 429;
+}
+
+function createRequestKey(): string {
   return globalThis.crypto?.randomUUID?.() ?? `request-${Date.now()}-${Math.random()}`;
+}
+
+export interface MutationContext {
+  idempotencyKey: string;
+  correlationId: string;
+}
+
+export function createMutationContext(): MutationContext {
+  return { idempotencyKey: createRequestKey(), correlationId: createRequestKey() };
+}
+
+const mutationStoragePrefix = 'legal-workbench:mutation:';
+const memoryMutationContexts = new Map<string, string>();
+
+function readMutationValue(key: string): string | null {
+  try {
+    return globalThis.sessionStorage?.getItem(key) ?? memoryMutationContexts.get(key) ?? null;
+  } catch {
+    return memoryMutationContexts.get(key) ?? null;
+  }
+}
+
+function writeMutationValue(key: string, value: string): void {
+  memoryMutationContexts.set(key, value);
+  try {
+    globalThis.sessionStorage?.setItem(key, value);
+  } catch {
+    // In-memory continuity still covers this tab when storage is unavailable.
+  }
+}
+
+export function getOrCreateMutationContext(
+  actionKey: string,
+  requestPayload: unknown,
+): MutationContext {
+  const storageKey = `${mutationStoragePrefix}${actionKey}`;
+  const fingerprint = JSON.stringify(requestPayload);
+  const raw = readMutationValue(storageKey);
+  if (raw) {
+    try {
+      const stored = JSON.parse(raw) as { fingerprint: string; context: MutationContext };
+      if (stored.fingerprint === fingerprint) return stored.context;
+    } catch {
+      // Replace malformed local state with a fresh bounded context.
+    }
+  }
+  const context = createMutationContext();
+  writeMutationValue(storageKey, JSON.stringify({ fingerprint, context }));
+  return context;
+}
+
+export function clearMutationContext(actionKey: string): void {
+  const storageKey = `${mutationStoragePrefix}${actionKey}`;
+  memoryMutationContexts.delete(storageKey);
+  try {
+    globalThis.sessionStorage?.removeItem(storageKey);
+  } catch {
+    // The in-memory copy is already cleared.
+  }
+}
+
+let localSessionPromise: Promise<void> | undefined;
+
+async function ensureLocalSession(): Promise<void> {
+  if (!localSessionPromise) {
+    localSessionPromise = fetch(`${API_BASE_URL}/auth/session`, {
+      credentials: 'include',
+      headers: { Accept: 'application/json' },
+    })
+      .then(async (response) => {
+        if (response.ok) return;
+        if (response.status !== 401) throw new ApiError('无法验证认证会话', response.status);
+        const created = await fetch(`${API_BASE_URL}/auth/local-session`, {
+          method: 'POST',
+          credentials: 'include',
+          headers: { Accept: 'application/json' },
+        });
+        if (!created.ok) throw new ApiError('无法初始化本地认证会话', created.status);
+      })
+      .catch((error: unknown) => {
+        localSessionPromise = undefined;
+        throw error;
+      });
+  }
+  return localSessionPromise;
 }
 
 async function request<T>(
   path: string,
   init: RequestInit = {},
-  options: { write?: boolean; actorId?: string } = {},
+  options: { write?: boolean; authenticated?: boolean; mutation?: MutationContext } = {},
 ): Promise<T> {
+  await ensureLocalSession();
   const headers = new Headers(init.headers);
   headers.set('Accept', 'application/json');
   if (init.body) headers.set('Content-Type', 'application/json');
   if (options.write) {
-    headers.set('X-Actor-ID', options.actorId ?? DEFAULT_ACTOR_ID);
-    headers.set('Idempotency-Key', createIdempotencyKey());
-    headers.set('X-Correlation-ID', createIdempotencyKey());
+    const mutation = options.mutation ?? createMutationContext();
+    headers.set('Idempotency-Key', mutation.idempotencyKey);
+    headers.set('X-Correlation-ID', mutation.correlationId);
   }
-  const response = await fetch(`${API_BASE_URL}${path}`, { ...init, headers });
+  const requestInit = { ...init, credentials: 'include' as const, headers };
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE_URL}${path}`, requestInit);
+  } catch (error) {
+    if (!(error instanceof TypeError) || !options.write) throw error;
+    response = await fetch(`${API_BASE_URL}${path}`, requestInit);
+  }
   if (!response.ok) {
     const payload = (await response.json().catch(() => ({}))) as {
       error?: { message?: string; code?: string; correlationId?: string };
@@ -79,6 +181,7 @@ export interface ConfirmCandidateInput {
     prioritySource: 'legal_confirmed';
     nextAction: string;
     priorityReasons: string[];
+    estimatedMinutes?: number;
     plannedCompleteAt?: string;
   }>;
 }
@@ -88,7 +191,7 @@ export const legalApi = {
     return request(`/inbox/candidates?status=${encodeURIComponent(status)}&limit=100`);
   },
 
-  confirmCandidate(candidateId: string, input: ConfirmCandidateInput): Promise<{
+  confirmCandidate(candidateId: string, input: ConfirmCandidateInput, mutation?: MutationContext): Promise<{
     matterId: string;
     matterNumber: string;
     workItemIds: string[];
@@ -97,7 +200,29 @@ export const legalApi = {
     return request(`/inbox/candidates/${candidateId}/confirm-create`, {
       method: 'POST',
       body: JSON.stringify(input),
-    }, { write: true });
+    }, { write: true, mutation });
+  },
+
+  getMessageAnalysis(messageId: string): Promise<MessageAnalysis> {
+    return request(`/feishu/messages/${messageId}/analysis`, {}, { authenticated: true });
+  },
+
+  retryMessageAnalysis(messageId: string, mutation?: MutationContext): Promise<{
+    messageId: string;
+    messageStatus: string;
+    idempotentReplay: boolean;
+  }> {
+    return request(`/feishu/messages/${messageId}/retry-analysis`, {
+      method: 'POST',
+    }, { write: true, mutation });
+  },
+
+  listAgentRuns(): Promise<AgentRunRecord[]> {
+    return request('/agent-runs?limit=100', {}, { authenticated: true });
+  },
+
+  getAgentRun(runId: string): Promise<AgentRunRecord> {
+    return request(`/agent-runs/${runId}`, {}, { authenticated: true });
   },
 
   listMatters(): Promise<LegalMatter[]> {

@@ -1,9 +1,13 @@
 from legal_workbench.infrastructure.models.core import (
+    AgentDefinitionModel,
+    AgentRunModel,
+    AgentRunSourceModel,
     AuditEventModel,
     CandidateMatterLinkModel,
     CommunicationModel,
     ContextSnapshotModel,
     DeadlineModel,
+    DraftArtifactModel,
     FeishuEventModel,
     FeishuMessageModel,
     IdempotencyRecordModel,
@@ -19,11 +23,15 @@ from legal_workbench.infrastructure.models.core import (
 )
 
 __all__ = [
+    "AgentDefinitionModel",
+    "AgentRunModel",
+    "AgentRunSourceModel",
     "AuditEventModel",
     "CandidateMatterLinkModel",
     "CommunicationModel",
     "ContextSnapshotModel",
     "DeadlineModel",
+    "DraftArtifactModel",
     "FeishuEventModel",
     "FeishuMessageModel",
     "IdempotencyRecordModel",

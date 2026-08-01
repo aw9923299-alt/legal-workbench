@@ -4,14 +4,18 @@ from collections.abc import Sequence
 from decimal import Decimal
 from uuid import UUID
 
-from sqlalchemy import Select, select
+from sqlalchemy import Select, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from legal_workbench.domain.entities import (
+    AgentDefinition,
+    AgentRun,
+    AgentRunSource,
     AuditEvent,
     Communication,
     ContextSnapshot,
     Deadline,
+    DraftArtifact,
     FeishuMessage,
     FeishuRawEvent,
     IdempotencyRecord,
@@ -25,6 +29,8 @@ from legal_workbench.domain.entities import (
     WorkItemDependency,
 )
 from legal_workbench.domain.enums import (
+    AgentDefinitionStatus,
+    AgentRunStatus,
     CandidateMatterRelation,
     CandidateStatus,
     CommunicationStatus,
@@ -34,11 +40,15 @@ from legal_workbench.domain.enums import (
     ReviewPackageStatus,
 )
 from legal_workbench.infrastructure.models import (
+    AgentDefinitionModel,
+    AgentRunModel,
+    AgentRunSourceModel,
     AuditEventModel,
     CandidateMatterLinkModel,
     CommunicationModel,
     ContextSnapshotModel,
     DeadlineModel,
+    DraftArtifactModel,
     FeishuEventModel,
     FeishuMessageModel,
     IdempotencyRecordModel,
@@ -70,7 +80,51 @@ class SqlAlchemyContextSnapshotRepository:
                 permission_snapshot=snapshot.permission_snapshot,
                 generated_at=snapshot.generated_at,
                 content_hash=snapshot.content_hash,
+                source_id=(
+                    snapshot.source_id
+                    or (snapshot.source_ids[0] if snapshot.source_ids else str(snapshot.id))
+                ),
+                snapshot_version=snapshot.snapshot_version,
+                attachment_ids=snapshot.attachment_ids,
+                thread_metadata=snapshot.thread_metadata,
+                content=snapshot.content,
             )
+        )
+
+    async def get(self, snapshot_id: UUID) -> ContextSnapshot | None:
+        model = await self._session.get(ContextSnapshotModel, snapshot_id)
+        return None if model is None else self._to_domain(model)
+
+    async def find_by_source_hash(
+        self, *, source_type: str, source_id: str, content_hash: str
+    ) -> ContextSnapshot | None:
+        statement = select(ContextSnapshotModel).where(
+            ContextSnapshotModel.source_type == source_type,
+            ContextSnapshotModel.source_id == source_id,
+            ContextSnapshotModel.content_hash == content_hash,
+        )
+        model = (await self._session.execute(statement)).scalar_one_or_none()
+        return None if model is None else self._to_domain(model)
+
+    @staticmethod
+    def _to_domain(model: ContextSnapshotModel) -> ContextSnapshot:
+        return ContextSnapshot(
+            id=model.id,
+            source_type=model.source_type,
+            source_ids=model.source_ids,
+            message_ids=model.message_ids,
+            file_ids=model.file_ids,
+            relevant_matter_ids=model.relevant_matter_ids,
+            participant_ids=model.participant_ids,
+            permission_snapshot=model.permission_snapshot,
+            generated_at=model.generated_at,
+            content_hash=model.content_hash,
+            source_id=model.source_id,
+            snapshot_version=model.snapshot_version,
+            attachment_ids=model.attachment_ids,
+            thread_metadata=model.thread_metadata,
+            content=model.content,
+            created_at=model.created_at,
         )
 
 
@@ -94,6 +148,9 @@ class SqlAlchemyMessageCandidateRepository:
             evidence_refs=candidate.evidence_refs,
             confidence=candidate.confidence,
             agent_run_id=candidate.agent_run_id,
+            feishu_message_id=candidate.feishu_message_id,
+            requires_manual_review=candidate.requires_manual_review,
+            analysis_payload=candidate.analysis_payload,
             confirmed_by=candidate.confirmed_by,
             confirmed_at=candidate.confirmed_at,
             version=candidate.version,
@@ -127,8 +184,23 @@ class SqlAlchemyMessageCandidateRepository:
         if model is None:
             raise RuntimeError(f"Candidate {candidate.id} is not tracked")
         model.status = candidate.status
+        model.context_snapshot_id = candidate.context_snapshot_id
+        model.legal_relevance = candidate.legal_relevance
+        model.message_role = candidate.message_role
+        model.recommended_action = candidate.recommended_action
+        model.confidence = candidate.confidence
+        model.title_proposal = candidate.title_proposal
+        model.category_proposals = candidate.category_proposals
+        model.deadline_proposals = candidate.deadline_proposals
+        model.related_matter_proposals = candidate.related_matter_proposals
+        model.evidence_refs = candidate.evidence_refs
+        model.agent_run_id = candidate.agent_run_id
+        model.feishu_message_id = candidate.feishu_message_id
+        model.requires_manual_review = candidate.requires_manual_review
+        model.analysis_payload = candidate.analysis_payload
         model.confirmed_by = candidate.confirmed_by
         model.confirmed_at = candidate.confirmed_at
+        model.version = candidate.version
 
     async def list(
         self, *, status: CandidateStatus | None, limit: int
@@ -158,6 +230,21 @@ class SqlAlchemyMessageCandidateRepository:
             )
         )
 
+    async def get_active_for_message(self, message_id: UUID) -> MessageCandidate | None:
+        statement = select(MessageCandidateModel).where(
+            MessageCandidateModel.feishu_message_id == message_id,
+            MessageCandidateModel.status.in_(
+                [
+                    CandidateStatus.PENDING_ANALYSIS,
+                    CandidateStatus.PENDING_CONFIRMATION,
+                    CandidateStatus.CONFIRMED,
+                    CandidateStatus.LINKED,
+                ]
+            ),
+        )
+        model = (await self._session.execute(statement)).scalar_one_or_none()
+        return None if model is None else self._to_domain(model)
+
     @staticmethod
     def _to_domain(model: MessageCandidateModel) -> MessageCandidate:
         return MessageCandidate(
@@ -174,9 +261,268 @@ class SqlAlchemyMessageCandidateRepository:
             related_matter_proposals=model.related_matter_proposals,
             evidence_refs=model.evidence_refs,
             agent_run_id=model.agent_run_id,
+            feishu_message_id=model.feishu_message_id,
+            requires_manual_review=model.requires_manual_review,
+            analysis_payload=model.analysis_payload,
             confirmed_by=model.confirmed_by,
             confirmed_at=model.confirmed_at,
             version=model.version,
+        )
+
+
+class SqlAlchemyAgentDefinitionRepository:
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def add(self, definition: AgentDefinition) -> None:
+        self._session.add(
+            AgentDefinitionModel(
+                id=definition.id,
+                key=definition.key,
+                name=definition.name,
+                version=definition.version,
+                description=definition.description,
+                status=definition.status,
+                prompt_template=definition.prompt_template,
+                input_schema=definition.input_schema,
+                output_schema=definition.output_schema,
+                allowed_tools=definition.allowed_tools,
+                allowed_knowledge_scopes=definition.allowed_knowledge_scopes,
+                timeout_seconds=definition.timeout_seconds,
+                max_retries=definition.max_retries,
+                requires_human_review=definition.requires_human_review,
+                created_at=definition.created_at,
+                updated_at=definition.updated_at,
+            )
+        )
+
+    async def get(self, definition_id: UUID) -> AgentDefinition | None:
+        model = await self._session.get(AgentDefinitionModel, definition_id)
+        return None if model is None else self._to_domain(model)
+
+    async def get_active(self, key: str) -> AgentDefinition | None:
+        statement = (
+            select(AgentDefinitionModel)
+            .where(
+                AgentDefinitionModel.key == key,
+                AgentDefinitionModel.status == AgentDefinitionStatus.ACTIVE,
+            )
+            .order_by(AgentDefinitionModel.created_at.desc())
+            .limit(1)
+        )
+        model = (await self._session.execute(statement)).scalar_one_or_none()
+        return None if model is None else self._to_domain(model)
+
+    @staticmethod
+    def _to_domain(model: AgentDefinitionModel) -> AgentDefinition:
+        return AgentDefinition(
+            id=model.id,
+            key=model.key,
+            name=model.name,
+            version=model.version,
+            description=model.description,
+            status=model.status,
+            prompt_template=model.prompt_template,
+            input_schema=model.input_schema,
+            output_schema=model.output_schema,
+            allowed_tools=model.allowed_tools,
+            allowed_knowledge_scopes=model.allowed_knowledge_scopes,
+            timeout_seconds=model.timeout_seconds,
+            max_retries=model.max_retries,
+            requires_human_review=model.requires_human_review,
+            created_at=model.created_at,
+            updated_at=model.updated_at,
+        )
+
+
+class SqlAlchemyAgentRunRepository:
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+        self._tracked: dict[UUID, AgentRunModel] = {}
+
+    async def add(self, run: AgentRun) -> None:
+        model = AgentRunModel(
+            id=run.id,
+            agent_definition_id=run.agent_definition_id,
+            matter_id=run.matter_id,
+            work_item_id=run.work_item_id,
+            feishu_message_id=run.feishu_message_id,
+            context_snapshot_id=run.context_snapshot_id,
+            status=run.status,
+            objective=run.objective,
+            input_payload=run.input_payload,
+            output_payload=run.output_payload,
+            raw_stdout=run.raw_stdout,
+            raw_stderr=run.raw_stderr,
+            prompt_snapshot=run.prompt_snapshot,
+            working_directory=run.working_directory,
+            started_at=run.started_at,
+            heartbeat_at=run.heartbeat_at,
+            finished_at=run.finished_at,
+            timeout_at=run.timeout_at,
+            attempt_number=run.attempt_number,
+            max_attempts=run.max_attempts,
+            failure_code=run.failure_code,
+            failure_message=run.failure_message,
+            correlation_id=run.correlation_id,
+            created_by=run.created_by,
+            created_at=run.created_at,
+            updated_at=run.updated_at,
+            version=run.version,
+        )
+        self._tracked[run.id] = model
+        self._session.add(model)
+
+    async def get(self, run_id: UUID) -> AgentRun | None:
+        model = await self._session.get(AgentRunModel, run_id)
+        if model is None:
+            return None
+        self._tracked[run_id] = model
+        return self._to_domain(model)
+
+    async def get_for_update(self, run_id: UUID) -> AgentRun | None:
+        statement = select(AgentRunModel).where(AgentRunModel.id == run_id).with_for_update()
+        model = (await self._session.execute(statement)).scalar_one_or_none()
+        if model is None:
+            return None
+        self._tracked[run_id] = model
+        return self._to_domain(model)
+
+    async def save(self, run: AgentRun) -> None:
+        model = self._tracked.get(run.id)
+        if model is None:
+            model = await self._session.get(AgentRunModel, run.id)
+        if model is None:
+            raise RuntimeError(f"AgentRun {run.id} is not tracked")
+        model.status = run.status
+        model.input_payload = run.input_payload
+        model.output_payload = run.output_payload
+        model.raw_stdout = run.raw_stdout
+        model.raw_stderr = run.raw_stderr
+        model.working_directory = run.working_directory
+        model.started_at = run.started_at
+        model.heartbeat_at = run.heartbeat_at
+        model.finished_at = run.finished_at
+        model.timeout_at = run.timeout_at
+        model.attempt_number = run.attempt_number
+        model.failure_code = run.failure_code
+        model.failure_message = run.failure_message
+        model.updated_at = run.updated_at
+        model.version = run.version
+
+    async def list(self, *, status: AgentRunStatus | None, limit: int) -> Sequence[AgentRun]:
+        statement: Select[tuple[AgentRunModel]] = select(AgentRunModel)
+        if status is not None:
+            statement = statement.where(AgentRunModel.status == status)
+        statement = statement.order_by(AgentRunModel.created_at.desc()).limit(limit)
+        models = (await self._session.execute(statement)).scalars().all()
+        return [self._to_domain(model) for model in models]
+
+    async def list_by_message(self, message_id: UUID) -> Sequence[AgentRun]:
+        statement = (
+            select(AgentRunModel)
+            .where(AgentRunModel.feishu_message_id == message_id)
+            .order_by(AgentRunModel.created_at.desc())
+        )
+        models = (await self._session.execute(statement)).scalars().all()
+        return [self._to_domain(model) for model in models]
+
+    @staticmethod
+    def _to_domain(model: AgentRunModel) -> AgentRun:
+        return AgentRun(
+            id=model.id,
+            agent_definition_id=model.agent_definition_id,
+            matter_id=model.matter_id,
+            work_item_id=model.work_item_id,
+            feishu_message_id=model.feishu_message_id,
+            context_snapshot_id=model.context_snapshot_id,
+            status=model.status,
+            objective=model.objective,
+            input_payload=model.input_payload,
+            output_payload=model.output_payload,
+            raw_stdout=model.raw_stdout,
+            raw_stderr=model.raw_stderr,
+            prompt_snapshot=model.prompt_snapshot,
+            working_directory=model.working_directory,
+            started_at=model.started_at,
+            heartbeat_at=model.heartbeat_at,
+            finished_at=model.finished_at,
+            timeout_at=model.timeout_at,
+            attempt_number=model.attempt_number,
+            max_attempts=model.max_attempts,
+            failure_code=model.failure_code,
+            failure_message=model.failure_message,
+            correlation_id=model.correlation_id,
+            created_by=model.created_by,
+            created_at=model.created_at,
+            updated_at=model.updated_at,
+            version=model.version,
+        )
+
+
+class SqlAlchemyAgentRunSourceRepository:
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def add_many(self, sources: Sequence[AgentRunSource]) -> None:
+        self._session.add_all(
+            [
+                AgentRunSourceModel(
+                    id=source.id,
+                    agent_run_id=source.agent_run_id,
+                    source_type=source.source_type,
+                    source_id=source.source_id,
+                    source_version=source.source_version,
+                    source_hash=source.source_hash,
+                    display_name=source.display_name,
+                    citation_metadata=source.citation_metadata,
+                    created_at=source.created_at,
+                )
+                for source in sources
+            ]
+        )
+
+    async def list_by_run(self, run_id: UUID) -> Sequence[AgentRunSource]:
+        statement = (
+            select(AgentRunSourceModel)
+            .where(AgentRunSourceModel.agent_run_id == run_id)
+            .order_by(AgentRunSourceModel.created_at, AgentRunSourceModel.id)
+        )
+        models = (await self._session.execute(statement)).scalars().all()
+        return [
+            AgentRunSource(
+                id=model.id,
+                agent_run_id=model.agent_run_id,
+                source_type=model.source_type,
+                source_id=model.source_id,
+                source_version=model.source_version,
+                source_hash=model.source_hash,
+                display_name=model.display_name,
+                citation_metadata=model.citation_metadata,
+                created_at=model.created_at,
+            )
+            for model in models
+        ]
+
+
+class SqlAlchemyDraftArtifactRepository:
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def add(self, artifact: DraftArtifact) -> None:
+        self._session.add(
+            DraftArtifactModel(
+                id=artifact.id,
+                agent_run_id=artifact.agent_run_id,
+                artifact_type=artifact.artifact_type,
+                title=artifact.title,
+                content=artifact.content,
+                structured_payload=artifact.structured_payload,
+                status=artifact.status,
+                version=artifact.version,
+                created_at=artifact.created_at,
+                updated_at=artifact.updated_at,
+            )
         )
 
 
@@ -218,9 +564,7 @@ class SqlAlchemyLegalMatterRepository:
 
     async def get_for_update(self, matter_id: UUID) -> LegalMatter | None:
         statement = (
-            select(LegalMatterModel)
-            .where(LegalMatterModel.id == matter_id)
-            .with_for_update()
+            select(LegalMatterModel).where(LegalMatterModel.id == matter_id).with_for_update()
         )
         model = (await self._session.execute(statement)).scalar_one_or_none()
         return None if model is None else self._to_domain(model)
@@ -284,11 +628,7 @@ class SqlAlchemyWorkItemRepository:
         return self._to_domain(model)
 
     async def get_for_update(self, work_item_id: UUID) -> WorkItem | None:
-        statement = (
-            select(WorkItemModel)
-            .where(WorkItemModel.id == work_item_id)
-            .with_for_update()
-        )
+        statement = select(WorkItemModel).where(WorkItemModel.id == work_item_id).with_for_update()
         model = (await self._session.execute(statement)).scalar_one_or_none()
         if model is None:
             return None
@@ -562,9 +902,7 @@ class SqlAlchemyReviewPackageRepository:
 
     async def get_for_update(self, package_id: UUID) -> ReviewPackage | None:
         statement = (
-            select(ReviewPackageModel)
-            .where(ReviewPackageModel.id == package_id)
-            .with_for_update()
+            select(ReviewPackageModel).where(ReviewPackageModel.id == package_id).with_for_update()
         )
         model = (await self._session.execute(statement)).scalar_one_or_none()
         if model is None:
@@ -755,9 +1093,7 @@ class SqlAlchemyCommunicationRepository:
         self._tracked[communication_id] = model
         return self._to_domain(model)
 
-    async def get_by_review_record(
-        self, review_record_id: UUID
-    ) -> Communication | None:
+    async def get_by_review_record(self, review_record_id: UUID) -> Communication | None:
         statement = select(CommunicationModel).where(
             CommunicationModel.review_record_id == review_record_id
         )
@@ -801,6 +1137,7 @@ class SqlAlchemyCommunicationRepository:
 class SqlAlchemyFeishuRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
+        self._tracked_messages: dict[UUID, FeishuMessageModel] = {}
 
     async def get_event_by_external_id(self, event_id: str) -> FeishuRawEvent | None:
         statement = select(FeishuEventModel).where(FeishuEventModel.event_id == event_id)
@@ -833,30 +1170,105 @@ class SqlAlchemyFeishuRepository:
             FeishuMessageModel.message_id == message_id,
         )
         model = (await self._session.execute(statement)).scalar_one_or_none()
-        return None if model is None else self._message_to_domain(model)
+        if model is None:
+            return None
+        self._tracked_messages[model.id] = model
+        return self._message_to_domain(model)
 
     async def add_message(self, message: FeishuMessage) -> None:
-        self._session.add(
-            FeishuMessageModel(
-                id=message.id,
-                event_id=message.event_id,
-                tenant_key=message.tenant_key,
-                message_id=message.message_id,
-                chat_id=message.chat_id,
-                thread_id=message.thread_id,
-                root_id=message.root_id,
-                parent_id=message.parent_id,
-                sender_id=message.sender_id,
-                sender_type=message.sender_type,
-                message_type=message.message_type,
-                content=message.content,
-                mentions=message.mentions,
-                create_time=message.create_time,
-                update_time=message.update_time,
-                raw_message=message.raw_message,
-                status=message.status,
-            )
+        model = FeishuMessageModel(
+            id=message.id,
+            event_id=message.event_id,
+            tenant_key=message.tenant_key,
+            message_id=message.message_id,
+            chat_id=message.chat_id,
+            thread_id=message.thread_id,
+            root_id=message.root_id,
+            parent_id=message.parent_id,
+            sender_id=message.sender_id,
+            sender_type=message.sender_type,
+            message_type=message.message_type,
+            content=message.content,
+            mentions=message.mentions,
+            create_time=message.create_time,
+            update_time=message.update_time,
+            raw_message=message.raw_message,
+            status=message.status,
+            context_snapshot_id=message.context_snapshot_id,
+            last_agent_run_id=message.last_agent_run_id,
+            analysis_attempts=message.analysis_attempts,
+            failure_code=message.failure_code,
+            failure_message=message.failure_message,
+            version=message.version,
         )
+        self._tracked_messages[message.id] = model
+        self._session.add(model)
+
+    async def get_message_by_id(self, message_id: UUID) -> FeishuMessage | None:
+        model = await self._session.get(FeishuMessageModel, message_id)
+        if model is None:
+            return None
+        self._tracked_messages[message_id] = model
+        return self._message_to_domain(model)
+
+    async def get_message_for_update(self, message_id: UUID) -> FeishuMessage | None:
+        statement = (
+            select(FeishuMessageModel).where(FeishuMessageModel.id == message_id).with_for_update()
+        )
+        model = (await self._session.execute(statement)).scalar_one_or_none()
+        if model is None:
+            return None
+        self._tracked_messages[message_id] = model
+        return self._message_to_domain(model)
+
+    async def list_context_messages(
+        self, message: FeishuMessage, *, limit: int
+    ) -> Sequence[FeishuMessage]:
+        thread_key = message.thread_id or message.root_id or message.message_id
+        external_ids = {
+            value
+            for value in [message.message_id, message.parent_id, message.root_id, thread_key]
+            if value
+        }
+        statement = (
+            select(FeishuMessageModel)
+            .where(
+                FeishuMessageModel.tenant_key == message.tenant_key,
+                or_(
+                    FeishuMessageModel.chat_id == message.chat_id,
+                    FeishuMessageModel.message_id.in_(external_ids),
+                ),
+                or_(
+                    FeishuMessageModel.message_id.in_(external_ids),
+                    FeishuMessageModel.parent_id.in_(external_ids),
+                    FeishuMessageModel.root_id == thread_key,
+                    FeishuMessageModel.thread_id == thread_key,
+                ),
+            )
+            .order_by(
+                FeishuMessageModel.create_time.desc().nullslast(),
+                FeishuMessageModel.message_id.desc(),
+            )
+            .limit(limit)
+        )
+        models = (await self._session.execute(statement)).scalars().all()
+        for model in models:
+            self._tracked_messages[model.id] = model
+        return [self._message_to_domain(model) for model in models]
+
+    async def save_message(self, message: FeishuMessage) -> None:
+        model = self._tracked_messages.get(message.id)
+        if model is None:
+            model = await self._session.get(FeishuMessageModel, message.id)
+        if model is None:
+            raise RuntimeError(f"FeishuMessage {message.id} is not tracked")
+        model.status = message.status
+        model.context_snapshot_id = message.context_snapshot_id
+        model.last_agent_run_id = message.last_agent_run_id
+        model.analysis_attempts = message.analysis_attempts
+        model.failure_code = message.failure_code
+        model.failure_message = message.failure_message
+        model.version = message.version
 
     @staticmethod
     def _event_to_domain(model: FeishuEventModel) -> FeishuRawEvent:
@@ -895,6 +1307,12 @@ class SqlAlchemyFeishuRepository:
             update_time=model.update_time,
             raw_message=model.raw_message,
             status=model.status,
+            context_snapshot_id=model.context_snapshot_id,
+            last_agent_run_id=model.last_agent_run_id,
+            analysis_attempts=model.analysis_attempts,
+            failure_code=model.failure_code,
+            failure_message=model.failure_message,
+            version=model.version,
         )
 
 
@@ -910,6 +1328,7 @@ class SqlAlchemyAuditEventRepository:
                 aggregate_id=event.aggregate_id,
                 event_type=event.event_type,
                 actor_id=event.actor_id,
+                actor_source=event.actor_source,
                 payload=event.payload,
                 correlation_id=event.correlation_id,
                 created_at=event.created_at,

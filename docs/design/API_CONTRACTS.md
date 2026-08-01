@@ -35,6 +35,14 @@ Idempotency-Key: <uuid>
 If-Match: <entity-version>
 ```
 
+## 2.1 认证与 Actor 边界
+
+- 业务 API 从 HttpOnly Cookie Session 解析 Actor，应用服务接收的是后端 `RequestActor`，不直接读取浏览器声明的身份；
+- `POST /api/v1/auth/local-session` 只在显式 `local` 或 `development` 环境签发本地单用户 Session；`test/staging/production` 均拒绝；
+- `GET /api/v1/auth/session` 返回已验证 Actor 及 `identitySource`；
+- `X-Actor-ID` 仅在 `LEGAL_WORKBENCH_ALLOW_DEVELOPMENT_ACTOR_HEADER=true` 且处于 `local/development` 时可用，审计来源标记为 `development_header`；
+- 非本地环境必须配置至少 32 字符的非默认 Session Secret；生产环境缺少或无效 Session 返回 401，开发 Actor Header 配置会导致应用启动失败。
+
 ## 3. 飞书接入接口
 
 ## 3.1 Webhook/长连接事件入口
@@ -87,6 +95,22 @@ interface FeishuIntegrationStatus {
 }
 ```
 
+## 3.3 消息研判与 AgentRun
+
+```http
+GET  /api/v1/agent-runs?status=<status>&limit=<1..200>
+GET  /api/v1/agent-runs/:runId
+POST /api/v1/feishu/messages/:messageId/analyse
+POST /api/v1/feishu/messages/:messageId/retry-analysis
+GET  /api/v1/feishu/messages/:messageId/analysis
+```
+
+`analyse` 和 `retry-analysis` 必须携带 `Idempotency-Key`，首次接受返回 202，同一业务请求的幂等重放返回 200。人工重新分析创建新 AgentRun，历史运行不删除。
+
+若待确认 Candidate 已存在，重新分析的合法相关结果原位更新其 AgentRun、建议和版本；若新结果为无关，则旧待确认 Candidate 转为 `rejected`，不可继续确认。已由人工确认或关联的 Candidate 不被重新分析覆盖。
+
+`analysis` 返回：飞书消息来源与处理状态、ContextSnapshot 摘要、AgentRun 状态/版本/尝试/心跳/错误、研判 JSON、Candidate ID 与 `canRetry`。AgentRun 详情还返回实际授权来源列表、Prompt 快照和受限 stdout/stderr，用于审计。
+
 ## 4. 消息候选接口
 
 ```http
@@ -102,10 +126,9 @@ POST   /api/v1/inbox/candidates/:id/reanalyze
 POST   /api/v1/inbox/candidates/batch
 ```
 
-创建Candidate、`confirm-create`和新增WorkItem必须携带：
+创建Candidate、`confirm-create`和新增WorkItem必须已建立认证 Session，写操作还必须携带：
 
 ```http
-X-Actor-ID: <legal-user-id>
 Idempotency-Key: <unique-request-key>
 ```
 
@@ -160,7 +183,7 @@ POST   /api/v1/work-items/:workItemId/complete
 POST   /api/v1/work-items/:workItemId/cancel
 ```
 
-新增WorkItem同样必须携带`X-Actor-ID`和`Idempotency-Key`。系统对Matter行加锁，保证并发新增时`sequenceOrder`稳定，并将业务写入、审计、Outbox和幂等记录在同一事务提交。
+新增WorkItem同样必须通过 Session 认证并携带`Idempotency-Key`。系统对Matter行加锁，保证并发新增时`sequenceOrder`稳定，并将业务写入、审计、Outbox和幂等记录在同一事务提交。
 
 等待请求：
 
@@ -360,7 +383,7 @@ GET  /api/v1/reports/weekly
 
 ```text
 FeishuEventReceived
-FeishuMessagePersisted
+FeishuMessageReceived
 FileAssetDownloaded
 ContextSnapshotCreated
 MessageAnalysisRequested
@@ -415,7 +438,20 @@ interface DomainEventEnvelope<T> {
 | `CANDIDATE_ALREADY_PROCESSED` | 候选已处理 |
 | `ENTITY_VERSION_CONFLICT` | 乐观锁冲突 |
 | `PRIORITY_CONFIRMATION_REQUIRED` | 需要法务确认优先级 |
-| `AGENT_OUTPUT_INVALID` | Agent 输出不符合 Schema |
+| `FEISHU_MESSAGE_NOT_FOUND` | 飞书消息不存在 |
+| `FEISHU_MESSAGE_NOT_AUTHORIZED` | 无权分析该消息 |
+| `CONTEXT_BUILD_FAILED` | 上下文快照构建失败 |
+| `AGENT_DEFINITION_NOT_FOUND` | Agent 定义不存在 |
+| `AGENT_DEFINITION_DISABLED` | Agent 未启用或真实 Runtime 关闭 |
+| `AGENT_RUNTIME_START_FAILED` | Runtime 启动失败 |
+| `AGENT_RUNTIME_TIMEOUT` | Runtime 超时 |
+| `AGENT_RUNTIME_CANCELLED` | Runtime 被取消 |
+| `AGENT_OUTPUT_MISSING` | 结果文件缺失 |
+| `AGENT_OUTPUT_INVALID_JSON` | 结果不是合法 JSON |
+| `AGENT_OUTPUT_SCHEMA_INVALID` | Agent 输出不符合 Schema |
+| `AGENT_OUTPUT_BUSINESS_RULE_INVALID` | Agent 输出违反业务/来源规则 |
+| `CANDIDATE_ALREADY_EXISTS` | 同一消息已存在有效 Candidate |
+| `UNSUPPORTED_OUTBOX_EVENT` | Outbox 事件未显式注册 |
 | `AGENT_ACCESS_DENIED` | Agent 请求未授权数据或工具 |
 | `KNOWLEDGE_SOURCE_EXPIRED` | 使用了失效资料 |
 | `REVIEW_REQUIRED` | 操作缺少审核记录 |

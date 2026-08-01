@@ -13,6 +13,7 @@ async def test_candidate_to_matter_to_work_item_http_slice() -> None:
         pytest.skip("PostgreSQL integration tests are disabled")
 
     from httpx import ASGITransport, AsyncClient
+    from sqlalchemy import text
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
     from legal_workbench.api.dependencies import get_uow_factory
@@ -27,7 +28,6 @@ async def test_candidate_to_matter_to_work_item_http_slice() -> None:
 
     unique_suffix = uuid4().hex
     headers = {
-        "X-Actor-ID": "integration-test-agent",
         "Idempotency-Key": f"candidate-{unique_suffix}",
         "X-Correlation-ID": f"correlation-{unique_suffix}",
     }
@@ -59,6 +59,8 @@ async def test_candidate_to_matter_to_work_item_http_slice() -> None:
         async with AsyncClient(
             transport=ASGITransport(app=app), base_url="http://testserver"
         ) as client:
+            session_response = await client.post("/api/v1/auth/local-session")
+            assert session_response.status_code == 201, session_response.text
             candidate_response = await client.post(
                 "/api/v1/inbox/candidates",
                 json=candidate_payload,
@@ -76,6 +78,29 @@ async def test_candidate_to_matter_to_work_item_http_slice() -> None:
             assert replay_response.status_code == 200, replay_response.text
             assert replay_response.json()["candidateId"] == candidate_id
             assert replay_response.json()["idempotentReplay"] is True
+
+            second_business_action = await client.post(
+                "/api/v1/inbox/candidates",
+                json=candidate_payload,
+                headers={**headers, "Idempotency-Key": f"candidate-second-{unique_suffix}"},
+            )
+            assert second_business_action.status_code == 201, second_business_action.text
+            assert second_business_action.json()["candidateId"] != candidate_id
+
+            async with engine.connect() as connection:
+                snapshot_count = await connection.scalar(
+                    text(
+                        "SELECT count(*) FROM context_snapshots "
+                        "WHERE source_type = :source_type AND source_id = :source_id "
+                        "AND content_hash = :content_hash"
+                    ),
+                    {
+                        "source_type": "feishu_group_message",
+                        "source_id": f"chat-{unique_suffix}",
+                        "content_hash": "a" * 64,
+                    },
+                )
+            assert snapshot_count == 1
 
             confirmation_headers = {
                 **headers,
@@ -121,9 +146,7 @@ async def test_candidate_to_matter_to_work_item_http_slice() -> None:
 
             work_items = await client.get(f"/api/v1/matters/{matter_id}/work-items")
             assert work_items.status_code == 200, work_items.text
-            assert [item["title"] for item in work_items.json()] == [
-                "核查合同主体和版本"
-            ]
+            assert [item["title"] for item in work_items.json()] == ["核查合同主体和版本"]
     finally:
         app.dependency_overrides.pop(get_uow_factory, None)
         await engine.dispose()

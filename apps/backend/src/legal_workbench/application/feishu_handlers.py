@@ -168,6 +168,7 @@ class IngestFeishuEventHandler:
                     aggregate_id=event.id,
                     event_type="feishu_event_ingested",
                     actor_id=command.actor_id,
+                    actor_source="integration",
                     payload={
                         "eventId": command.event_id,
                         "eventType": command.event_type,

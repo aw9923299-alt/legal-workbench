@@ -43,9 +43,108 @@ export interface MessageCandidate {
   relatedMatterProposals: Array<Record<string, unknown>>;
   evidenceRefs: string[];
   agentRunId: string | null;
+  feishuMessageId: string | null;
+  requiresManualReview: boolean;
+  analysisPayload: MessageJudgementResult | Record<string, never>;
   confirmedBy: string | null;
   confirmedAt: string | null;
   version: number;
+}
+
+export interface CategoryCandidate {
+  category: 'contract' | 'copy_review' | 'employment' | 'dispute' | 'intellectual_property' | 'general';
+  confidence: number;
+  reason: string;
+}
+
+export interface DeadlineCandidate {
+  rawText: string;
+  resolvedAt: string | null;
+  deadlineType: 'legal' | 'platform' | 'contractual' | 'business' | 'internal' | 'unknown';
+  confidence: number;
+}
+
+export interface MessageJudgementResult {
+  legalRelevance: 'relevant' | 'possibly_relevant' | 'irrelevant';
+  messageRole: 'new_request' | 'existing_matter_update' | 'supplemental_material' | 'deadline_change' | 'decision_record' | 'completion_update' | 'information_only';
+  actionability: 'create_candidate' | 'link_candidate' | 'update_only' | 'ignore';
+  suggestedTitle: string;
+  categoryCandidates: CategoryCandidate[];
+  deadlineCandidates: DeadlineCandidate[];
+  confirmedFacts: Array<{ statement: string; sourceMessageId: string }>;
+  inferredFacts: Array<{ statement: string; basis: string; confidence: number }>;
+  missingInformation: string[];
+  reasons: string[];
+  confidence: number;
+}
+
+export type AgentRunStatus = 'queued' | 'preparing' | 'running' | 'validating' | 'completed' | 'needs_more_information' | 'failed' | 'timed_out' | 'cancelled' | 'dead_letter';
+
+export interface AgentRunSource {
+  sourceType: string;
+  sourceId: string;
+  sourceVersion: string | null;
+  sourceHash: string;
+  displayName: string;
+  citationMetadata: Record<string, unknown>;
+}
+
+export interface AgentRunRecord {
+  id: string;
+  agentKey: string;
+  agentVersion: string;
+  feishuMessageId: string | null;
+  contextSnapshotId: string;
+  status: AgentRunStatus;
+  objective: string;
+  inputPayload: Record<string, unknown>;
+  outputPayload: MessageJudgementResult | null;
+  rawStdout: string | null;
+  rawStderr: string | null;
+  promptSnapshot: string;
+  workingDirectory: string;
+  startedAt: string | null;
+  heartbeatAt: string | null;
+  finishedAt: string | null;
+  timeoutAt: string | null;
+  attemptNumber: number;
+  maxAttempts: number;
+  failureCode: string | null;
+  failureMessage: string | null;
+  correlationId: string;
+  createdBy: string;
+  createdAt: string;
+  updatedAt: string;
+  version: number;
+  sources: AgentRunSource[];
+}
+
+export interface MessageAnalysis {
+  message: {
+    id: string;
+    messageId: string;
+    senderId: string | null;
+    messageType: string;
+    content: Record<string, unknown>;
+    createTime: string | null;
+  };
+  messageStatus: string;
+  contextSnapshot: {
+    id: string;
+    snapshotVersion: number;
+    messageIds: string[];
+    attachmentIds: string[];
+    participantIds: string[];
+    contentHash: string;
+    truncated: boolean;
+    createdAt: string;
+  } | null;
+  agentRun: AgentRunRecord | null;
+  analysisResult: MessageJudgementResult | null;
+  candidateId: string | null;
+  failureCode: string | null;
+  failureMessage: string | null;
+  canRetry: boolean;
 }
 
 export interface LegalMatter {

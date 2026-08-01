@@ -2,7 +2,7 @@
 
 运行在本地 Mac 上的法务智能工作系统。系统从经过授权的飞书消息中发现工作，由受控的 Codex Agent 完成消息研判、事项归并、任务规划、专业分析、回复草拟、日报和复盘；所有发送给其他人员的内容必须经过法务审核。
 
-> 当前仓库已经包含 React 前端、Python/FastAPI 后端、PostgreSQL 领域模型与迁移，以及 `MessageCandidate → LegalMatter → WorkItem → ReviewPackage → Communication` 核心业务闭环。已接入优先级确认、Deadline、Dependency、审核门禁、Outbox 重试/死信和飞书原始事件幂等落库；Codex Runner、知识文件解析和专业 Agent 仍需按实施计划继续开发。
+> 当前已实现 `FeishuEvent → FeishuMessage → Outbox → ContextSnapshot → AgentRun → MessageCandidate` 消息研判闭环，以及候选确认、事项/任务、审核与 Communication 的确定性业务基础。真实 Codex 执行需显式开启并提供可用认证；飞书加密回调解密、长连接/补偿同步、知识解析和专业 Agent 尚未实现。
 
 ## 核心闭环
 
@@ -48,7 +48,7 @@
 - SQLAlchemy 2 + Psycopg 3；
 - Alembic；
 - Celery + Redis；
-- PostgreSQL 18 + pgvector；
+- PostgreSQL 18（`pg_trgm`/`unaccent`；pgvector 仅为可选扩展）；
 - Docker Compose。
 
 ## 仓库结构
@@ -111,9 +111,9 @@ npm run dev
 仅运行后端开发环境：
 
 ```bash
-python -m venv .venv
+python3 -m venv .venv
 source .venv/bin/activate
-pip install -e 'apps/backend[dev]'
+.venv/bin/python -m pip install -e 'apps/backend[dev]'
 alembic -c apps/backend/alembic.ini upgrade head
 npm run backend:dev
 ```
@@ -123,9 +123,9 @@ npm run backend:dev
 ```bash
 npm run typecheck
 npm run build
-python -m ruff check apps/backend/src apps/backend/tests
-python -m mypy --config-file apps/backend/pyproject.toml apps/backend/src
-python -m pytest apps/backend/tests
+.venv/bin/python -m ruff check apps/backend/src apps/backend/tests
+.venv/bin/python -m mypy --config-file apps/backend/pyproject.toml apps/backend/src
+.venv/bin/python -m pytest apps/backend/tests
 ```
 
 ## 设计文档
@@ -146,20 +146,31 @@ python -m pytest apps/backend/tests
 
 已完成：
 
-- `ContextSnapshot`、`MessageCandidate`、`LegalMatter`、`WorkItem` 正式领域对象；
-- SQLAlchemy 映射、Repository、Unit of Work和三批 Alembic 业务迁移；
+- `ContextSnapshot`、`AgentDefinition`、`AgentRun`、`AgentRunSource`、`DraftArtifact` 和 `MessageCandidate` 正式模型；
+- SQLAlchemy 映射、Repository、Unit of Work和 Alembic 可升降级迁移；
+- 飞书消息 Outbox 自动投递、确定性限界快照、受控 `message_judgement` Agent 和 Pydantic/JSON Schema 输出校验；
+- Codex CLI 统一 Runtime：独立运行目录、授权 JSON stdin、禁用 Shell/代码模式/网络搜索、输入输出审计、超时终止、心跳、输出大小限制和错误分类；
+- 合法结果自动建立待人工确认 Candidate；无关消息不建 Candidate，任何置信度均不自动建立 Matter；
 - Candidate确认创建Matter和初始WorkItem的事务闭环；
 - 前端接入Candidate、Matter、WorkItem、优先级、期限、依赖和审核接口；
 - PriorityConfirmation、Deadline和WorkItemDependency模型；
 - ReviewPackage、ReviewRecord、Communication及所有外发人工审核门禁；
 - Outbox并发领取、指数退避、重试、死信和重新入队；
+- Outbox Handler 显式注册，未知事件会失败、重试并最终死信；
 - 飞书原始事件及消息按事件ID、消息ID幂等落库；
-- 乐观锁、行锁、事务级幂等锁、审计和事务Outbox。
+- 乐观锁、行锁、事务级幂等锁、审计和事务Outbox；
+- HttpOnly 本地会话认证边界；只有显式 `local/development` 环境可签发本地 Session，开发 Actor Header 需显式开关；Compose 端口默认只绑定 `127.0.0.1`；
+- 收件箱与 Agent 详情页展示来源、状态、版本、置信度、理由、事实/推断、期限和缺失信息。
+
+部分实现：
+
+- 飞书开关关闭时 Webhook 返回 503；真实模式支持 Verification Token 校验并 fail closed，仅配置 Encrypt Key 不能启用，加密回调目前明确拒绝；
+- 容器 Worker 以专用 UID、最小环境变量和无知识目录挂载运行 Codex；主机模式仍依赖 Codex 自身只读沙箱，不声称是完整 OS 级隔离。
 
 ## 当前开发顺序
 
-1. 实现飞书WebSocket长连接和加密回调解密；
-2. 实现Codex Runtime及核心管家Agent；
+1. 在容器内使用真实凭证执行 Codex 安全冒烟与故障注入测试；
+2. 实现飞书 WebSocket 长连接、加密回调解密和补偿同步；
 3. 建立知识文件解析、全文检索和可追溯引用；
 4. 跑通合同审核端到端专业Agent闭环；
 5. 完善Communication发送回执、失败补偿和人工重发；

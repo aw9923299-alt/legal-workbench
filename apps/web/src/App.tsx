@@ -44,6 +44,7 @@ export default function RootApp() {
   const [collapsed, setCollapsed] = useState(false);
   const [page, setPage] = useState('dashboard');
   const [selectedMatterId, setSelectedMatterId] = useState<string>();
+  const [selectedAgentRunId, setSelectedAgentRunId] = useState<string>();
   const [darkMode, setDarkMode] = useState(false);
 
   useEffect(() => {
@@ -62,11 +63,11 @@ export default function RootApp() {
     if (page === 'dashboard') {
       return <DashboardPage onOpenTask={() => setPage('matters')} />;
     }
-    if (page === 'inbox') return <InboxPage onMatterCreated={openMatter} />;
+    if (page === 'inbox') return <InboxPage onMatterCreated={openMatter} onOpenAgentRun={(runId) => { setSelectedAgentRunId(runId); setPage('agents'); }} />;
     if (page === 'matters') return <TaskCenterPage onOpenMatter={openMatter} />;
     if (page === 'reviews') return <ReviewCenterPage />;
     if (page === 'library') return <LibraryPage />;
-    if (page === 'agents') return <AgentCenterPage />;
+    if (page === 'agents') return <AgentCenterPage initialRunId={selectedAgentRunId} />;
     if (page === 'security') return <SecurityPage />;
     return <div className="page placeholder-page"><h2>模块已预留</h2><p>该模块将在正式接入文件、系统设置或专项业务能力后启用。</p></div>;
   };
@@ -75,7 +76,7 @@ export default function RootApp() {
     <Layout className="app-shell">
       <Sider width={228} collapsedWidth={72} collapsed={collapsed} className="app-sider" trigger={null}>
         <div className="brand"><div className="brand-mark">律</div>{!collapsed && <div><strong>法务工作台</strong><span>Legal Workbench</span></div>}</div>
-        <Menu mode="inline" selectedKeys={[page]} items={navItems} onClick={({ key }) => { setPage(key); setSelectedMatterId(undefined); }} />
+        <Menu mode="inline" selectedKeys={[page]} items={navItems} onClick={({ key }) => { setPage(key); setSelectedMatterId(undefined); setSelectedAgentRunId(undefined); }} />
         <div className="sider-footer"><div className="sync-dot" />{!collapsed && <span>本地服务已连接</span>}</div>
       </Sider>
       <Layout>
