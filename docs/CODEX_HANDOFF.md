@@ -1,72 +1,55 @@
-# Codex / Claude Code 项目交接说明
+# Claude Code / Codex 项目交接说明
 
 更新日期：2026-08-01
 
-## 1. 当前阶段
+## 当前阶段
 
-仓库现有代码是 React 高保真原型，正式系统设计已落在 [`docs/design/`](./design/README.md)。下一阶段应先实现本地领域闭环，不应直接连接生产飞书或同时开发全部 Agent。
+仓库已完成从单一前端原型到工业化工程骨架的第一步：
 
-## 2. 已实现
+- 前端迁入 `apps/web`；
+- 新增 `apps/backend` Python模块化单体；
+- 新增FastAPI健康检查、SQLAlchemy、Alembic和Celery基础；
+- 新增PostgreSQL 18 + pgvector + Redis Docker Compose；
+- 正式设计已切换为Python后端和PostgreSQL单一事实库。
+
+真实领域表、飞书接入、Codex Runner、文件解析和专业Agent尚未实现。
+
+## 已实现的工程骨架
 
 | 模块 | 状态 |
 |---|---|
-| 今日工作台 | 静态/Mock 原型 |
-| AI 收件箱 | 静态/Mock 原型 |
-| 任务中心 | 列表原型，其他视图占位 |
-| 任务详情 | 静态/Mock 原型 |
-| 法务事项库 | 概念原型 |
-| Agent 中心 | 概念原型 |
-| 数据与权限 | 概念原型 |
-| 正式设计文档 | 已完成 |
+| React工作台 | Mock原型，已迁入 `apps/web` |
+| FastAPI应用 | 已建立，含live/ready健康检查 |
+| PostgreSQL连接 | 已建立SQLAlchemy异步Engine |
+| Alembic | 已建立，首个迁移启用vector/pg_trgm/unaccent |
+| Celery/Redis | 已建立最小Worker和ping任务 |
+| Docker Compose | api/worker/web/postgres/redis可编排 |
+| Codex/飞书/索引进程 | 仅提供禁用状态的骨架入口 |
+| 正式设计 | 已更新为Python + PostgreSQL + pgvector |
 
-## 3. 尚未实现
+## 关键技术债
 
-- React Router 和统一请求层；
-- MessageCandidate、LegalMatter、WorkItem 等正式模型；
-- 状态机、审计、版本和幂等；
-- 审核包和发送门禁；
-- 后端、PostgreSQL、Redis、Qdrant；
-- Docker Compose 和主机守护；
-- 飞书真实接入；
-- Codex Runtime；
-- 核心/专业 Agent；
-- 知识库、学习和评测；
-- 自动化测试。
+1. 尚未建立正式领域SQLAlchemy模型；
+2. 尚未实现事务Outbox和死信表；
+3. 前端仍使用旧Task ViewModel和Mock；
+4. 未生成Python和npm锁文件；
+5. 未实现认证、权限和字段脱敏；
+6. 未实现飞书事件幂等和补偿同步；
+7. 未实现Codex隔离执行；
+8. 知识库尚无解析器、版本和检索接口；
+9. Compose中的集成Profiles是骨架，不应当作已上线能力。
 
-## 4. 关键技术债
+## 下一迭代
 
-1. `App.tsx` 使用本地 state 切换页面；
-2. 页面直接导入 Mock；
-3. `Task` 混合事项和行动任务；
-4. Inbox 操作不持久化；
-5. Agent 输出是字符串；
-6. 无 ReviewPackage/ReviewRecord/Communication；
-7. 无异常、重试、发送回执和版本冲突流程；
-8. `preview.html` 与 React 源码独立；
-9. 无 lockfile 和自动化测试。
-
-## 5. 下一迭代
-
-只实现以下前端本地闭环：
+优先完成“候选消息和事项”后端垂直切片：
 
 ```text
-Mock 飞书消息
-→ MessageCandidate
-→ 人工确认新建/关联/更新/知悉/忽略
-→ LegalMatter + WorkItem
-→ 优先级和完成时间确认
-→ Mock Agent DraftArtifact
-→ ReviewPackage
-→ 修改后通过
-→ 模拟 Communication
+SQLAlchemy模型与迁移
+→ MessageCandidate API
+→ LegalMatter/WorkItem API
+→ 幂等与乐观锁
+→ 前端从Mock切换到FastAPI
+→ 组件和集成测试
 ```
 
-不得在此迭代接真实飞书、真实公司资料或自动发送。
-
-## 6. 交付要求
-
-- 先阅读 `docs/design/`；
-- 使用正式对象，不继续扩展旧 Task 模型；
-- 保留过渡 ViewModel 时明确映射关系；
-- 为状态机、重复提交、优先级确认和审核门禁添加测试；
-- PR 说明设计对应、数据影响、未覆盖范围和验证结果。
+暂不接真实飞书、Codex和外发。

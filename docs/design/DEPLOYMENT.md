@@ -1,302 +1,133 @@
-# Mac + Docker Compose 部署与可靠性设计
+# Docker部署与本地可靠性设计
 
-## 1. 部署目标
+## 1. 目标
 
-系统运行在法务专员本地 Mac 上，通过 Docker Compose 提供一致的依赖环境、健康检查、自动重启和数据持久化。设计目标是“尽可能稳定且可恢复”，不是宣称单台个人电脑具备数据中心级高可用。
+在Mac上提供可重复启动、可恢复、可备份的本地运行环境。Docker解决依赖隔离和容器重启，但不能解决主机关机、深度休眠或Docker Desktop停止；主机级问题由`launchd`、电源策略和补偿同步治理。
 
-必须明确：
-
-- Docker 可以重启容器，但不能在 Mac 关机或深度休眠时继续执行；
-- Docker Desktop 或容器运行时未启动时，`restart` 策略无法生效；
-- 因此可靠性由容器、主机守护、事件补偿和备份共同提供。
-
-## 2. 推荐目录结构
+## 2. 默认Compose服务
 
 ```text
-infra/
-├─ docker-compose.yml
-├─ docker-compose.dev.yml
-├─ env/
-│  ├─ api.env.example
-│  ├─ feishu.env.example
-│  └─ codex.env.example
-├─ postgres/
-│  └─ init/
-├─ qdrant/
-├─ redis/
-├─ scripts/
-│  ├─ start.sh
-│  ├─ health.sh
-│  ├─ backup.sh
-│  ├─ restore.sh
-│  └─ reconcile.sh
-└─ launchd/
-   └─ com.legalworkbench.service.plist.example
+web       React静态站点
+api       FastAPI
+worker    Celery
+postgres  PostgreSQL 18 + pgvector
+redis     队列和短期协调
 ```
 
-## 3. Docker Compose 服务
+可选Profiles：
 
-```yaml
-services:
-  web:
-    build: ./apps/web
-    restart: unless-stopped
-    depends_on:
-      api:
-        condition: service_healthy
-
-  api:
-    build: ./apps/api
-    restart: unless-stopped
-    env_file: ./infra/env/api.env
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-
-  feishu-connector:
-    build: ./apps/api
-    command: ["node", "dist/feishu.js"]
-    restart: unless-stopped
-    env_file: ./infra/env/feishu.env
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-
-  worker:
-    build: ./apps/api
-    command: ["node", "dist/worker.js"]
-    restart: unless-stopped
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      codex-runner:
-        condition: service_healthy
-
-  codex-runner:
-    build: ./apps/codex-runner
-    restart: unless-stopped
-    env_file: ./infra/env/codex.env
-    volumes:
-      - codex_runs:/runs
-      - ${LEGAL_KNOWLEDGE_DIR}:/knowledge:ro
-    healthcheck:
-      test: ["CMD", "node", "dist/health.js"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-
-  file-indexer:
-    build: ./apps/api
-    command: ["node", "dist/indexer.js"]
-    restart: unless-stopped
-    volumes:
-      - ${LEGAL_KNOWLEDGE_DIR}:/knowledge:ro
-    depends_on:
-      postgres:
-        condition: service_healthy
-      qdrant:
-        condition: service_healthy
-
-  postgres:
-    image: postgres:17
-    restart: unless-stopped
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $POSTGRES_USER"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-
-  redis:
-    image: redis:7-alpine
-    restart: unless-stopped
-    command: ["redis-server", "--appendonly", "yes"]
-    volumes:
-      - redis_data:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 3s
-      retries: 10
-
-  qdrant:
-    image: qdrant/qdrant:latest
-    restart: unless-stopped
-    volumes:
-      - qdrant_data:/qdrant/storage
-    healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:6333/healthz || exit 1"]
-      interval: 15s
-      timeout: 5s
-      retries: 10
-
-  watchdog:
-    build: ./apps/watchdog
-    restart: unless-stopped
-    depends_on:
-      api:
-        condition: service_healthy
+```text
+agents        codex-runner
+integrations  feishu-connector、file-indexer
 ```
 
-实际实现应固定镜像版本，不能长期使用 `latest`。
+Profiles中的进程当前是工程入口，不代表真实功能已实现。
 
-## 4. 持久化与数据位置
+## 3. 镜像策略
 
-| 数据 | 存储位置 | 备份要求 |
+- Python：3.12 slim；
+- Node：22 Alpine，仅用于前端构建；
+- Web运行：Nginx；
+- PostgreSQL：固定`pgvector/pgvector:0.8.5-pg18-bookworm`；
+- Redis：稳定主版本镜像，正式部署应补充digest锁定。
+
+禁止长期使用`latest`。依赖升级通过独立PR和回归测试。
+
+## 4. 持久化
+
+| 数据 | 存储 | 说明 |
 |---|---|---|
-| 领域数据和审计 | PostgreSQL Volume | 每日备份 |
-| 队列和延时任务 | Redis AOF | 可重建但需保留 |
-| 向量索引 | Qdrant Volume | 定期快照，可由源文件重建 |
-| 原始附件/派生文件 | 本地受控目录 | 加密备份 |
-| Codex 临时工作目录 | `codex_runs` | 按保留策略清理 |
-| 提示词/Agent 配置 | Git 仓库 | 版本控制 |
+| 领域、审计、知识元数据和正文 | PostgreSQL Volume | 唯一事实库，每日备份 |
+| 队列和延时任务 | Redis AOF | 可重建但需持久化 |
+| 公司原始资料 | 本地受控目录 | 默认只读挂载给服务 |
+| Codex运行目录 | 本地隔离目录 | 定期清理，保留哈希和必要产物 |
+| Agent定义和提示词 | Git | 版本控制 |
 
-高敏感原始载荷如保存在数据库，应采用字段级或磁盘级加密。密钥不得写入仓库。
+不再使用独立Qdrant Volume。
 
-## 5. 主机级守护
+## 5. PostgreSQL
 
-## 5.1 launchd
+启动时由API容器执行Alembic升级。首个迁移启用：
 
-使用 `launchd` 实现：
+- `vector`；
+- `pg_trgm`；
+- `unaccent`。
 
-1. 用户登录或开机后启动 Docker 运行环境；
-2. 等待 Docker API 可用；
-3. 执行 `docker compose up -d`；
-4. 定期运行健康脚本；
-5. 容器集群完全停止时重新拉起。
+生产化要求：
 
-示例任务只提交模板，不提交用户真实路径和凭证。
+- 数据库不暴露到局域网；
+- 使用独立强密码和本地密钥管理；
+- 每日逻辑备份，定期物理快照；
+- 每月至少一次恢复演练；
+- 大迁移先备份并提供降级或前向修复方案。
 
-## 5.2 电源策略
+## 6. Mac主机保障
 
-若要求接近实时监听：
+- 常驻、接电的Mac mini优于经常合盖的MacBook；
+- 禁止深度休眠，允许关闭显示器；
+- `launchd`在开机/登录后执行`docker compose up -d`；
+- 监控Docker是否可用、最后飞书事件时间、队列年龄和磁盘空间；
+- 主机离线窗口写入系统状态。
 
-- 优先使用常驻、接电的 Mac mini；
-- 禁止自动深度休眠；
-- 允许显示器关闭但保持网络和进程运行；
-- 明确记录主机离线窗口。
-
-个人 MacBook 如果经常合盖或断电，只适合作为“在线时实时、离线后补偿”的节点。
-
-## 6. 飞书连接恢复
-
-连接恢复流程：
+## 7. 飞书恢复
 
 ```text
 检测断线
 → 指数退避重连
-→ 读取 last_successful_cursor / last_event_at
-→ 调用允许的补偿同步接口
-→ 幂等写入漏收消息
-→ 重放未完成 Outbox/Queue
-→ 工作台显示恢复结果
+→ 读取last_event_cursor/last_event_at
+→ 执行允许的补偿同步
+→ 幂等写入
+→ 重放Outbox和未完成任务
+→ 工作台展示恢复结果和不可覆盖窗口
 ```
 
-如果飞书不支持完整补拉，应在系统状态中显示不可覆盖时间窗，不能静默假设没有消息。
+## 8. Worker与Codex Runner
 
-## 7. Worker 可靠性
+Worker：
 
-- 所有长任务持久化到队列；
-- Worker 领取任务使用可见性超时；
-- 进程退出后任务可重新领取；
-- 重试采用指数退避和最大次数；
-- 超限进入死信队列；
-- 死信必须在工作台可见并可人工重放；
-- 同一业务操作使用幂等键和数据库唯一约束。
+- `acks_late`；
+- Worker丢失时任务重新入队；
+- 指数退避和最大重试；
+- 超限进入死信表；
+- 所有业务消费者幂等。
 
-## 8. Codex Runner 可靠性
+Codex Runner：
 
-- 每次运行独立子进程和工作目录；
-- 运行超时后先发送终止信号，再强制杀死；
-- 记录 stdout/stderr、退出码和输出校验结果；
-- 失败不得写入正式 Artifact；
-- 容器重启后从数据库恢复 `queued/running` 异常任务；
-- 对 `running` 超过租约时间的 AgentRun 标记为 abandoned 并重试或人工处理。
+- 每个AgentRun独立工作目录；
+- 只挂载授权文件；
+- 超时先终止再强杀；
+- stdout/stderr、退出码和Schema结果写入技术日志；
+- 失败不得生成正式Artifact；
+- 运行租约过期后标记abandoned并人工或自动恢复。
 
-## 9. 健康检查与告警
+## 9. 健康检查
 
-最少监控：
+- `/api/v1/health/live`：进程存活；
+- `/api/v1/health/ready`：PostgreSQL和Redis就绪；
+- 飞书连接状态和最后事件时间；
+- Celery队列长度、最老任务和死信；
+- Codex运行数、超时和租约；
+- 文件解析失败；
+- 磁盘空间和最近备份。
 
-- 飞书连接状态和最后消息时间；
-- 事件处理延迟；
-- 队列长度、最老任务年龄和死信数量；
-- Codex Runner 活跃进程和超时；
-- PostgreSQL/Redis/Qdrant 健康；
-- 文件解析和索引失败；
-- 磁盘剩余空间；
-- 最近备份时间；
-- 发送失败和结果不确定数量。
+## 10. 日志和审计
 
-告警优先展示在本地工作台，并可使用 macOS 通知。外发告警到飞书仍然需要符合外发审核规则；系统级故障告警可单独定义已批准的固定模板，但首期建议只在本地通知。
+技术日志使用JSON，至少包含`correlationId`、`matterId`、`workItemId`、`runId`。不得记录完整私聊、合同正文、身份证号、手机号、令牌和密钥。
 
-## 10. 日志
+AuditEvent单独存储，记录操作者、动作、对象、版本、原因和时间。审核、外发、规则启用、权限变化和数据删除必须审计。
 
-日志要求：
+## 11. 启动和验证
 
-- JSON 结构化；
-- 包含 `requestId/correlationId/runId/matterId`；
-- 不记录完整合同正文和私聊全文；
-- 敏感字段脱敏；
-- Docker 日志配置大小和文件数轮转；
-- 审计日志与技术日志分开。
+```bash
+cp .env.example .env
+docker compose up -d --build
+docker compose ps
+curl http://localhost:8000/api/v1/health/live
+curl http://localhost:8000/api/v1/health/ready
+```
 
-## 11. 备份与恢复
+集成Profiles在功能实现和安全评审完成后才启用：
 
-每日备份：
-
-- PostgreSQL 逻辑备份；
-- Qdrant 快照或索引重建清单；
-- 文件元数据和生成产物；
-- AgentDefinition、提示词和规则配置已由 Git 保存。
-
-建议：
-
-- 最近 7 天每日备份；
-- 最近 4 周每周备份；
-- 备份加密；
-- 每月至少执行一次恢复演练；
-- 恢复后重新校验消息游标、审核版本和向量索引。
-
-## 12. 安全配置
-
-- 飞书和 Codex 凭证通过 `.env` 外部文件或 macOS 钥匙串注入；
-- `.env` 文件权限限制为当前用户；
-- 后端端口默认只绑定 `127.0.0.1`；
-- PostgreSQL、Redis、Qdrant 不暴露到局域网；
-- 知识目录只读挂载；
-- Codex Runner 使用非 root 用户；
-- 容器禁用不必要 capabilities；
-- 生成文件写入专用目录；
-- 定期更新依赖和基础镜像。
-
-## 13. 开发、测试和生产模式
-
-### 开发模式
-
-- Mock 飞书和 Mock Codex 适配器；
-- 热更新；
-- 使用脱敏 fixtures；
-- 不挂载真实公司目录。
-
-### 本地试运行
-
-- 连接测试飞书应用和受控群；
-- Codex 真实运行；
-- 使用复制出的脱敏知识目录；
-- 所有外发仍需审核；
-- AgentDefinition 状态为 `trial`。
-
-### 正式本地运行
-
-- 连接正式授权范围；
-- 使用真实本地知识目录；
-- 启用备份、监控和 Legal Hold；
-- 仅激活通过评测的 Agent；
-- 无 Mock 静默回退。
+```bash
+docker compose --profile integrations --profile agents up -d
+```

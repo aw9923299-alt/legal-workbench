@@ -2,12 +2,12 @@
 
 ## 1. 总体原则
 
-- 前端只通过 BFF/API 访问领域能力；
+- 前端只通过 FastAPI application API 访问领域能力；
 - 外部系统结构在适配层转换，不进入页面和领域模型；
 - 写接口必须支持幂等和乐观锁；
 - 异步处理通过 Outbox + Worker；
 - 所有外发统一经过审核门禁；
-- OpenAPI 作为前后端契约，Zod/JSON Schema 用于运行时校验。
+- OpenAPI作为前后端契约；后端使用Pydantic校验，前端客户端由OpenAPI生成或显式映射。
 
 建议 API 前缀：`/api/v1`。
 
@@ -305,14 +305,14 @@ interface KnowledgeSearchResult {
   locator: string;
   text: string;
   keywordScore: number;
-  vectorScore: number;
+  vectorScore?: number;
   metadataScore: number;
   effectiveStatus: string;
   citationId: string;
 }
 ```
 
-Agent只能通过该接口检索，不直接查询 Qdrant。
+Agent只能通过该接口检索，不直接查询PostgreSQL表或扫描本地目录。向量召回未启用时`vectorScore`为空。
 
 ## 12. 学习和规则接口
 

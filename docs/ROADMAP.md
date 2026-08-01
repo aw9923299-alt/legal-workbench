@@ -1,96 +1,58 @@
 # 开发路线图
 
-正式阶段和验收标准见 [`docs/design/IMPLEMENTATION_PLAN.md`](./design/IMPLEMENTATION_PLAN.md)。本文件提供快速优先级。
+正式阶段和验收标准见 [`docs/design/IMPLEMENTATION_PLAN.md`](./design/IMPLEMENTATION_PLAN.md)。
 
-## P0：领域模型和前端审核闭环
+## P0：工程骨架（已完成）
 
-- 引入 React Router 和统一应用服务；
-- 新增 `MessageCandidate/LegalMatter/WorkItem/ReviewPackage/ReviewRecord/Communication`；
-- 实现消息候选创建、关联、更新、知悉和忽略；
-- 实现优先级/完成时间确认弹窗；
-- 实现审核包 UI、修改后通过和模拟发送门禁；
-- 增加状态机、版本冲突和重复操作测试。
+- 前端迁入`apps/web`；
+- Python 3.12 + FastAPI模块化单体；
+- SQLAlchemy、Psycopg、Alembic；
+- Celery + Redis；
+- PostgreSQL 18 + pgvector Compose；
+- 健康检查、首个迁移和CI基线。
 
-## P1：后端与 Docker 基础
+## P1：领域持久化
 
-- TypeScript API/BFF；
-- PostgreSQL、Redis、Qdrant；
-- Outbox、队列、幂等和乐观锁；
-- Docker Compose、healthcheck、日志轮转和备份；
-- OpenAPI/SSE；
-- AuditEvent。
+- MessageCandidate、LegalMatter、WorkItem等SQLAlchemy模型；
+- AuditEvent、OutboxEvent和IdempotencyRecord；
+- Repository、用例、乐观锁和事务测试。
 
-## P2：飞书受控接入
+## P2：候选确认和前端API化
 
-- 机器人私聊；
-- 指定群聊 @消息；
-- 手动转发消息；
-- 线程和附件；
-- 断线重连、游标和补偿同步；
-- 审核后发送和回执；
-- 权限撤销、编辑和撤回。
+- Candidate确认动作；
+- 事项关联和多个WorkItem；
+- 优先级/完成时间确认；
+- 前端查询层和Mock/Real切换；
+- 组件与端到端测试。
 
-## P3：Codex Runtime 和核心 Agent
+## P3：审核包和外发门禁
 
-- AgentDefinition 和统一协议；
-- 独立工作目录、工具/目录权限和 JSON Schema；
-- 消息研判、事项归并、任务规划、优先级建议；
-- 结果汇总、日报和复盘；
-- 重试、死信、冲突和人工确认。
+- DraftArtifact、ReviewPackage、ReviewRecord、Communication；
+- 批准版本锁定、模拟发送和结果未知状态。
 
-## P4：本地知识库
+## P4：飞书受控接入
 
-- 指定目录监听；
-- 文件版本和哈希；
-- 正式资料审批和适用元数据；
-- PostgreSQL 全文 + Qdrant 向量混合检索；
+- 机器人私聊、指定群@、手动转发、线程和附件；
+- 幂等、撤回、编辑、断线补偿和回执。
+
+## P5：Codex Runtime和核心Agent
+
+- AgentDefinition和Schema；
+- 独立工作目录和工具权限；
+- 消息研判、事项归并、任务规划、优先级和结果汇总；
+- 重试、死信和人工检查点。
+
+## P6：本地知识库
+
+- 文件哈希、版本、解析和审批；
+- PostgreSQL全文、`pg_trgm`、元数据和权限；
+- 可选pgvector能力；
 - 引用定位、删除同步和检索审计。
 
-## P5：合同审核垂直闭环
+## P7：合同审核闭环
 
-```text
-飞书合同请求
-→ 候选确认
-→ 事项/任务
-→ 优先级确认
-→ 检索
-→ 合同 Agent
-→ 结果汇总
-→ 回复 Agent
-→ 审核包
-→ 法务审核
-→ 飞书发送
-→ 学习记录
-→ 日报
-```
+完成从飞书合同请求到审核发送、学习记录和日报的端到端链路。
 
-## P6：学习、评测和 Agent 治理
+## P8：学习、评测和其他专业Agent
 
-- 法律修改与表达修改分离；
-- 审核样例和规则候选；
-- 固定评测集；
-- Agent trial/active/rollback；
-- 事实准确、风险遗漏、引用覆盖和重大修改率指标。
-
-## P7：其他专业 Agent
-
-按顺序接入：
-
-1. 文案 Agent；
-2. 人力 Agent；
-3. 纠纷 Agent；
-4. 知产 Agent。
-
-## 当前建议开发任务
-
-**标题：实现消息候选、事项、行动任务和审核包的前端本地闭环**
-
-验收：
-
-1. 消息不再直接等同于任务；
-2. 可新建、关联、更新、知悉和忽略；
-3. 可确认优先级和计划完成时间；
-4. 一个事项可包含多个 WorkItem；
-5. 外发草稿必须存在审核记录；
-6. 重复提交不重复创建；
-7. 单元、组件和端到端测试覆盖主路径。
+建立固定评测、Agent版本治理和规则候选，再依次接入文案、人力、纠纷和知产Agent。

@@ -117,7 +117,7 @@ interface AgentDefinition {
 }
 ```
 
-配置文件建议位于后端：
+配置文件建议位于`apps/backend/agent_definitions/`或后续独立受控目录：
 
 ```text
 agents/
@@ -419,3 +419,13 @@ draft → trial → active → paused → retired
 - 高风险遗漏率满足要求。
 
 每次提示词、Schema、工具权限或知识策略变更都增加 Agent 版本，并保留回滚能力。
+
+
+## 13. Python实现约定
+
+- AgentRequest和AgentResult以Pydantic模型作为运行时权威契约；
+- JSON Schema由Pydantic导出并版本化；
+- AgentDefinition保存在Git并同步入PostgreSQL注册表；
+- Celery任务只传递ID和版本，不传递完整合同正文；
+- Codex Runner从PostgreSQL读取授权快照并在独立目录组装输入；
+- 输出先通过Pydantic校验，再创建DraftArtifact。

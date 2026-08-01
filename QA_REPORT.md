@@ -85,3 +85,40 @@ npm run dev
 - 混合知识检索和受控学习；
 - Mac + Docker Compose 可靠性；
 - API、领域事件、异常和实施计划。
+
+## 2026-08-01 Python/PostgreSQL 工程基线更新
+
+本次完成：
+
+- 前端迁移至`apps/web`并保留根目录npm workspace命令；
+- 新增`apps/backend` Python 3.12模块化单体；
+- 新增FastAPI live/ready健康检查；
+- 新增SQLAlchemy、Psycopg、Alembic和Celery基础；
+- 新增PostgreSQL 18 + pgvector + Redis Docker Compose；
+- 首个迁移启用`vector`、`pg_trgm`和`unaccent`；
+- 新增Python/前端/Compose CI；
+- 正式文档删除TypeScript后端和Qdrant基线，改为PostgreSQL单一事实库；
+- 明确不引入外部Embedding服务，首期使用全文检索和`pg_trgm`。
+
+本地已完成静态检查；依赖安装、真实Docker拉取和完整CI需在具备正常网络的环境验证。
+
+### 本次验证结果
+
+已通过：
+
+- `python -m compileall`：后端源码、测试和Alembic迁移语法通过；
+- `pyproject.toml`、JSON、Compose YAML和CI YAML解析；
+- `git diff --check`；
+- Markdown相对链接检查；
+- 旧TypeScript后端和Qdrant设计残留检查；
+- Python包使用setuptools完成editable构建；
+- `test_agent_models.py`通过。
+
+未完成：
+
+- 完整Python依赖安装：当前内部PyPI代理缺少Celery、Redis、structlog、pgvector等依赖；
+- 完整pytest、Ruff和mypy：受上述依赖限制；
+- 前端typecheck/build：当前环境未安装React、Ant Design等npm依赖；
+- `docker compose config/up`：当前执行环境没有Docker命令。
+
+GitHub CI已配置在正常公网包源环境执行前端、后端和Compose检查。

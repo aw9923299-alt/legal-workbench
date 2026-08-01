@@ -28,3 +28,23 @@ pnpm-debug.log*
 # Temporary files
 *.tmp
 *.swp
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Local runtime data
+data/knowledge/*
+!data/knowledge/.gitkeep
+data/codex-runs/*
+!data/codex-runs/.gitkeep
+postgres_data/
+redis_data/
+*.tsbuildinfo
