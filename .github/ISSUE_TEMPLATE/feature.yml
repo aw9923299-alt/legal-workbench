@@ -1,0 +1,40 @@
+name: 功能开发
+about: 为法务工作台新增或完善业务能力
+title: "[功能] "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: 用户问题
+      description: 描述法务人员当前遇到的具体问题，不要只写页面或技术方案。
+    validations:
+      required: true
+  - type: textarea
+    id: scenario
+    attributes:
+      label: 使用场景
+      description: 包括触发条件、参与人、输入、期望行动和完成结果。
+    validations:
+      required: true
+  - type: textarea
+    id: rules
+    attributes:
+      label: 领域规则
+      description: 是否涉及人工确认、置信度、状态迁移、等待、风险、权限或审批？
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: 验收标准
+      description: 使用可验证的结果逐条列出。
+    validations:
+      required: true
+  - type: textarea
+    id: security
+    attributes:
+      label: 数据与安全影响
+      description: 说明读取、存储、外发、删除和审计范围。
+    validations:
+      required: true
