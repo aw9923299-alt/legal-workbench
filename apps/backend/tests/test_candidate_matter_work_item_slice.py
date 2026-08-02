@@ -13,11 +13,13 @@ from legal_workbench.application.commands import (
     ConfirmCandidateCreateMatterCommand,
     CreateCandidateCommand,
     InitialWorkItemInput,
+    ResolveCandidateCommand,
 )
 from legal_workbench.application.handlers import (
     AddWorkItemHandler,
     ConfirmCandidateCreateMatterHandler,
     CreateCandidateHandler,
+    ResolveCandidateHandler,
 )
 from legal_workbench.domain.entities import (
     AuditEvent,
@@ -31,6 +33,7 @@ from legal_workbench.domain.entities import (
 from legal_workbench.domain.enums import (
     BusinessImpact,
     CandidateMatterRelation,
+    CandidateResolutionAction,
     CandidateStatus,
     Confidentiality,
     LegalRelevance,
@@ -400,6 +403,66 @@ async def test_confirm_candidate_creates_matter_and_work_items_atomically() -> N
     assert state.audit_events[0].event_type == "candidate_confirmed_matter_created"
     assert state.outbox_events[0].event_type == "LegalMatterCreated"
     assert state.outbox_events[0].correlation_id == "corr-1"
+
+
+@pytest.mark.asyncio
+async def test_candidate_can_be_linked_to_existing_matter_idempotently() -> None:
+    state = FakeState()
+    candidate = make_candidate()
+    matter = LegalMatter.create(
+        title="既有事项",
+        primary_category=MatterCategory.CONTRACT,
+        owner_id="legal-user-1",
+        legal_risk=LegalRisk.MEDIUM,
+        business_impact=BusinessImpact.PROJECT,
+        confidentiality=Confidentiality.INTERNAL,
+        secondary_categories=[],
+        requester_ids=[],
+        summary=None,
+        objective=None,
+    )
+    state.candidates[candidate.id] = candidate
+    state.matters[matter.id] = matter
+    command = ResolveCandidateCommand(
+        candidate_id=candidate.id,
+        candidate_version=candidate.version,
+        action=CandidateResolutionAction.LINK_EXISTING,
+        matter_id=matter.id,
+        actor_id="legal-user-1",
+        correlation_id="corr-resolve",
+        idempotency_key="idem-resolve",
+    )
+
+    first = await ResolveCandidateHandler(state.factory).execute(command)
+    replay = await ResolveCandidateHandler(state.factory).execute(command)
+
+    assert first.status == CandidateStatus.LINKED
+    assert replay.idempotent_replay is True
+    assert state.links == [
+        (candidate.id, matter.id, CandidateMatterRelation.LINKED, "legal-user-1")
+    ]
+
+
+@pytest.mark.asyncio
+async def test_candidate_can_be_marked_information_only_without_matter() -> None:
+    state = FakeState()
+    candidate = make_candidate()
+    state.candidates[candidate.id] = candidate
+
+    result = await ResolveCandidateHandler(state.factory).execute(
+        ResolveCandidateCommand(
+            candidate_id=candidate.id,
+            candidate_version=candidate.version,
+            action=CandidateResolutionAction.INFORMATION_ONLY,
+            matter_id=None,
+            actor_id="legal-user-1",
+            correlation_id="corr-info",
+            idempotency_key="idem-info",
+        )
+    )
+
+    assert result.status == CandidateStatus.INFORMATION_ONLY
+    assert state.links == []
 
 
 @pytest.mark.asyncio

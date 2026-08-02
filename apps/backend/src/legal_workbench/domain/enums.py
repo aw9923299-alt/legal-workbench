@@ -11,6 +11,13 @@ class CandidateStatus(StrEnum):
     REJECTED = "rejected"
 
 
+class CandidateResolutionAction(StrEnum):
+    LINK_EXISTING = "link_existing"
+    UPDATE_EXISTING = "update_existing"
+    INFORMATION_ONLY = "information_only"
+    IGNORE = "ignore"
+
+
 class LegalRelevance(StrEnum):
     RELEVANT = "relevant"
     POSSIBLY_RELEVANT = "possibly_relevant"
@@ -183,6 +190,7 @@ class MessageAnalysisFailureCode(StrEnum):
     AGENT_RUNTIME_START_FAILED = "AGENT_RUNTIME_START_FAILED"
     AGENT_RUNTIME_TIMEOUT = "AGENT_RUNTIME_TIMEOUT"
     AGENT_RUNTIME_CANCELLED = "AGENT_RUNTIME_CANCELLED"
+    AGENT_LEASE_EXPIRED = "AGENT_LEASE_EXPIRED"
     AGENT_OUTPUT_MISSING = "AGENT_OUTPUT_MISSING"
     AGENT_OUTPUT_INVALID_JSON = "AGENT_OUTPUT_INVALID_JSON"
     AGENT_OUTPUT_SCHEMA_INVALID = "AGENT_OUTPUT_SCHEMA_INVALID"
@@ -272,3 +280,26 @@ class FeishuMessageStatus(StrEnum):
     IGNORED = "ignored"
     ANALYSIS_FAILED = "analysis_failed"
     DEAD_LETTER = "dead_letter"
+    UNSUPPORTED = "unsupported"
+
+
+class IntegrationConnectionMode(StrEnum):
+    LONG_CONNECTION = "long_connection"
+    WEBHOOK = "webhook"
+
+
+class IntegrationConnectionStatus(StrEnum):
+    DISABLED = "disabled"
+    STARTING = "starting"
+    CONNECTED = "connected"
+    DEGRADED = "degraded"
+    DISCONNECTED = "disconnected"
+    FAILED = "failed"
+
+
+class AttachmentDownloadStatus(StrEnum):
+    PENDING = "pending"
+    DOWNLOADING = "downloading"
+    DOWNLOADED = "downloaded"
+    FAILED = "failed"
+    NOT_REQUESTED = "not_requested"

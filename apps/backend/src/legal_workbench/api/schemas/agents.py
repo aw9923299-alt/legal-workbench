@@ -14,6 +14,17 @@ class AgentRunSourceResponse(ApiModel):
     citation_metadata: dict[str, object]
 
 
+class AgentRunStatusEventResponse(ApiModel):
+    id: UUID
+    from_status: AgentRunStatus | None
+    to_status: AgentRunStatus
+    changed_at: datetime
+    correlation_id: str
+    attempt_number: int
+    failure_code: str | None
+    failure_message: str | None
+
+
 class AgentRunResponse(ApiModel):
     id: UUID
     agent_key: str
@@ -36,12 +47,22 @@ class AgentRunResponse(ApiModel):
     max_attempts: int
     failure_code: str | None
     failure_message: str | None
+    runtime_version: str | None
+    agent_definition_version: str
+    prompt_version: str
+    validation_errors: list[str]
+    repair_attempted: bool
+    token_usage: dict[str, int] | None
+    worker_id: str | None
+    lease_expires_at: datetime | None
     correlation_id: str
     created_by: str
     created_at: datetime
     updated_at: datetime
     version: int
     sources: list[AgentRunSourceResponse]
+    status_events: list[AgentRunStatusEventResponse]
+    candidate_id: UUID | None
 
 
 class ContextSnapshotSummaryResponse(ApiModel):
@@ -52,7 +73,18 @@ class ContextSnapshotSummaryResponse(ApiModel):
     participant_ids: list[str]
     content_hash: str
     truncated: bool
+    truncation_reason: str | None
+    original_size: int
+    included_size: int
+    builder_version: str
+    selection_policy_version: str
     created_at: datetime
+
+
+class AgentRunOperationResponse(ApiModel):
+    run_id: UUID
+    status: AgentRunStatus
+    idempotent_replay: bool
 
 
 class FeishuMessageSourceResponse(ApiModel):

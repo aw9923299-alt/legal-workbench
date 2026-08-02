@@ -6,6 +6,7 @@ from pydantic import Field, field_validator
 from legal_workbench.api.schemas.base import ApiModel
 from legal_workbench.domain.enums import (
     BusinessImpact,
+    CandidateResolutionAction,
     CandidateStatus,
     Confidentiality,
     LegalRelevance,
@@ -114,4 +115,18 @@ class MatterCreatedResponse(ApiModel):
     matter_id: UUID
     matter_number: str
     work_item_ids: list[UUID]
+    idempotent_replay: bool
+
+
+class ResolveCandidateRequest(ApiModel):
+    candidate_version: int = Field(ge=1)
+    action: CandidateResolutionAction
+    matter_id: UUID | None = None
+
+
+class CandidateResolvedResponse(ApiModel):
+    candidate_id: UUID
+    status: CandidateStatus
+    matter_id: UUID | None
+    version: int
     idempotent_replay: bool

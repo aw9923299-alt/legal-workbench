@@ -11,19 +11,24 @@ from legal_workbench.api.dependencies import (
 )
 from legal_workbench.api.schemas.candidates import (
     CandidateCreatedResponse,
+    CandidateResolvedResponse,
     CandidateResponse,
     ConfirmCreateMatterRequest,
     CreateCandidateRequest,
     MatterCreatedResponse,
+    ResolveCandidateRequest,
 )
+from legal_workbench.api.schemas.feishu import CandidateRevisionResponse
 from legal_workbench.application.commands import (
     ConfirmCandidateCreateMatterCommand,
     CreateCandidateCommand,
     InitialWorkItemInput,
+    ResolveCandidateCommand,
 )
 from legal_workbench.application.handlers import (
     ConfirmCandidateCreateMatterHandler,
     CreateCandidateHandler,
+    ResolveCandidateHandler,
 )
 from legal_workbench.application.queries import CandidateQueryService
 from legal_workbench.domain.enums import CandidateStatus
@@ -96,6 +101,49 @@ async def get_candidate(
 ) -> CandidateResponse:
     candidate = await CandidateQueryService(uow_factory).get(candidate_id)
     return CandidateResponse.model_validate(candidate)
+
+
+@router.get(
+    "/{candidate_id}/revisions", response_model=list[CandidateRevisionResponse]
+)
+async def list_candidate_revisions(
+    candidate_id: UUID,
+    uow_factory: Annotated[SqlAlchemyUnitOfWorkFactory, Depends(get_uow_factory)],
+) -> list[CandidateRevisionResponse]:
+    revisions = await CandidateQueryService(uow_factory).revisions(candidate_id)
+    return [CandidateRevisionResponse.model_validate(value) for value in revisions]
+
+
+@router.post("/{candidate_id}/resolve", response_model=CandidateResolvedResponse)
+async def resolve_candidate(
+    candidate_id: UUID,
+    body: ResolveCandidateRequest,
+    request: Request,
+    response: Response,
+    actor_id: Annotated[str, Depends(get_actor_id)],
+    idempotency_key: Annotated[str, Depends(get_idempotency_key)],
+    uow_factory: Annotated[SqlAlchemyUnitOfWorkFactory, Depends(get_uow_factory)],
+) -> CandidateResolvedResponse:
+    result = await ResolveCandidateHandler(uow_factory).execute(
+        ResolveCandidateCommand(
+            candidate_id=candidate_id,
+            candidate_version=body.candidate_version,
+            action=body.action,
+            matter_id=body.matter_id,
+            actor_id=actor_id,
+            correlation_id=get_correlation_id(request),
+            idempotency_key=idempotency_key,
+        )
+    )
+    if result.idempotent_replay:
+        response.status_code = status.HTTP_200_OK
+    return CandidateResolvedResponse(
+        candidate_id=result.candidate_id,
+        status=result.status,
+        matter_id=result.matter_id,
+        version=result.version,
+        idempotent_replay=result.idempotent_replay,
+    )
 
 
 @router.post(

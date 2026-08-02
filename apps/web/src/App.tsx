@@ -5,95 +5,120 @@ import {
   BellOutlined,
   BulbOutlined,
   DatabaseOutlined,
-  FileTextOutlined,
   HomeOutlined,
   InboxOutlined,
   MenuFoldOutlined,
   MenuUnfoldOutlined,
-  PlusOutlined,
   RobotOutlined,
   SafetyCertificateOutlined,
   SearchOutlined,
   SettingOutlined,
 } from '@ant-design/icons';
 import { useEffect, useState } from 'react';
+import { Navigate, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom';
+import { useQuery } from '@tanstack/react-query';
+import AgentCenterPage from './pages/AgentCenterPage';
+import AgentRunDetailPage from './pages/AgentRunDetailPage';
 import DashboardPage from './pages/DashboardPage';
 import InboxPage from './pages/InboxPage';
+import LibraryPage from './pages/LibraryPage';
+import MessageDetailPage from './pages/MessageDetailPage';
+import ReviewCenterPage from './pages/ReviewCenterPage';
+import SecurityPage from './pages/SecurityPage';
+import SystemStatusPage from './pages/SystemStatusPage';
 import TaskCenterPage from './pages/TaskCenterPage';
 import TaskDetailPage from './pages/TaskDetailPage';
-import ReviewCenterPage from './pages/ReviewCenterPage';
-import AgentCenterPage from './pages/AgentCenterPage';
-import LibraryPage from './pages/LibraryPage';
-import SecurityPage from './pages/SecurityPage';
+import { QueryState } from './components/QueryState';
+import { legalApi } from './services/api';
+import { useRealtimeStatus } from './services/RealtimeProvider';
 
 const { Sider, Header, Content } = Layout;
 
 const navItems = [
-  { key: 'dashboard', icon: <HomeOutlined />, label: '今日工作台' },
-  { key: 'inbox', icon: <InboxOutlined />, label: <span>AI 收件箱 <Badge count={0} size="small" /></span> },
-  { key: 'matters', icon: <AppstoreOutlined />, label: '法务事项' },
-  { key: 'reviews', icon: <AuditOutlined />, label: '审核中心' },
-  { key: 'library', icon: <DatabaseOutlined />, label: '法务事项库' },
-  { key: 'files', icon: <FileTextOutlined />, label: '合同与文件' },
-  { key: 'agents', icon: <RobotOutlined />, label: 'Agent 中心' },
-  { key: 'security', icon: <SafetyCertificateOutlined />, label: '数据与权限' },
-  { key: 'settings', icon: <SettingOutlined />, label: '系统设置' },
+  { key: '/dashboard', icon: <HomeOutlined />, label: '今日工作台' },
+  { key: '/inbox', icon: <InboxOutlined />, label: 'AI 收件箱' },
+  { key: '/matters', icon: <AppstoreOutlined />, label: '法务事项' },
+  { key: '/reviews', icon: <AuditOutlined />, label: '审核中心' },
+  { key: '/library', icon: <DatabaseOutlined />, label: '法务事项库' },
+  { key: '/agent-runs', icon: <RobotOutlined />, label: 'Agent 运行中心' },
+  { key: '/security', icon: <SafetyCertificateOutlined />, label: '数据与权限' },
+  { key: '/system', icon: <SettingOutlined />, label: '系统状态' },
 ];
+
+function MatterDetailRoute() {
+  const { matterId = '' } = useParams();
+  const navigate = useNavigate();
+  return <TaskDetailPage matterId={matterId} onBack={() => navigate('/matters')} />;
+}
+
+function CandidateRoute() {
+  const { candidateId = '' } = useParams();
+  const candidate = useQuery({
+    queryKey: ['candidate', candidateId],
+    queryFn: () => legalApi.getCandidate(candidateId),
+    enabled: Boolean(candidateId),
+  });
+  return <QueryState loading={candidate.isLoading} error={candidate.error} onRetry={() => void candidate.refetch()}>
+    {candidate.data?.feishuMessageId
+      ? <Navigate replace to={`/inbox/${candidate.data.feishuMessageId}`} />
+      : <div className="page placeholder-page"><h2>Candidate 没有关联来源消息</h2><p>请从 AgentRun 或审计记录继续调查。</p></div>}
+  </QueryState>;
+}
+
+function RouteContent() {
+  const navigate = useNavigate();
+  return <Routes>
+    <Route path="/" element={<Navigate replace to="/inbox" />} />
+    <Route path="/dashboard" element={<DashboardPage onOpenTask={() => navigate('/matters')} />} />
+    <Route path="/inbox" element={<InboxPage />} />
+    <Route path="/inbox/:messageId" element={<MessageDetailPage />} />
+    <Route path="/candidates/:candidateId" element={<CandidateRoute />} />
+    <Route path="/agent-runs" element={<AgentCenterPage />} />
+    <Route path="/agent-runs/:runId" element={<AgentRunDetailPage />} />
+    <Route path="/system" element={<SystemStatusPage />} />
+    <Route path="/matters" element={<TaskCenterPage onOpenMatter={(id) => navigate(`/matters/${id}`)} />} />
+    <Route path="/matters/:matterId" element={<MatterDetailRoute />} />
+    <Route path="/reviews" element={<ReviewCenterPage />} />
+    <Route path="/library" element={<LibraryPage />} />
+    <Route path="/security" element={<SecurityPage />} />
+    <Route path="*" element={<div className="page placeholder-page"><h2>页面不存在</h2><Button onClick={() => navigate('/inbox')}>返回收件箱</Button></div>} />
+  </Routes>;
+}
+
+function selectedNav(pathname: string): string {
+  return navItems.find((item) => pathname === item.key || pathname.startsWith(`${item.key}/`))?.key ?? '/inbox';
+}
 
 export default function RootApp() {
   const [collapsed, setCollapsed] = useState(false);
-  const [page, setPage] = useState('dashboard');
-  const [selectedMatterId, setSelectedMatterId] = useState<string>();
-  const [selectedAgentRunId, setSelectedAgentRunId] = useState<string>();
   const [darkMode, setDarkMode] = useState(false);
+  const navigate = useNavigate();
+  const location = useLocation();
+  const realtime = useRealtimeStatus();
 
   useEffect(() => {
     document.body.classList.toggle('dark-mode', darkMode);
   }, [darkMode]);
 
-  const openMatter = (matterId: string) => {
-    setPage('matters');
-    setSelectedMatterId(matterId);
-  };
-
-  const renderPage = () => {
-    if (selectedMatterId) {
-      return <TaskDetailPage matterId={selectedMatterId} onBack={() => setSelectedMatterId(undefined)} />;
-    }
-    if (page === 'dashboard') {
-      return <DashboardPage onOpenTask={() => setPage('matters')} />;
-    }
-    if (page === 'inbox') return <InboxPage onMatterCreated={openMatter} onOpenAgentRun={(runId) => { setSelectedAgentRunId(runId); setPage('agents'); }} />;
-    if (page === 'matters') return <TaskCenterPage onOpenMatter={openMatter} />;
-    if (page === 'reviews') return <ReviewCenterPage />;
-    if (page === 'library') return <LibraryPage />;
-    if (page === 'agents') return <AgentCenterPage initialRunId={selectedAgentRunId} />;
-    if (page === 'security') return <SecurityPage />;
-    return <div className="page placeholder-page"><h2>模块已预留</h2><p>该模块将在正式接入文件、系统设置或专项业务能力后启用。</p></div>;
-  };
-
-  return (
-    <Layout className="app-shell">
-      <Sider width={228} collapsedWidth={72} collapsed={collapsed} className="app-sider" trigger={null}>
-        <div className="brand"><div className="brand-mark">律</div>{!collapsed && <div><strong>法务工作台</strong><span>Legal Workbench</span></div>}</div>
-        <Menu mode="inline" selectedKeys={[page]} items={navItems} onClick={({ key }) => { setPage(key); setSelectedMatterId(undefined); setSelectedAgentRunId(undefined); }} />
-        <div className="sider-footer"><div className="sync-dot" />{!collapsed && <span>本地服务已连接</span>}</div>
-      </Sider>
-      <Layout>
-        <Header className="app-header">
-          <Button type="text" icon={collapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />} onClick={() => setCollapsed((value) => !value)} />
-          <Input className="global-search" prefix={<SearchOutlined />} placeholder="搜索事项、消息、任务、合同或输入 / 打开命令" />
-          <div className="header-actions">
-            <Button icon={<PlusOutlined />}>快速创建</Button>
-            <Tooltip title="本地服务状态"><Button type="text" icon={<SafetyCertificateOutlined />}><span className="header-status">已连接</span></Button></Tooltip>
-            <Tooltip title={darkMode ? '切换浅色模式' : '切换深色模式'}><Button type="text" icon={<BulbOutlined />} onClick={() => setDarkMode((value) => !value)} /></Tooltip>
-            <Tooltip title="AI 管家"><Button type="text" icon={<RobotOutlined />} /></Tooltip>
-            <Badge dot><Button type="text" icon={<BellOutlined />} /></Badge>
-            <Avatar>林</Avatar>
-          </div>
-        </Header>
-        <Content className="app-content">{renderPage()}</Content>
-      </Layout>
+  return <Layout className="app-shell">
+    <Sider width={228} collapsedWidth={72} collapsed={collapsed} className="app-sider" trigger={null}>
+      <div className="brand"><div className="brand-mark">律</div>{!collapsed && <div><strong>法务工作台</strong><span>Legal Workbench</span></div>}</div>
+      <Menu mode="inline" selectedKeys={[selectedNav(location.pathname)]} items={navItems} onClick={({ key }) => navigate(key)} />
+      <div className="sider-footer"><div className={`sync-dot ${realtime.connected ? '' : 'degraded'}`} />{!collapsed && <span>{realtime.connected ? '实时状态已连接' : '实时断开，轮询中'}</span>}</div>
+    </Sider>
+    <Layout>
+      <Header className="app-header">
+        <Button type="text" icon={collapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />} onClick={() => setCollapsed((value) => !value)} />
+        <Input className="global-search" prefix={<SearchOutlined />} placeholder="在 AI 收件箱搜索真实消息" onPressEnter={(event) => navigate(`/inbox?search=${encodeURIComponent(event.currentTarget.value)}`)} />
+        <div className="header-actions">
+          <Tooltip title={realtime.connected ? 'SSE 实时连接正常' : 'SSE 断开，已回退到轮询'}><Button type="text" icon={<SafetyCertificateOutlined />} onClick={() => navigate('/system')}><span className="header-status">{realtime.connected ? '实时' : '降级'}</span></Button></Tooltip>
+          <Tooltip title={darkMode ? '切换浅色模式' : '切换深色模式'}><Button type="text" icon={<BulbOutlined />} onClick={() => setDarkMode((value) => !value)} /></Tooltip>
+          <Tooltip title="Agent 运行中心"><Button type="text" icon={<RobotOutlined />} onClick={() => navigate('/agent-runs')} /></Tooltip>
+          <Badge dot={!realtime.connected}><Button type="text" icon={<BellOutlined />} onClick={() => navigate('/system')} /></Badge>
+          <Avatar>法</Avatar>
+        </div>
+      </Header>
+      <Content className="app-content"><RouteContent /></Content>
     </Layout>
-  );
+  </Layout>;
 }

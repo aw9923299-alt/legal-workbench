@@ -8,10 +8,12 @@ from legal_workbench.application.commands import (
     AddWorkItemCommand,
     ConfirmCandidateCreateMatterCommand,
     CreateCandidateCommand,
+    ResolveCandidateCommand,
 )
 from legal_workbench.application.ports import UnitOfWorkFactory
 from legal_workbench.application.results import (
     CandidateCreatedResult,
+    CandidateResolvedResult,
     MatterCreatedResult,
     WorkItemCreatedResult,
 )
@@ -24,7 +26,11 @@ from legal_workbench.domain.entities import (
     OutboxEvent,
     WorkItem,
 )
-from legal_workbench.domain.enums import CandidateMatterRelation
+from legal_workbench.domain.enums import (
+    CandidateMatterRelation,
+    CandidateResolutionAction,
+    CandidateStatus,
+)
 from legal_workbench.domain.errors import (
     DomainValidationError,
     EntityNotFoundError,
@@ -53,6 +59,17 @@ def _matter_result_from_replay(record: IdempotencyRecord) -> MatterCreatedResult
         matter_id=UUID(str(record.response_payload["matterId"])),
         matter_number=str(record.response_payload["matterNumber"]),
         work_item_ids=[UUID(str(item)) for item in work_item_ids_value],
+        idempotent_replay=True,
+    )
+
+
+def _resolved_result_from_replay(record: IdempotencyRecord) -> CandidateResolvedResult:
+    matter_id = record.response_payload.get("matterId")
+    return CandidateResolvedResult(
+        candidate_id=UUID(str(record.response_payload["candidateId"])),
+        status=CandidateStatus(str(record.response_payload["status"])),
+        matter_id=UUID(str(matter_id)) if matter_id else None,
+        version=int(str(record.response_payload["version"])),
         idempotent_replay=True,
     )
 
@@ -368,6 +385,117 @@ class ConfirmCandidateCreateMatterHandler:
             matter_id=matter.id,
             matter_number=matter.matter_number,
             work_item_ids=[item.id for item in work_items],
+        )
+
+
+class ResolveCandidateHandler:
+    OPERATION = "resolve_message_candidate"
+
+    def __init__(self, uow_factory: UnitOfWorkFactory) -> None:
+        self._uow_factory = uow_factory
+
+    async def execute(self, command: ResolveCandidateCommand) -> CandidateResolvedResult:
+        requires_matter = command.action in {
+            CandidateResolutionAction.LINK_EXISTING,
+            CandidateResolutionAction.UPDATE_EXISTING,
+        }
+        if requires_matter != (command.matter_id is not None):
+            raise DomainValidationError(
+                "A matter ID is required only for link/update candidate actions."
+            )
+        request_payload: dict[str, object] = {
+            "candidateId": str(command.candidate_id),
+            "candidateVersion": command.candidate_version,
+            "action": command.action.value,
+            "matterId": str(command.matter_id) if command.matter_id else None,
+        }
+        request_hash = _request_hash(request_payload)
+        async with self._uow_factory() as uow:
+            await uow.lock_idempotency(
+                operation=self.OPERATION, key=command.idempotency_key
+            )
+            replay = await uow.idempotency.get(
+                operation=self.OPERATION, key=command.idempotency_key
+            )
+            if replay is not None:
+                if replay.request_hash != request_hash:
+                    raise IdempotencyConflictError(
+                        "The idempotency key was already used for another resolution."
+                    )
+                return _resolved_result_from_replay(replay)
+            candidate = await uow.candidates.get_for_update(command.candidate_id)
+            if candidate is None:
+                raise EntityNotFoundError(
+                    "Message candidate was not found.",
+                    details={"candidateId": str(command.candidate_id)},
+                )
+            if command.matter_id is not None:
+                matter = await uow.matters.get(command.matter_id)
+                if matter is None:
+                    raise EntityNotFoundError(
+                        "Legal matter was not found.",
+                        details={"matterId": str(command.matter_id)},
+                    )
+            candidate.resolve(
+                action=command.action,
+                actor_id=command.actor_id,
+                expected_version=command.candidate_version,
+            )
+            await uow.candidates.save(candidate)
+            if command.matter_id is not None:
+                relation = (
+                    CandidateMatterRelation.UPDATED
+                    if command.action == CandidateResolutionAction.UPDATE_EXISTING
+                    else CandidateMatterRelation.LINKED
+                )
+                await uow.candidates.link_to_matter(
+                    candidate_id=candidate.id,
+                    matter_id=command.matter_id,
+                    relation_type=relation,
+                    confirmed_by=command.actor_id,
+                )
+            response_payload: dict[str, object] = {
+                "candidateId": str(candidate.id),
+                "status": candidate.status.value,
+                "matterId": str(command.matter_id) if command.matter_id else None,
+                "version": candidate.version,
+            }
+            await uow.audit_events.add(
+                AuditEvent(
+                    id=uuid4(),
+                    aggregate_type="message_candidate",
+                    aggregate_id=candidate.id,
+                    event_type="message_candidate_resolved",
+                    actor_id=command.actor_id,
+                    payload={**request_payload, "status": candidate.status.value},
+                    correlation_id=command.correlation_id,
+                )
+            )
+            await uow.outbox_events.add(
+                OutboxEvent(
+                    id=uuid4(),
+                    event_type="MessageCandidateResolved",
+                    aggregate_type="message_candidate",
+                    aggregate_id=candidate.id,
+                    payload=response_payload,
+                    correlation_id=command.correlation_id,
+                )
+            )
+            await uow.idempotency.add(
+                IdempotencyRecord(
+                    id=uuid4(),
+                    operation=self.OPERATION,
+                    idempotency_key=command.idempotency_key,
+                    request_hash=request_hash,
+                    response_payload=response_payload,
+                )
+            )
+            await uow.commit()
+        return CandidateResolvedResult(
+            candidate_id=candidate.id,
+            status=candidate.status,
+            matter_id=command.matter_id,
+            version=candidate.version,
         )
 
 

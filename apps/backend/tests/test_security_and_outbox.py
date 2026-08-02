@@ -32,16 +32,18 @@ def test_real_feishu_requires_verification_configuration() -> None:
     with pytest.raises(ValidationError, match="verification"):
         Settings(
             enable_real_feishu=True,
+            feishu_event_source="webhook",
             feishu_verification_token=None,
             feishu_encrypt_key=None,
             _env_file=None,
         )
 
 
-def test_encrypt_key_alone_does_not_enable_unimplemented_callback_mode() -> None:
+def test_encrypt_key_alone_does_not_replace_webhook_verification_token() -> None:
     with pytest.raises(ValidationError, match="verification token"):
         Settings(
             enable_real_feishu=True,
+            feishu_event_source="webhook",
             feishu_verification_token=None,
             feishu_encrypt_key="configured-but-not-implemented",
             _env_file=None,
@@ -165,6 +167,7 @@ def test_feishu_webhook_rejects_invalid_verification_token(
     from legal_workbench.main import app
 
     monkeypatch.setenv("LEGAL_WORKBENCH_ENABLE_REAL_FEISHU", "true")
+    monkeypatch.setenv("LEGAL_WORKBENCH_FEISHU_EVENT_SOURCE", "webhook")
     monkeypatch.setenv("LEGAL_WORKBENCH_FEISHU_VERIFICATION_TOKEN", "expected-token")
     get_settings.cache_clear()
     try:
@@ -195,3 +198,41 @@ def test_message_analysis_api_contracts_are_registered() -> None:
     assert "/api/v1/feishu/messages/{message_id}/analyse" in paths
     assert "/api/v1/feishu/messages/{message_id}/retry-analysis" in paths
     assert "/api/v1/feishu/messages/{message_id}/analysis" in paths
+    assert "/api/v1/integrations/feishu/status" in paths
+    assert "/api/v1/integrations/feishu/reconnect" in paths
+    assert "/api/v1/integrations/feishu/reconcile" in paths
+    assert "/api/v1/system/health" in paths
+    assert "/api/v1/system/metrics" in paths
+    assert "/api/v1/system/recover-pending-jobs" in paths
+    assert "/api/v1/events/stream" in paths
+    assert "/api/v1/feishu/messages" in paths
+    assert "/api/v1/feishu/messages/{message_id}" in paths
+    assert "/api/v1/agent-runs/{run_id}/retry" in paths
+    assert "/api/v1/agent-runs/{run_id}/cancel" in paths
+
+
+def test_agent_runtime_output_masks_common_secret_formats() -> None:
+    from legal_workbench.api.routes.agents import _redact_runtime_text
+
+    value = _redact_runtime_text(
+        "Authorization: Bearer sensitive-token API_KEY=secret-value sk-abcdefghijklmnop"
+    )
+
+    assert value is not None
+    assert "sensitive-token" not in value
+    assert "secret-value" not in value
+    assert "sk-abcdefghijklmnop" not in value
+    assert value.count("[REDACTED]") == 3
+
+
+def test_outbox_requeue_requires_idempotency_key() -> None:
+    from legal_workbench.main import app
+
+    with TestClient(app) as client:
+        assert client.post("/api/v1/auth/local-session").status_code == 201
+        response = client.post(
+            f"/api/v1/system/outbox/dead-letters/{uuid4()}/requeue"
+        )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Idempotency-Key header is required."

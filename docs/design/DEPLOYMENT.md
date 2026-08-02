@@ -21,7 +21,7 @@ agents        worker 内受控 CodexCliRuntime
 integrations  feishu-connector、file-indexer
 ```
 
-Profiles中的进程当前是工程入口，不代表真实功能已实现。
+`feishu-connector` 已实现官方 SDK 长连接；真实运行仍需测试应用凭证并显式开启。`file-indexer` 仍是工程入口。
 
 ## 3. 镜像策略
 
@@ -38,7 +38,8 @@ Profiles中的进程当前是工程入口，不代表真实功能已实现。
 | 数据 | 存储 | 说明 |
 |---|---|---|
 | 领域、审计、知识元数据和正文 | PostgreSQL Volume | 唯一事实库，每日备份 |
-| 队列和延时任务 | Redis AOF | 可重建但需持久化 |
+| 队列和延时任务 | Redis AOF | 可重建；不得成为任务状态或消息事实库 |
+| 飞书附件 | 本地受控目录 | 仅元数据/下载/哈希，默认不授权给 Codex |
 | 公司原始资料 | 本地受控目录 | 默认只读挂载给服务 |
 | Codex运行目录 | 本地隔离目录 | 定期清理，保留哈希和必要产物 |
 | Agent定义和提示词 | Git | 版本控制 |
@@ -81,6 +82,8 @@ Profiles中的进程当前是工程入口，不代表真实功能已实现。
 → 工作台展示恢复结果和不可覆盖窗口
 ```
 
+当前远端补偿是配置群聊的时间窗查询，不是租户级游标。Mac 唤醒后应调用 `/integrations/feishu/reconcile`，然后由数据库恢复扫描重派 Outbox/待分析消息。
+
 ## 8. Worker与Codex Runner
 
 Worker：
@@ -98,12 +101,15 @@ Codex Runner：
 - 超时先终止再强杀；
 - stdout/stderr、退出码和Schema结果写入技术日志；
 - 失败不得生成正式Artifact；
-- 运行租约过期后标记abandoned并人工或自动恢复。
+- `queued` 超时后重建 Outbox；`preparing/running` 租约过期后以 `AGENT_LEASE_EXPIRED` 标记失败并自动重试，耗尽进入 `dead_letter`；
+- Celery Beat 默认每 30 秒使用 PostgreSQL advisory lock 扫描，Redis 清空后仍可从事实表恢复。
 
 ## 9. 健康检查
 
 - `/api/v1/health/live`：进程存活；
 - `/api/v1/health/ready`：PostgreSQL和Redis就绪；
+- `/api/v1/system/health`：FastAPI、PostgreSQL、Redis、Worker、Scheduler、飞书、Codex CLI/认证和运行指标；
+- `/api/v1/events/stream`：SSE 运行变化，断开不影响 PostgreSQL 事实；
 - 飞书连接状态和最后事件时间；
 - Celery队列长度、最老任务和死信；
 - Codex运行数、超时和租约；
@@ -124,7 +130,11 @@ docker compose up -d --build
 docker compose ps
 curl http://localhost:8000/api/v1/health/live
 curl http://localhost:8000/api/v1/health/ready
+# 先 POST /api/v1/auth/local-session 获取本地 HttpOnly Session，再访问：
+curl --cookie-jar /tmp/legal-workbench-cookie http://localhost:8000/api/v1/system/health
 ```
+
+故障恢复验证应依次停止/恢复 Redis、Worker 和 API，并检查 PostgreSQL 中 queued 消息、AgentRun 租约、Outbox 和死信仍可由 scheduler 或 `/system/recover-pending-jobs` 恢复。Codex 进程终止测试必须得到明确失败码，不能以伪造成功结果完成。
 
 集成Profiles在功能实现和安全评审完成后才启用：
 

@@ -35,6 +35,14 @@ class ContextSnapshotInput(StrictMessageModel):
     attachment_ids: list[str]
     thread_metadata: dict[str, object]
     content: dict[str, object]
+    builder_version: str
+    selection_policy_version: str
+    current_message_version: int = Field(ge=1)
+    attachment_version_hash: str
+    truncated: bool
+    truncation_reason: str | None
+    original_size: int = Field(ge=0)
+    included_size: int = Field(ge=0)
 
 
 class AgentConstraintsInput(StrictMessageModel):

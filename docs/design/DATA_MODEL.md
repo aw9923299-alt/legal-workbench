@@ -44,6 +44,7 @@ interface FeishuMessage {
     | 'ignored'
     | 'analysis_failed'
     | 'dead_letter';
+  unsupportedReason?: string;
   contextSnapshotId?: string;
   lastAgentRunId?: string;
   analysisAttempts: number;
@@ -57,7 +58,9 @@ interface FeishuMessage {
 唯一约束：
 
 - `(tenant_id, event_id)`；
-- `(tenant_id, message_id, content_hash)`。
+- `(tenant_id, message_id)`；消息正文变化进入不可变 `FeishuMessageVersion`，不覆盖历史审计。
+
+`integration_connections` 持久化连接模式、状态、最近连接/断开/事件、错误、重连次数和最近补偿结果。`feishu_message_versions` 为每次创建、编辑或撤回追加修订；`feishu_attachments` 保存 file key、名称、MIME、大小、SHA-256、本地路径、下载状态和 `authorized_for_analysis`。迁移 `20260801_0005` 可降级并保留 0004 原有消息行。
 
 ## 2.2 FileAsset
 
@@ -99,12 +102,20 @@ interface ContextSnapshot {
   threadMetadata: Record<string, unknown>;
   permissionSnapshot: Record<string, unknown>;
   content: Record<string, unknown>;
+  builderVersion: string;
+  selectionPolicyVersion: string;
+  currentMessageVersion: number;
+  attachmentVersionHash: string;
+  truncated: boolean;
+  truncationReason?: string;
+  originalSize: number;
+  includedSize: number;
   contentHash: string;
   createdAt: string;
 }
 ```
 
-快照一经创建不可修改。当前消息必选，父消息和同线程最近消息由确定性规则限量选取；附件仅记录元数据。`(source_type, source_id, content_hash)` 唯一，并通过事务级 advisory lock 避免并发重复。
+快照一经创建不可修改。当前消息必选，父消息、根消息和同线程最近消息由确定性规则限量选取；附件仅记录元数据。复用哈希同时包含消息/附件版本、上下文排序、Builder 版本和选择策略版本；消息数、单条字符、总字符和附件数的截断原因及原始/纳入大小均持久化。`(source_type, source_id, content_hash)` 唯一，并通过事务级 advisory lock 避免并发重复。
 
 0004 迁移不会按旧版客户端提供的 `content_hash/source_ids` 合并历史审计行；每条旧快照以自身 UUID 回填 `source_id`，因此重复旧数据仍被完整保留。0003 Candidate 中可能存在的外部 `agent_run_id` 先保存到 `analysis_payload.legacyAgentRunId`，downgrade 时恢复。
 
@@ -158,6 +169,8 @@ interface MessageCandidate {
 ```
 
 同一 `feishu_message_id` 对 `pending_confirmation/confirmed/linked` 建立部分唯一索引，防止重复有效 Candidate。消息研判结果无论置信度高低都不自动建立 Matter。
+
+`candidate_revisions` 为每次合法分析追加 `revision/agent_run_id/analysis_payload/created_at/superseded_at/superseded_by`。当前 Candidate 可随待确认重分析推进版本，但旧 revision 不修改；已经人工处理的 Candidate 不被重新分析静默覆盖。
 
 ## 2.5 LegalMatter
 
@@ -385,11 +398,21 @@ interface AgentRun {
   maxAttempts: number;
   failureCode?: string;
   failureMessage?: string;
+  runtimeVersion?: string;
+  agentDefinitionVersion: string;
+  promptVersion: string;
+  validationErrors: string[];
+  repairAttempted: boolean;
+  tokenUsage?: Record<string, number>;
+  workerId?: string;
+  leaseExpiresAt?: string;
   correlationId: string;
   createdBy: string;
   version: number;
 }
 ```
+
+`agent_run_status_events` 对每次领域状态迁移只追加记录时间、前后状态、Correlation ID、尝试次数和失败摘要。`candidate_revisions` 对同一 Candidate 保存递增 revision、AgentRun、完整分析 Payload 与 superseded 关系；迁移 `20260801_0006` 可升降级。
 
 ### 2.12.1 AgentRunSource
 
@@ -667,6 +690,12 @@ learning_records
 rule_candidates
 audit_events
 outbox_events
+outbox_dead_letters
+integration_connections
+feishu_message_versions
+feishu_attachments
+agent_run_status_events
+candidate_revisions
 ```
 
 使用 `version` 字段进行乐观锁；异步事件采用事务 Outbox，避免数据库提交成功但队列消息丢失。

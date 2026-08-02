@@ -12,7 +12,7 @@ from legal_workbench.domain.entities import AgentDefinition
 from legal_workbench.domain.enums import AgentDefinitionStatus
 
 MESSAGE_JUDGEMENT_KEY = "message_judgement"
-MESSAGE_JUDGEMENT_VERSION = "1.0.0"
+MESSAGE_JUDGEMENT_VERSION = "2.0.0"
 
 MESSAGE_JUDGEMENT_PROMPT = """你是法务工作台的消息研判 Agent。
 只分析系统提示末尾 authorized_context_json 中明确授权的本次飞书上下文。

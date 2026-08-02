@@ -23,6 +23,10 @@ class AgentExecutionResult:
     raw_stdout: str
     raw_stderr: str
     output_path: Path
+    repair_attempted: bool = False
+    validation_errors: tuple[str, ...] = ()
+    runtime_version: str | None = None
+    token_usage: dict[str, int] | None = None
 
 
 class AgentRuntimeError(RuntimeError):
@@ -34,12 +38,16 @@ class AgentRuntimeError(RuntimeError):
         retryable: bool,
         raw_stdout: str = "",
         raw_stderr: str = "",
+        validation_errors: tuple[str, ...] = (),
+        repair_attempted: bool = False,
     ) -> None:
         super().__init__(message)
         self.code = code
         self.retryable = retryable
         self.raw_stdout = raw_stdout
         self.raw_stderr = raw_stderr
+        self.validation_errors = validation_errors
+        self.repair_attempted = repair_attempted
 
 
 class AgentRuntime(Protocol):

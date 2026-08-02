@@ -156,3 +156,37 @@ async def test_builder_hash_is_stable_for_different_repository_order() -> None:
 
     assert first.content_hash == second.content_hash
     assert first.content == second.content
+
+
+@pytest.mark.asyncio
+async def test_builder_records_multidimensional_truncation_and_message_versions() -> None:
+    now = datetime(2026, 8, 1, 12, 0, tzinfo=UTC)
+    current = make_message("om_current", created_at=now)
+    current.version = 7
+    current.content = {"text": "x" * 80}
+    current.attachments = [
+        {"fileKey": "file-1"},
+        {"fileKey": "file-2"},
+        {"fileKey": "file-3"},
+    ]
+    store = FakeSnapshotRepository()
+
+    snapshot = await ContextSnapshotBuilder(
+        lambda: FakeUnitOfWork(FakeFeishuRepository(current, [current]), store),
+        max_messages=2,
+        max_text_characters=40,
+        max_single_message_characters=30,
+        max_attachments=2,
+        builder_version="2.0.0",
+        selection_policy_version="thread-v2",
+        now=lambda: now,
+    ).build_for_feishu_message(current.id)
+
+    assert snapshot.truncated is True
+    assert "single_message_limit" in (snapshot.truncation_reason or "")
+    assert "attachment_limit" in (snapshot.truncation_reason or "")
+    assert snapshot.original_size > snapshot.included_size
+    assert snapshot.builder_version == "2.0.0"
+    assert snapshot.selection_policy_version == "thread-v2"
+    assert snapshot.content["messages"][0]["messageVersion"] == 7  # type: ignore[index]
+    assert len(snapshot.attachment_ids) == 2

@@ -10,12 +10,23 @@ from legal_workbench.application.ports import UnitOfWorkFactory
 from legal_workbench.application.results import FeishuEventIngestedResult
 from legal_workbench.domain.entities import (
     AuditEvent,
+    FeishuAttachment,
     FeishuMessage,
+    FeishuMessageVersion,
     FeishuRawEvent,
     OutboxEvent,
 )
-from legal_workbench.domain.enums import FeishuEventStatus, FeishuMessageStatus
+from legal_workbench.domain.enums import (
+    AttachmentDownloadStatus,
+    FeishuEventStatus,
+    FeishuMessageStatus,
+)
 from legal_workbench.domain.errors import IdempotencyConflictError
+from legal_workbench.integrations.feishu_events import (
+    FeishuMessageOperation,
+    NormalizedMessage,
+    normalize_feishu_event,
+)
 
 
 def _payload_hash(payload: dict[str, object]) -> str:
@@ -33,66 +44,48 @@ def _parse_millis(value: object) -> datetime | None:
     return datetime.fromtimestamp(timestamp, tz=UTC)
 
 
-def _parse_content(value: object) -> dict[str, object]:
-    if isinstance(value, dict):
-        return value
-    if isinstance(value, str):
-        try:
-            parsed = json.loads(value)
-        except json.JSONDecodeError:
-            return {"text": value}
-        return parsed if isinstance(parsed, dict) else {"value": parsed}
-    return {"value": value}
-
-
-def _extract_message(
+def _new_message(
     *,
     event_db_id: UUID,
-    tenant_key: str | None,
-    payload: dict[str, object],
-) -> FeishuMessage | None:
-    event = payload.get("event")
-    if not isinstance(event, dict):
-        return None
-    message = event.get("message")
-    if not isinstance(message, dict):
-        return None
-    message_id = str(message.get("message_id") or "").strip()
-    if not message_id:
-        return None
-    sender = event.get("sender")
-    sender_id: str | None = None
-    sender_type: str | None = None
-    if isinstance(sender, dict):
-        sender_type = str(sender.get("sender_type") or "") or None
-        sender_id_value = sender.get("sender_id")
-        if isinstance(sender_id_value, dict):
-            sender_id = str(
-                sender_id_value.get("open_id")
-                or sender_id_value.get("user_id")
-                or sender_id_value.get("union_id")
-                or ""
-            ) or None
-    mentions = message.get("mentions")
-    normalized_mentions = mentions if isinstance(mentions, list) else []
+    normalized: NormalizedMessage,
+    supported: bool,
+    unsupported_reason: str | None,
+) -> FeishuMessage:
+    attachment_payload: list[dict[str, object]] = [
+        {
+            "fileKey": value.file_key,
+            "fileName": value.file_name,
+            "mimeType": value.mime_type,
+            "size": value.size,
+            "downloadStatus": value.download_status,
+        }
+        for value in normalized.attachments
+    ]
     return FeishuMessage(
         id=uuid4(),
         event_id=event_db_id,
-        tenant_key=tenant_key or "",
-        message_id=message_id,
-        chat_id=str(message.get("chat_id") or "") or None,
-        thread_id=str(message.get("thread_id") or "") or None,
-        root_id=str(message.get("root_id") or "") or None,
-        parent_id=str(message.get("parent_id") or "") or None,
-        sender_id=sender_id,
-        sender_type=sender_type,
-        message_type=str(message.get("message_type") or "unknown"),
-        content=_parse_content(message.get("content")),
-        mentions=[item for item in normalized_mentions if isinstance(item, dict)],
-        create_time=_parse_millis(message.get("create_time")),
-        update_time=_parse_millis(message.get("update_time")),
-        raw_message=message,
-        status=FeishuMessageStatus.RECEIVED,
+        tenant_key=normalized.tenant_key,
+        message_id=normalized.message_id,
+        chat_id=normalized.chat_id,
+        thread_id=normalized.thread_id,
+        root_id=normalized.root_message_id,
+        parent_id=normalized.parent_message_id,
+        sender_id=normalized.sender_id,
+        sender_type=normalized.sender_type,
+        message_type=normalized.message_type,
+        content=normalized.structured_content,
+        mentions=list(normalized.mentions),
+        create_time=normalized.sent_at,
+        update_time=normalized.edited_at,
+        raw_message=normalized.raw_payload,
+        status=(FeishuMessageStatus.RECEIVED if supported else FeishuMessageStatus.UNSUPPORTED),
+        plain_text=normalized.plain_text,
+        structured_content=normalized.structured_content,
+        attachments=attachment_payload,
+        content_hash=_payload_hash(normalized.raw_payload),
+        edited_at=normalized.edited_at,
+        recalled_at=normalized.recalled_at,
+        unsupported_reason=unsupported_reason,
     )
 
 
@@ -106,7 +99,11 @@ class IngestFeishuEventHandler:
         digest = _payload_hash(command.raw_payload)
         async with self._uow_factory() as uow:
             await uow.lock_idempotency(operation=self.OPERATION, key=command.event_id)
-            existing = await uow.feishu.get_event_by_external_id(command.event_id)
+            normalized = normalize_feishu_event(command.raw_payload)
+            tenant_key = normalized.tenant_key or command.tenant_key or ""
+            existing = await uow.feishu.get_event_by_external_id(
+                command.event_id, tenant_key=tenant_key
+            )
             if existing is not None:
                 if existing.payload_hash != digest:
                     raise IdempotencyConflictError(
@@ -123,44 +120,126 @@ class IngestFeishuEventHandler:
                 id=uuid4(),
                 event_id=command.event_id,
                 event_type=command.event_type,
-                tenant_key=command.tenant_key or "",
+                tenant_key=tenant_key,
                 app_id=command.app_id,
                 schema_version=command.schema_version,
                 raw_payload=command.raw_payload,
                 payload_hash=digest,
                 status=FeishuEventStatus.RECEIVED,
             )
-            message = _extract_message(
-                event_db_id=event.id,
-                tenant_key=event.tenant_key,
-                payload=command.raw_payload,
-            )
-            if message is not None:
-                existing_message = await uow.feishu.get_message(
-                    tenant_key=message.tenant_key,
-                    message_id=message.message_id,
+            message: FeishuMessage | None = None
+            message_version: FeishuMessageVersion | None = None
+            attachments: list[FeishuAttachment] = []
+            if normalized.external_message_id:
+                await uow.lock_idempotency(
+                    operation="feishu_message",
+                    key=f"{tenant_key}:{normalized.external_message_id}",
                 )
-                if existing_message is not None:
-                    message = None
+                existing_message = await uow.feishu.get_message(
+                    tenant_key=tenant_key,
+                    message_id=normalized.external_message_id,
+                )
+                if normalized.operation == FeishuMessageOperation.CREATE and existing_message:
                     event.status = FeishuEventStatus.DUPLICATE
+                elif normalized.message is not None and existing_message is None:
+                    message = _new_message(
+                        event_db_id=event.id,
+                        normalized=normalized.message,
+                        supported=normalized.supported,
+                        unsupported_reason=normalized.unsupported_reason,
+                    )
+                elif normalized.message is not None and existing_message is not None:
+                    message = existing_message
+                    message.event_id = event.id
+                    message.message_type = normalized.message.message_type
+                    message.content = normalized.message.structured_content
+                    message.structured_content = normalized.message.structured_content
+                    message.plain_text = normalized.message.plain_text
+                    message.raw_message = normalized.message.raw_payload
+                    message.mentions = list(normalized.message.mentions)
+                    message.attachments = [
+                        {
+                            "fileKey": value.file_key,
+                            "fileName": value.file_name,
+                            "mimeType": value.mime_type,
+                            "size": value.size,
+                            "downloadStatus": value.download_status,
+                        }
+                        for value in normalized.message.attachments
+                    ]
+                    message.update_time = normalized.message.edited_at
+                    message.edited_at = normalized.message.edited_at
+                    message.content_hash = _payload_hash(normalized.message.raw_payload)
+                    message.unsupported_reason = normalized.unsupported_reason
+                    message.version += 1
+                elif normalized.operation == FeishuMessageOperation.RECALL and existing_message:
+                    message = existing_message
+                    event_payload = command.raw_payload.get("event")
+                    recall_time = (
+                        _parse_millis(event_payload.get("recall_time"))
+                        if isinstance(event_payload, dict)
+                        else None
+                    )
+                    message.event_id = event.id
+                    message.recalled_at = recall_time or datetime.now(UTC)
+                    message.version += 1
             await uow.feishu.add_event(event)
             if message is not None:
-                await uow.feishu.add_message(message)
-                await uow.outbox_events.add(
-                    OutboxEvent(
-                        id=uuid4(),
-                        event_type="FeishuMessageReceived",
-                        aggregate_type="feishu_message",
-                        aggregate_id=message.id,
-                        payload={
-                            "messageId": str(message.id),
-                            "externalMessageId": message.message_id,
-                            "chatId": message.chat_id,
-                            "tenantKey": message.tenant_key,
-                        },
-                        correlation_id=command.correlation_id,
-                    )
+                if existing_message is None:
+                    await uow.feishu.add_message(message)
+                    revision = 1
+                else:
+                    await uow.feishu.save_message(message)
+                    revision = await uow.feishu.next_message_revision(message.id)
+                message_version = FeishuMessageVersion(
+                    id=uuid4(),
+                    feishu_message_id=message.id,
+                    event_id=event.id,
+                    revision=revision,
+                    raw_payload=command.raw_payload,
+                    content_hash=_payload_hash(command.raw_payload),
+                    plain_text=message.plain_text or "",
+                    structured_content=message.structured_content,
+                    attachments=message.attachments,
+                    edited_at=message.edited_at,
+                    recalled_at=message.recalled_at,
+                    is_recalled=normalized.operation == FeishuMessageOperation.RECALL,
                 )
+                await uow.feishu.add_message_version(message_version)
+                if normalized.message is not None:
+                    attachments = [
+                        FeishuAttachment(
+                            id=uuid4(),
+                            feishu_message_id=message.id,
+                            message_version_id=message_version.id,
+                            file_key=value.file_key,
+                            file_name=value.file_name,
+                            mime_type=value.mime_type,
+                            size=value.size,
+                            download_status=AttachmentDownloadStatus.PENDING,
+                        )
+                        for value in normalized.message.attachments
+                    ]
+                    await uow.feishu.add_attachments(attachments)
+                if normalized.should_trigger_analysis:
+                    await uow.outbox_events.add(
+                        OutboxEvent(
+                            id=uuid4(),
+                            event_type="FeishuMessageReceived",
+                            aggregate_type="feishu_message",
+                            aggregate_id=message.id,
+                            payload={
+                                "messageId": str(message.id),
+                                "externalMessageId": message.message_id,
+                                "chatId": message.chat_id,
+                                "tenantKey": message.tenant_key,
+                                "forceNewRun": normalized.operation
+                                == FeishuMessageOperation.EDIT,
+                            },
+                            correlation_id=command.correlation_id,
+                        )
+                    )
+                event.status = FeishuEventStatus.PROCESSED
             await uow.audit_events.add(
                 AuditEvent(
                     id=uuid4(),
@@ -173,7 +252,11 @@ class IngestFeishuEventHandler:
                         "eventId": command.event_id,
                         "eventType": command.event_type,
                         "messageId": str(message.id) if message else None,
-                        "duplicateMessage": message is None,
+                        "duplicateMessage": event.status == FeishuEventStatus.DUPLICATE,
+                        "operation": normalized.operation.value,
+                        "supported": normalized.supported,
+                        "messageVersionId": str(message_version.id) if message_version else None,
+                        "attachmentCount": len(attachments),
                     },
                     correlation_id=command.correlation_id,
                 )

@@ -1,5 +1,6 @@
 from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from uuid import UUID
 
 from legal_workbench.application.ports import UnitOfWorkFactory
@@ -7,10 +8,14 @@ from legal_workbench.domain.entities import (
     AgentDefinition,
     AgentRun,
     AgentRunSource,
+    AgentRunStatusChange,
+    CandidateRevision,
     Communication,
     ContextSnapshot,
     Deadline,
+    FeishuAttachment,
     FeishuMessage,
+    FeishuMessageVersion,
     LegalMatter,
     MessageCandidate,
     PriorityConfirmation,
@@ -24,6 +29,7 @@ from legal_workbench.domain.enums import (
     CandidateStatus,
     CommunicationStatus,
     DeadlineStatus,
+    FeishuMessageStatus,
     ReviewPackageStatus,
 )
 from legal_workbench.domain.errors import EntityNotFoundError
@@ -49,12 +55,23 @@ class CandidateQueryService:
         async with self._uow_factory() as uow:
             return await uow.candidates.list(status=status, limit=limit)
 
+    async def revisions(self, candidate_id: UUID) -> Sequence[CandidateRevision]:
+        async with self._uow_factory() as uow:
+            if await uow.candidates.get(candidate_id) is None:
+                raise EntityNotFoundError(
+                    "Message candidate was not found.",
+                    details={"candidateId": str(candidate_id)},
+                )
+            return await uow.candidates.list_revisions(candidate_id)
+
 
 @dataclass(frozen=True, slots=True)
 class AgentRunDetails:
     run: AgentRun
     definition: AgentDefinition
     sources: Sequence[AgentRunSource]
+    status_events: Sequence[AgentRunStatusChange] = ()
+    candidate: MessageCandidate | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,7 +99,18 @@ class AgentRunQueryService:
             if definition is None:
                 raise EntityNotFoundError("Agent definition was not found.")
             sources = await uow.agent_run_sources.list_by_run(run.id)
-            return AgentRunDetails(run=run, definition=definition, sources=sources)
+            candidate = (
+                await uow.candidates.get_active_for_message(run.feishu_message_id)
+                if run.feishu_message_id
+                else None
+            )
+            return AgentRunDetails(
+                run=run,
+                definition=definition,
+                sources=sources,
+                status_events=await uow.agent_runs.list_status_events(run.id),
+                candidate=candidate,
+            )
 
     async def list(self, *, status: AgentRunStatus | None, limit: int) -> Sequence[AgentRunDetails]:
         async with self._uow_factory() as uow:
@@ -97,6 +125,14 @@ class AgentRunQueryService:
                         run=run,
                         definition=definition,
                         sources=await uow.agent_run_sources.list_by_run(run.id),
+                        status_events=await uow.agent_runs.list_status_events(run.id),
+                        candidate=(
+                            await uow.candidates.get_active_for_message(
+                                run.feishu_message_id
+                            )
+                            if run.feishu_message_id
+                            else None
+                        ),
                     )
                 )
             return details
@@ -121,7 +157,9 @@ class FeishuMessageAnalysisQueryService:
             )
             runs = await uow.agent_runs.list_by_message(message.id)
             run = runs[0] if runs else None
-            definition = await uow.agent_definitions.get(run.agent_definition_id) if run else None
+            definition = (
+                await uow.agent_definitions.get(run.agent_definition_id) if run else None
+            )
             sources = await uow.agent_run_sources.list_by_run(run.id) if run else []
             candidate = await uow.candidates.get_active_for_message(message.id)
             return FeishuMessageAnalysisDetails(
@@ -131,6 +169,84 @@ class FeishuMessageAnalysisQueryService:
                 definition=definition,
                 sources=sources,
                 candidate=candidate,
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class FeishuInboxItem:
+    message: FeishuMessage
+    run: AgentRun | None
+    candidate: MessageCandidate | None
+
+
+@dataclass(frozen=True, slots=True)
+class FeishuMessageDetails:
+    message: FeishuMessage
+    context_messages: Sequence[FeishuMessage]
+    versions: Sequence[FeishuMessageVersion]
+    attachments: Sequence[FeishuAttachment]
+    run: AgentRun | None
+    candidate: MessageCandidate | None
+    candidate_revisions: Sequence[CandidateRevision]
+
+
+class FeishuInboxQueryService:
+    def __init__(self, uow_factory: UnitOfWorkFactory) -> None:
+        self._uow_factory = uow_factory
+
+    async def list(
+        self,
+        *,
+        statuses: Sequence[FeishuMessageStatus] | None,
+        search: str | None,
+        chat_id: str | None,
+        created_from: datetime | None,
+        created_to: datetime | None,
+        limit: int,
+    ) -> Sequence[FeishuInboxItem]:
+        async with self._uow_factory() as uow:
+            messages = await uow.feishu.list_messages(
+                statuses=statuses,
+                search=search,
+                chat_id=chat_id,
+                created_from=created_from,
+                created_to=created_to,
+                limit=limit,
+            )
+            values: list[FeishuInboxItem] = []
+            for message in messages:
+                runs = await uow.agent_runs.list_by_message(message.id)
+                values.append(
+                    FeishuInboxItem(
+                        message=message,
+                        run=runs[0] if runs else None,
+                        candidate=await uow.candidates.get_active_for_message(message.id),
+                    )
+                )
+            return values
+
+    async def get(self, message_id: UUID) -> FeishuMessageDetails:
+        async with self._uow_factory() as uow:
+            message = await uow.feishu.get_message_by_id(message_id)
+            if message is None:
+                raise EntityNotFoundError(
+                    "Feishu message was not found.",
+                    details={"messageId": str(message_id)},
+                )
+            runs = await uow.agent_runs.list_by_message(message.id)
+            candidate = await uow.candidates.get_active_for_message(message.id)
+            return FeishuMessageDetails(
+                message=message,
+                context_messages=await uow.feishu.list_context_messages(
+                    message, limit=100
+                ),
+                versions=await uow.feishu.list_message_versions(message.id),
+                attachments=await uow.feishu.list_attachments(message.id),
+                run=runs[0] if runs else None,
+                candidate=candidate,
+                candidate_revisions=(
+                    await uow.candidates.list_revisions(candidate.id) if candidate else []
+                ),
             )
 
 

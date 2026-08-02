@@ -4,11 +4,23 @@ from typing import Annotated, Any
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 
-from legal_workbench.api.dependencies import get_correlation_id, get_uow_factory
-from legal_workbench.api.schemas.feishu import FeishuEventIngestedResponse
+from legal_workbench.api.dependencies import (
+    get_actor_id,
+    get_correlation_id,
+    get_idempotency_key,
+    get_uow_factory,
+)
+from legal_workbench.api.schemas.feishu import (
+    FeishuConnectionResponse,
+    FeishuEventIngestedResponse,
+    OperationAcceptedResponse,
+    ReconcileRequest,
+    ReconcileResponse,
+)
 from legal_workbench.application.commands import IngestFeishuEventCommand
 from legal_workbench.application.feishu_handlers import IngestFeishuEventHandler
-from legal_workbench.config import get_settings
+from legal_workbench.application.feishu_operations import FeishuOperationsService
+from legal_workbench.config import FeishuEventSourceMode, get_settings
 from legal_workbench.infrastructure.unit_of_work import SqlAlchemyUnitOfWorkFactory
 
 router = APIRouter(prefix="/integrations/feishu", tags=["feishu"])
@@ -25,6 +37,11 @@ async def receive_feishu_event(
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Real Feishu event ingestion is disabled by configuration.",
+        )
+    if settings.feishu_event_source != FeishuEventSourceMode.WEBHOOK:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Webhook intake is not active while long_connection mode is selected.",
         )
     payload = await request.json()
     if not isinstance(payload, dict):
@@ -61,7 +78,58 @@ async def receive_feishu_event(
             raw_payload=payload,
         )
     )
+    await FeishuOperationsService(
+        settings=settings, uow_factory=uow_factory
+    ).record_event_received()
     return FeishuEventIngestedResponse.model_validate(result)
+
+
+@router.get("/status", response_model=FeishuConnectionResponse)
+async def get_feishu_status(
+    actor_id: Annotated[str, Depends(get_actor_id)],
+    uow_factory: Annotated[SqlAlchemyUnitOfWorkFactory, Depends(get_uow_factory)],
+) -> FeishuConnectionResponse:
+    del actor_id
+    connection = await FeishuOperationsService(
+        settings=get_settings(), uow_factory=uow_factory
+    ).get_connection()
+    return FeishuConnectionResponse.model_validate(connection)
+
+
+@router.post("/reconnect", response_model=OperationAcceptedResponse)
+async def reconnect_feishu(
+    request: Request,
+    actor_id: Annotated[str, Depends(get_actor_id)],
+    idempotency_key: Annotated[str, Depends(get_idempotency_key)],
+    uow_factory: Annotated[SqlAlchemyUnitOfWorkFactory, Depends(get_uow_factory)],
+) -> OperationAcceptedResponse:
+    await FeishuOperationsService(
+        settings=get_settings(), uow_factory=uow_factory
+    ).request_reconnect(
+        actor_id=actor_id,
+        correlation_id=get_correlation_id(request),
+        idempotency_key=idempotency_key,
+    )
+    return OperationAcceptedResponse()
+
+
+@router.post("/reconcile", response_model=ReconcileResponse)
+async def reconcile_feishu(
+    body: ReconcileRequest,
+    request: Request,
+    actor_id: Annotated[str, Depends(get_actor_id)],
+    idempotency_key: Annotated[str, Depends(get_idempotency_key)],
+    uow_factory: Annotated[SqlAlchemyUnitOfWorkFactory, Depends(get_uow_factory)],
+) -> ReconcileResponse:
+    result = await FeishuOperationsService(
+        settings=get_settings(), uow_factory=uow_factory
+    ).reconcile(
+        actor_id=actor_id,
+        correlation_id=get_correlation_id(request),
+        idempotency_key=idempotency_key,
+        window_minutes=body.window_minutes,
+    )
+    return ReconcileResponse.model_validate(result)
 
 
 def _verify_token(payload: dict[str, object]) -> None:

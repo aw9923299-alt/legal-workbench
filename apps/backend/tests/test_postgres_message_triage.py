@@ -124,12 +124,31 @@ async def test_feishu_message_to_snapshot_run_and_candidate_in_postgres(tmp_path
                 correlation_id=f"corr-{uuid4().hex}",
             )
         )
+        rerun = await AnalyseFeishuMessageHandler(
+            uow_factory,
+            FakeAgentRuntime(external_message_id),
+            ContextSnapshotBuilder(uow_factory, max_messages=10, max_text_characters=5000),
+            runs_root=tmp_path,
+            manual_review_threshold=0.75,
+        ).execute(
+            AnalyseFeishuMessageCommand(
+                message_id=message.id,
+                actor_id="integration-test",
+                actor_source="test",
+                correlation_id=f"corr-{uuid4().hex}",
+                force_new_run=True,
+            )
+        )
 
         async with uow_factory() as uow:
             stored_message = await uow.feishu.get_message_by_id(message.id)
             snapshot = await uow.context_snapshots.get(stored_message.context_snapshot_id)  # type: ignore[union-attr,arg-type]
             run = await uow.agent_runs.get(result.agent_run_id)
+            status_events = await uow.agent_runs.list_status_events(result.agent_run_id)
             candidate = await uow.candidates.get_active_for_message(message.id)
+            revisions = list(
+                await uow.candidates.list_revisions(candidate.id) if candidate else []
+            )
 
         assert stored_message is not None
         assert stored_message.status == FeishuMessageStatus.CANDIDATE_CREATED
@@ -139,5 +158,18 @@ async def test_feishu_message_to_snapshot_run_and_candidate_in_postgres(tmp_path
         assert run.working_directory.endswith("/actual-attempt")
         assert candidate is not None and candidate.requires_manual_review is True
         assert candidate.confidence == 0.7
+        assert [event.to_status.value for event in status_events] == [
+            "queued",
+            "preparing",
+            "running",
+            "validating",
+            "completed",
+        ]
+        assert rerun.agent_run_id != result.agent_run_id
+        assert len(revisions) == 2
+        assert revisions[0].agent_run_id == rerun.agent_run_id
+        assert revisions[0].superseded_at is None
+        assert revisions[1].agent_run_id == run.id
+        assert revisions[1].superseded_by == revisions[0].id
     finally:
         await engine.dispose()

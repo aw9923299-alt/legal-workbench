@@ -14,6 +14,11 @@ class RuntimeEnvironment(StrEnum):
     PRODUCTION = "production"
 
 
+class FeishuEventSourceMode(StrEnum):
+    LONG_CONNECTION = "long_connection"
+    WEBHOOK = "webhook"
+
+
 class Settings(BaseSettings):
     """Runtime settings loaded from environment variables or a local .env file."""
 
@@ -44,10 +49,18 @@ class Settings(BaseSettings):
     feishu_encrypt_key: str | None = None
     feishu_api_base_url: str = "https://open.feishu.cn/open-apis"
     feishu_request_timeout_seconds: int = 15
+    feishu_event_source: FeishuEventSourceMode = FeishuEventSourceMode.LONG_CONNECTION
+    feishu_reconnect_max_seconds: int = 30
+    feishu_reconcile_window_minutes: int = 60
+    feishu_reconcile_chat_ids: list[str] = Field(default_factory=list)
+    feishu_tenant_key: str | None = None
+    feishu_attachment_root: str = "/data/feishu-attachments"
+    feishu_attachment_max_bytes: int = 50 * 1024 * 1024
 
     knowledge_root: str = "/data/knowledge"
     codex_runs_root: str = "/data/codex-runs"
     codex_command: str = "codex"
+    codex_expected_version: str = "0.145.0-alpha.9"
     codex_run_timeout_seconds: int = 900
     codex_sandbox_uid: int | None = None
     codex_sandbox_gid: int | None = None
@@ -71,9 +84,17 @@ class Settings(BaseSettings):
 
     context_max_messages: int = 20
     context_max_text_characters: int = 20000
+    context_max_single_message_characters: int = 8000
+    context_max_attachments: int = 10
+    context_builder_version: str = "2.0.0"
+    context_selection_policy_version: str = "thread-v2"
     message_analysis_manual_review_threshold: float = 0.75
     message_analysis_retry_base_seconds: int = 30
     message_analysis_retry_max_seconds: int = 900
+    agent_run_lease_seconds: int = 60
+    analysis_recovery_interval_seconds: int = 30
+    analysis_recovery_stale_seconds: int = 120
+    analysis_recovery_batch_size: int = 100
 
     @field_validator("codex_sandbox_uid", "codex_sandbox_gid", mode="before")
     @classmethod
@@ -82,13 +103,16 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_security_boundaries(self) -> Self:
-        if self.enable_real_feishu and not (
-            self.feishu_verification_token or ""
-        ).strip():
-            raise ValueError(
-                "Real Feishu integration currently requires a verification token; "
-                "encrypted callbacks are not implemented."
-            )
+        if self.enable_real_feishu:
+            if self.feishu_event_source == FeishuEventSourceMode.LONG_CONNECTION and not (
+                (self.feishu_app_id or "").strip()
+                and (self.feishu_app_secret or "").strip()
+            ):
+                raise ValueError("Real Feishu long_connection mode requires app credentials.")
+            if self.feishu_event_source == FeishuEventSourceMode.WEBHOOK and not (
+                self.feishu_verification_token or ""
+            ).strip():
+                raise ValueError("Real Feishu webhook mode requires a verification token.")
         if self.environment not in {
             RuntimeEnvironment.LOCAL,
             RuntimeEnvironment.DEVELOPMENT,

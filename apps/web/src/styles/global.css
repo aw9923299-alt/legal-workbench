@@ -21,6 +21,7 @@ button { cursor: pointer; }
 .app-sider .ant-menu-item:hover { color: #fff !important; background: rgba(255,255,255,.07) !important; }
 .sider-footer { position: absolute; bottom: 0; left: 0; right: 0; height: 48px; display: flex; align-items: center; gap: 8px; padding: 0 18px; border-top: 1px solid rgba(255,255,255,.08); color: #a9b6c7; font-size: 12px; }
 .sync-dot { width: 8px; height: 8px; border-radius: 50%; background: #58a07f; box-shadow: 0 0 0 3px rgba(88,160,127,.16); }
+.sync-dot.degraded { background: #c0833f; box-shadow: 0 0 0 3px rgba(192,131,63,.18); }
 .app-header { height: 58px; position: sticky; top: 0; z-index: 20; display: flex; align-items: center; gap: 12px; padding: 0 18px; background: rgba(255,255,255,.95); border-bottom: 1px solid #d8dee8; backdrop-filter: blur(10px); }
 .global-search { max-width: 660px; height: 34px; background: #f5f7fa; border-color: #e0e5ec; }
 .header-actions { margin-left: auto; display: flex; align-items: center; gap: 4px; }
@@ -131,6 +132,20 @@ button { cursor: pointer; }
 .agent-name div { display: grid; }
 .agent-name span { color: #8a94a4; font-size: 11px; }
 .agent-json { max-height: 320px; overflow: auto; padding: 12px; background: #f6f8fa; font-size: 12px; white-space: pre-wrap; }
+.text-link { padding: 0; color: #315f8f; text-align: left; background: none; border: 0; }
+.text-link:hover { text-decoration: underline; }
+.message-summary { display: -webkit-box; max-width: 310px; overflow: hidden; line-height: 1.45; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+.updated-at { margin-top: 12px; color: #8791a1; font-size: 12px; text-align: right; }
+.query-state { min-height: 220px; display: grid; place-items: center; }
+.source-message-card { border-top: 3px solid #63738a !important; }
+.source-text { padding: 14px; background: #f5f7fa; border-left: 3px solid #63738a; font-size: 15px; white-space: pre-wrap; }
+.human-decision-note { margin-top: 14px; padding: 11px 13px; color: #5e4f2e; background: #fff8e8; border: 1px solid #ead9a8; }
+.evidence-panel { height: 100%; border-width: 2px !important; }
+.evidence-confirmed { background: #f3f9f6; border-color: #a7caba !important; }
+.evidence-inferred { background: #f4f7fb; border-color: #abc0d8 !important; }
+.evidence-missing { background: #fff9ef; border-color: #e1c994 !important; }
+.health-card { height: 100%; }
+.health-card .ant-card-body { min-height: 158px; }
 .library-card .ant-card-body { display: grid; gap: 7px; }
 .library-card h4 { margin: 4px 0 0 !important; }
 .library-icon { width: 32px; height: 32px; display: grid; place-items: center; background: #e9f0f7; color: #315f8f; font-family: serif; font-weight: 700; }

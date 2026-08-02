@@ -1,6 +1,8 @@
 from dataclasses import dataclass
 from uuid import UUID
 
+from legal_workbench.domain.enums import CandidateStatus
+
 
 @dataclass(frozen=True, slots=True)
 class CandidateCreatedResult:
@@ -14,6 +16,15 @@ class MatterCreatedResult:
     matter_id: UUID
     matter_number: str
     work_item_ids: list[UUID]
+    idempotent_replay: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class CandidateResolvedResult:
+    candidate_id: UUID
+    status: CandidateStatus
+    matter_id: UUID | None
+    version: int
     idempotent_replay: bool = False
 
 

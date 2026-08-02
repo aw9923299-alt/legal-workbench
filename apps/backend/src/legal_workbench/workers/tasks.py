@@ -5,6 +5,7 @@ from uuid import UUID
 from legal_workbench.agents.codex_cli import CodexCliRuntime
 from legal_workbench.agents.definitions import build_message_judgement_definition
 from legal_workbench.agents.runtime import AgentRuntimeError, DisabledAgentRuntime
+from legal_workbench.application.analysis_recovery import AnalysisRecoveryService
 from legal_workbench.application.context_snapshots import ContextSnapshotBuilder
 from legal_workbench.application.message_analysis import (
     AnalyseFeishuMessageCommand,
@@ -22,10 +23,44 @@ def ping(payload: dict[str, Any] | None = None) -> dict[str, Any]:
     return {"status": "ok", "payload": payload or {}}
 
 
+@celery_app.task(name="system.scheduler_heartbeat")  # type: ignore[untyped-decorator]
+def scheduler_heartbeat() -> dict[str, str]:
+    from datetime import UTC, datetime
+
+    from redis import Redis
+
+    value = datetime.now(UTC).isoformat()
+    client = Redis.from_url(get_settings().redis_url, decode_responses=True)
+    try:
+        client.set(
+            "legal-workbench:scheduler-heartbeat", value, ex=90
+        )
+    finally:
+        client.close()
+    return {"heartbeatAt": value}
+
+
 @celery_app.task(name="outbox.publish")  # type: ignore[untyped-decorator]
 def publish_outbox() -> dict[str, int]:
     count = asyncio.run(OutboxDispatcher().publish_batch())
     return {"claimed": count}
+
+
+@celery_app.task(name="analysis.recover")  # type: ignore[untyped-decorator]
+def recover_analysis() -> dict[str, int]:
+    settings = get_settings()
+    result = asyncio.run(
+        AnalysisRecoveryService(
+            SqlAlchemyUnitOfWorkFactory(),
+            stale_after_seconds=settings.analysis_recovery_stale_seconds,
+            batch_size=settings.analysis_recovery_batch_size,
+        ).recover()
+    )
+    return {
+        "missingRunsRequeued": result.missing_runs_requeued,
+        "staleRunsRequeued": result.stale_runs_requeued,
+        "deadLettered": result.dead_lettered,
+    }
 
 
 async def _analyse_feishu_message(
@@ -36,6 +71,7 @@ async def _analyse_feishu_message(
     correlation_id: str,
     force_new_run: bool,
     recover_interrupted_run: bool,
+    worker_id: str | None,
 ) -> dict[str, str | bool | None]:
     settings = get_settings()
     uow_factory = SqlAlchemyUnitOfWorkFactory()
@@ -53,9 +89,16 @@ async def _analyse_feishu_message(
             uow_factory,
             max_messages=settings.context_max_messages,
             max_text_characters=settings.context_max_text_characters,
+            max_single_message_characters=(
+                settings.context_max_single_message_characters
+            ),
+            max_attachments=settings.context_max_attachments,
+            builder_version=settings.context_builder_version,
+            selection_policy_version=settings.context_selection_policy_version,
         ),
         runs_root=settings.codex_runs_root,
         manual_review_threshold=settings.message_analysis_manual_review_threshold,
+        lease_seconds=settings.agent_run_lease_seconds,
         default_definition=build_message_judgement_definition(
             timeout_seconds=settings.codex_run_timeout_seconds
         ),
@@ -68,6 +111,7 @@ async def _analyse_feishu_message(
             correlation_id=correlation_id,
             force_new_run=force_new_run,
             recover_interrupted_run=recover_interrupted_run,
+            worker_id=worker_id,
         )
     )
     return {
@@ -92,13 +136,15 @@ def process_feishu_message(
     correlation_id: str = "",
     *,
     force_new_run: bool = False,
+    recover_interrupted_run: bool = False,
 ) -> dict[str, str | bool | None]:
     settings = get_settings()
     correlation = correlation_id or f"feishu-analysis:{message_id}"
     parsed_message_id = UUID(message_id)
     try:
         recover_interrupted = bool(
-            int(task.request.retries)
+            recover_interrupted_run
+            or int(task.request.retries)
             or (task.request.delivery_info or {}).get("redelivered", False)
         )
         return asyncio.run(
@@ -109,6 +155,7 @@ def process_feishu_message(
                 correlation_id=correlation,
                 force_new_run=force_new_run,
                 recover_interrupted_run=recover_interrupted,
+                worker_id=str(getattr(task.request, "hostname", "") or "celery-worker"),
             )
         )
     except (AgentRuntimeError, MessageAnalysisError) as exc:

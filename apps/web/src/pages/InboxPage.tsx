@@ -1,309 +1,162 @@
-import {
-  Alert,
-  Button,
-  Card,
-  Empty,
-  Form,
-  Input,
-  InputNumber,
-  Modal,
-  Progress,
-  Select,
-  Space,
-  Spin,
-  Tag,
-  Typography,
-  message,
-} from 'antd';
-import { ReloadOutlined } from '@ant-design/icons';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { ReloadOutlined, SearchOutlined } from '@ant-design/icons';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { Button, Card, DatePicker, Input, Modal, Progress, Select, Space, Table, Tabs, Tag, Typography, message } from 'antd';
+import type { ColumnsType } from 'antd/es/table';
+import dayjs from 'dayjs';
+import { useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { QueryState } from '../components/QueryState';
 import {
   clearMutationContext,
   getOrCreateMutationContext,
   isDefinitiveMutationFailure,
   legalApi,
-  type ConfirmCandidateInput,
 } from '../services/api';
-import {
-  candidateStatusLabels,
-  categoryLabels,
-  displayValue,
-  priorityLabels,
-  riskLabels,
-} from '../services/apiLabels';
-import type { MatterCategory, MessageAnalysis, MessageCandidate, MessageJudgementResult, Priority } from '../types/api';
+import { categoryLabels } from '../services/apiLabels';
+import { useRealtimeStatus } from '../services/RealtimeProvider';
+import type { FeishuMessageStatus, FeishuMessageSummary } from '../types/api';
+import { matchesInboxView, statusesForInboxView, type InboxView } from './inboxFilters';
 
-const { Title, Text, Paragraph } = Typography;
+const { Title, Text } = Typography;
 
-interface ConfirmFormValues {
-  title: string;
-  primaryCategory: MatterCategory;
-  ownerId: string;
-  legalRisk: 'critical' | 'high' | 'medium' | 'low' | 'pending';
-  businessImpact: 'company' | 'department' | 'project' | 'general';
-  summary?: string;
-  objective?: string;
-  workItemTitle: string;
-  workItemOwnerId: string;
-  priority: Priority;
-  nextAction: string;
-  estimatedMinutes?: number;
-}
+const views: Array<{ key: InboxView; label: string }> = [
+  { key: 'all', label: '全部' },
+  { key: 'pending_analysis', label: '待分析' },
+  { key: 'queued', label: '排队中' },
+  { key: 'analysing', label: '分析中' },
+  { key: 'pending_confirmation', label: '待确认' },
+  { key: 'processed', label: '已处理' },
+  { key: 'ignored', label: '已忽略' },
+  { key: 'failed', label: '失败' },
+  { key: 'dead_letter', label: '死信' },
+];
 
-export default function InboxPage({ onMatterCreated, onOpenAgentRun }: { onMatterCreated?: (matterId: string) => void; onOpenAgentRun?: (runId: string) => void }) {
-  const [items, setItems] = useState<MessageCandidate[]>([]);
-  const [analyses, setAnalyses] = useState<Record<string, MessageAnalysis>>({});
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string>();
-  const [active, setActive] = useState<MessageCandidate>();
-  const [submitting, setSubmitting] = useState(false);
-  const [retryingId, setRetryingId] = useState<string>();
-  const [form] = Form.useForm<ConfirmFormValues>();
+const stateColors: Record<string, string> = {
+  received: 'default', queued_for_analysis: 'gold', context_prepared: 'gold', agent_queued: 'gold',
+  analysing: 'blue', candidate_created: 'green', ignored: 'default', analysis_failed: 'red', dead_letter: 'volcano',
+};
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    setError(undefined);
-    try {
-      const candidates = await legalApi.listCandidates();
-      setItems(candidates);
-      const loaded = await Promise.all(candidates.map(async (candidate) => {
-        if (!candidate.feishuMessageId) return null;
-        try {
-          return [candidate.id, await legalApi.getMessageAnalysis(candidate.feishuMessageId)] as const;
-        } catch {
-          return null;
-        }
-      }));
-      setAnalyses(Object.fromEntries(loaded.filter((value): value is readonly [string, MessageAnalysis] => value !== null)));
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : '加载候选消息失败');
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+export default function InboxPage() {
+  const navigate = useNavigate();
+  const queryClient = useQueryClient();
+  const realtime = useRealtimeStatus();
+  const [view, setView] = useState<InboxView>('all');
+  const [search, setSearch] = useState('');
+  const [category, setCategory] = useState<string>();
+  const [chatId, setChatId] = useState('');
+  const [dates, setDates] = useState<[dayjs.Dayjs | null, dayjs.Dayjs | null] | null>(null);
+  const query = useQuery({
+    queryKey: ['inbox', view, search, category, chatId, dates?.[0]?.toISOString(), dates?.[1]?.toISOString()],
+    queryFn: () => legalApi.listMessages({
+      statuses: statusesForInboxView(view) as FeishuMessageStatus[] | undefined,
+      search: search || undefined,
+      category,
+      chatId: chatId || undefined,
+      from: dates?.[0]?.startOf('day').toISOString(),
+      to: dates?.[1]?.endOf('day').toISOString(),
+    }),
+    refetchInterval: realtime.pollingInterval,
+  });
+  const items = useMemo(
+    () => (query.data ?? []).filter((item) => matchesInboxView(item, view)),
+    [query.data, view],
+  );
 
-  useEffect(() => { void load(); }, [load]);
+  const analyse = useMutation({
+    mutationFn: async ({ item, retry }: { item: FeishuMessageSummary; retry: boolean }) => {
+      const actionKey = `${retry ? 'retry' : 'analyse'}:${item.id}`;
+      const context = getOrCreateMutationContext(actionKey, { messageId: item.id, retry });
+      try {
+        const result = retry
+          ? await legalApi.retryMessageAnalysis(item.id, context)
+          : await legalApi.analyseMessage(item.id, context);
+        clearMutationContext(actionKey);
+        return result;
+      } catch (error) {
+        if (isDefinitiveMutationFailure(error)) clearMutationContext(actionKey);
+        throw error;
+      }
+    },
+    onSuccess: () => {
+      message.success('分析任务已进入持久化队列');
+      void queryClient.invalidateQueries({ queryKey: ['inbox'] });
+    },
+    onError: (error) => message.error(error instanceof Error ? error.message : '操作失败'),
+  });
 
-  const retryAnalysis = async (candidate: MessageCandidate) => {
-    if (!candidate.feishuMessageId) return;
-    setRetryingId(candidate.id);
-    const actionKey = `retry-analysis:${candidate.feishuMessageId}`;
-    const mutation = getOrCreateMutationContext(actionKey, { forceNewRun: true });
-    try {
-      await legalApi.retryMessageAnalysis(candidate.feishuMessageId, mutation);
-      clearMutationContext(actionKey);
-      message.success('已提交重新分析，原 AgentRun 将保留');
-      await load();
-    } catch (reason) {
-      if (isDefinitiveMutationFailure(reason)) clearMutationContext(actionKey);
-      message.error(reason instanceof Error ? reason.message : '重新分析失败');
-    } finally {
-      setRetryingId(undefined);
-    }
-  };
+  const resolve = useMutation({
+    mutationFn: async ({ item, action }: { item: FeishuMessageSummary; action: 'information_only' | 'ignore' }) => {
+      if (!item.candidateId) throw new Error('该消息没有可处理的 Candidate');
+      const candidate = await legalApi.getCandidate(item.candidateId);
+      const actionKey = `resolve:${candidate.id}:${action}`;
+      const context = getOrCreateMutationContext(actionKey, { action, version: candidate.version });
+      try {
+        const result = await legalApi.resolveCandidate(candidate.id, {
+          candidateVersion: candidate.version, action,
+        }, context);
+        clearMutationContext(actionKey);
+        return result;
+      } catch (error) {
+        if (isDefinitiveMutationFailure(error)) clearMutationContext(actionKey);
+        throw error;
+      }
+    },
+    onSuccess: () => {
+      message.success('人工处理结果已保存');
+      void queryClient.invalidateQueries({ queryKey: ['inbox'] });
+    },
+    onError: (error) => message.error(error instanceof Error ? error.message : '处理失败'),
+  });
 
-  const openConfirm = (candidate: MessageCandidate) => {
-    const proposedCategory = candidate.categoryProposals.find(
-      (value) => typeof value.category === 'string',
-    )?.category as MatterCategory | undefined;
-    form.setFieldsValue({
-      title: candidate.titleProposal ?? '待确认法务事项',
-      primaryCategory: proposedCategory ?? 'general_consultation',
-      ownerId: 'local-legal-user',
-      legalRisk: 'pending',
-      businessImpact: 'general',
-      summary: candidate.evidenceRefs.join('\n'),
-      workItemTitle: candidate.titleProposal ?? '核实需求并形成处理意见',
-      workItemOwnerId: 'local-legal-user',
-      priority: 'medium',
-      nextAction: '核实事实、材料和完成时间',
-    });
-    setActive(candidate);
-  };
+  const columns: ColumnsType<FeishuMessageSummary> = [
+    {
+      title: '消息摘要', dataIndex: 'plainText', width: 330,
+      render: (value: string | null, item) => <button className="text-link message-summary" onClick={() => navigate(`/inbox/${item.id}`)}>{value || item.unsupportedReason || '无可读正文'}</button>,
+    },
+    { title: '来源群聊', dataIndex: 'chatId', width: 150, render: (value: string | null) => value ?? '—' },
+    { title: '发起人', dataIndex: 'senderId', width: 130, render: (value: string | null) => value ?? '—' },
+    { title: '消息时间', dataIndex: 'sentAt', width: 165, render: (value: string | null) => value ? new Date(value).toLocaleString() : '—' },
+    { title: '类型', dataIndex: 'messageType', width: 90 },
+    { title: '处理状态', dataIndex: 'status', width: 130, render: (value: string) => <Tag color={stateColors[value]}>{value}</Tag> },
+    { title: 'Agent', dataIndex: 'agentStatus', width: 110, render: (value: string | null) => value ? <Tag>{value}</Tag> : '—' },
+    { title: 'Candidate', dataIndex: 'candidateStatus', width: 130, render: (value: string | null) => value ?? '—' },
+    { title: '置信度', dataIndex: 'confidence', width: 110, render: (value: number | null) => value == null ? '—' : <Progress percent={Math.round(value * 100)} size="small" /> },
+    { title: '建议分类', dataIndex: 'suggestedCategory', width: 120, render: (value: string | null) => value ? categoryLabels[value] ?? value : '—' },
+    { title: '建议截止', dataIndex: 'suggestedDeadline', width: 150, render: (value: string | null) => value ?? '—' },
+    { title: '错误/重试', width: 180, render: (_, item) => item.failureCode ? <div><Tag color="red">{item.failureCode}</Tag><Text type="secondary">{item.analysisAttempts} 次</Text></div> : `${item.analysisAttempts} 次` },
+    {
+      title: '操作', fixed: 'right', width: 250,
+      render: (_, item) => <Space size={4} wrap>
+        <Button size="small" onClick={() => navigate(`/inbox/${item.id}`)}>详情</Button>
+        {item.status === 'received' && <Button size="small" type="primary" loading={analyse.isPending} onClick={() => analyse.mutate({ item, retry: false })}>分析</Button>}
+        {['analysis_failed', 'dead_letter'].includes(item.status) && <Button size="small" danger loading={analyse.isPending} onClick={() => analyse.mutate({ item, retry: true })}>重试</Button>}
+        {item.candidateStatus === 'pending_confirmation' && <>
+          <Button size="small" onClick={() => resolve.mutate({ item, action: 'information_only' })}>仅供知悉</Button>
+          <Button size="small" onClick={() => Modal.confirm({ title: '确认忽略这条消息？', content: '该人工决定会写入审计记录。', okText: '确认忽略', okButtonProps: { danger: true }, onOk: () => resolve.mutateAsync({ item, action: 'ignore' }) })}>忽略</Button>
+        </>}
+      </Space>,
+    },
+  ];
 
-  const confirm = async () => {
-    if (!active) return;
-    const values = await form.validateFields();
-    const payload: ConfirmCandidateInput = {
-      candidateVersion: active.version,
-      title: values.title,
-      primaryCategory: values.primaryCategory,
-      secondaryCategories: [],
-      ownerId: values.ownerId,
-      requesterIds: [],
-      legalRisk: values.legalRisk,
-      businessImpact: values.businessImpact,
-      confidentiality: 'internal',
-      summary: values.summary,
-      objective: values.objective,
-      initialWorkItems: [{
-        title: values.workItemTitle,
-        ownerId: values.workItemOwnerId,
-        priority: values.priority,
-        prioritySource: 'legal_confirmed',
-        nextAction: values.nextAction,
-        priorityReasons: ['法务在工作台确认'],
-        estimatedMinutes: values.estimatedMinutes,
-      }],
-    };
-    setSubmitting(true);
-    const actionKey = `confirm-candidate:${active.id}`;
-    const mutation = getOrCreateMutationContext(actionKey, payload);
-    try {
-      const result = await legalApi.confirmCandidate(active.id, payload, mutation);
-      clearMutationContext(actionKey);
-      message.success(`已创建事项 ${result.matterNumber}`);
-      setActive(undefined);
-      form.resetFields();
-      await load();
-      onMatterCreated?.(result.matterId);
-    } catch (reason) {
-      if (isDefinitiveMutationFailure(reason)) clearMutationContext(actionKey);
-      message.error(reason instanceof Error ? reason.message : '创建事项失败');
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  return (
-    <div className="page">
-      <div className="page-title-row">
-        <div>
-          <span className="eyebrow">HUMAN-IN-THE-LOOP</span>
-          <Title level={2}>AI 收件箱</Title>
-          <Text type="secondary">候选消息先由法务确认，再创建正式事项和行动任务。</Text>
-        </div>
-        <Button icon={<ReloadOutlined />} onClick={() => void load()}>刷新</Button>
-      </div>
-
-      {error && <Alert type="error" showIcon message={error} action={<Button onClick={() => void load()}>重试</Button>} />}
-      <Spin spinning={loading}>
-        <div className="inbox-stream">
-          {!loading && items.length === 0 && <Empty description="暂无待确认候选消息" />}
-          {items.map((item) => (
-            <CandidateCard
-              key={item.id}
-              item={item}
-              analysis={analyses[item.id]}
-              onConfirm={() => openConfirm(item)}
-              onRetry={() => void retryAnalysis(item)}
-              retrying={retryingId === item.id}
-              onOpenAgentRun={onOpenAgentRun}
-            />
-          ))}
-        </div>
-      </Spin>
-
-      <Modal
-        open={Boolean(active)}
-        title="确认并创建法务事项"
-        width={760}
-        okText="创建事项"
-        cancelText="取消"
-        confirmLoading={submitting}
-        onCancel={() => {
-          if (active) clearMutationContext(`confirm-candidate:${active.id}`);
-          setActive(undefined);
-        }}
-        onOk={() => void confirm()}
-      >
-        <Alert
-          type="info"
-          showIcon
-          message="该操作将在同一事务中创建 LegalMatter 和首个 WorkItem，并记录人工确认。"
-          style={{ marginBottom: 16 }}
-        />
-        <Form form={form} layout="vertical">
-          <Form.Item name="title" label="事项标题" rules={[{ required: true }]}><Input /></Form.Item>
-          <Space align="start" wrap>
-            <Form.Item name="primaryCategory" label="主分类" rules={[{ required: true }]}>
-              <Select style={{ width: 180 }} options={Object.entries(categoryLabels).map(([value, label]) => ({ value, label }))} />
-            </Form.Item>
-            <Form.Item name="legalRisk" label="法律风险" rules={[{ required: true }]}>
-              <Select style={{ width: 140 }} options={Object.entries(riskLabels).map(([value, label]) => ({ value, label }))} />
-            </Form.Item>
-            <Form.Item name="businessImpact" label="业务影响" rules={[{ required: true }]}>
-              <Select style={{ width: 140 }} options={[
-                { value: 'company', label: '公司级' }, { value: 'department', label: '部门级' },
-                { value: 'project', label: '项目级' }, { value: 'general', label: '一般' },
-              ]} />
-            </Form.Item>
-            <Form.Item name="ownerId" label="事项负责人" rules={[{ required: true }]}><Input style={{ width: 180 }} /></Form.Item>
-          </Space>
-          <Form.Item name="summary" label="事项背景"><Input.TextArea rows={3} /></Form.Item>
-          <Form.Item name="objective" label="处理目标"><Input.TextArea rows={2} /></Form.Item>
-          <Title level={5}>首个行动任务</Title>
-          <Form.Item name="workItemTitle" label="任务名称" rules={[{ required: true }]}><Input /></Form.Item>
-          <Space align="start" wrap>
-            <Form.Item name="workItemOwnerId" label="负责人" rules={[{ required: true }]}><Input style={{ width: 180 }} /></Form.Item>
-            <Form.Item name="priority" label="优先级" rules={[{ required: true }]}>
-              <Select style={{ width: 140 }} options={Object.entries(priorityLabels).map(([value, label]) => ({ value, label }))} />
-            </Form.Item>
-            <Form.Item name="estimatedMinutes" label="预计分钟"><InputNumber min={1} /></Form.Item>
-          </Space>
-          <Form.Item name="nextAction" label="下一步行动" rules={[{ required: true }]}><Input.TextArea rows={2} /></Form.Item>
-        </Form>
-      </Modal>
+  return <div className="page">
+    <div className="page-title-row">
+      <div><span className="eyebrow">REAL FEISHU MESSAGE QUEUE</span><Title level={2}>AI 收件箱</Title><Text type="secondary">原始消息落库后立即可见，分析与人工确认状态来自 PostgreSQL。</Text></div>
+      <Space><Tag color={realtime.connected ? 'green' : 'orange'}>{realtime.connected ? '实时连接正常' : '实时断开，轮询中'}</Tag><Button icon={<ReloadOutlined />} onClick={() => void query.refetch()}>刷新</Button></Space>
     </div>
-  );
-}
-
-function CandidateCard({ item, analysis, onConfirm, onRetry, retrying, onOpenAgentRun }: {
-  item: MessageCandidate;
-  analysis?: MessageAnalysis;
-  onConfirm: () => void;
-  onRetry: () => void;
-  retrying: boolean;
-  onOpenAgentRun?: (runId: string) => void;
-}) {
-  const category = useMemo(() => {
-    const value = item.categoryProposals.find((proposal) => typeof proposal.category === 'string')?.category;
-    return typeof value === 'string' ? categoryLabels[value] ?? value : '待分类';
-  }, [item.categoryProposals]);
-  const judgement = (analysis?.analysisResult ?? item.analysisPayload) as Partial<MessageJudgementResult>;
-  const run = analysis?.agentRun;
-
-  return (
-    <Card className="inbox-card" bordered={false}>
-      <div className="inbox-card-grid">
-        <div className="inbox-card-main">
-          <Space wrap>
-            <Tag color="blue">{candidateStatusLabels[item.status] ?? item.status}</Tag>
-            <Tag>{category}</Tag>
-            <Tag>{item.messageRole}</Tag>
-            <Tag color={item.legalRelevance === 'relevant' ? 'green' : 'gold'}>{item.legalRelevance}</Tag>
-            {item.requiresManualReview && <Tag color="orange">必须人工确认</Tag>}
-          </Space>
-          <Title level={4}>{item.titleProposal ?? '未命名候选事项'}</Title>
-          <Paragraph type="secondary">建议动作：{item.recommendedAction}</Paragraph>
-          <div className="analysis-meta">
-            <span>飞书来源：{analysis?.message.messageId ?? item.feishuMessageId ?? '未关联'}</span>
-            <span>分析状态：{analysis?.messageStatus ?? run?.status ?? 'completed'}</span>
-            <span>Agent：{run ? `${run.agentKey} v${run.agentVersion}` : 'message_judgement'}</span>
-          </div>
-          <AnalysisSection title="研判理由" values={judgement.reasons} />
-          <AnalysisSection title="已确认事实" values={judgement.confirmedFacts?.map((fact) => `${fact.statement}（来源 ${fact.sourceMessageId}）`)} />
-          <AnalysisSection title="推断事实" values={judgement.inferredFacts?.map((fact) => `${fact.statement}（${fact.basis}，${Math.round(fact.confidence * 100)}%）`)} />
-          <AnalysisSection title="截止时间候选" values={judgement.deadlineCandidates?.map((deadline) => `${deadline.rawText} → ${deadline.resolvedAt ?? '待确认'}（${deadline.deadlineType}）`)} />
-          <AnalysisSection title="缺失信息" values={judgement.missingInformation} />
-          {item.evidenceRefs.length > 0 && <AnalysisSection title="证据消息" values={item.evidenceRefs.map(displayValue)} />}
-        </div>
-        <div className="confidence-panel">
-          <Text type="secondary">置信度</Text>
-          <Progress type="circle" percent={Math.round(item.confidence * 100)} size={68} />
-        </div>
-      </div>
-      <div className="inbox-card-actions">
-        <Button type="primary" onClick={onConfirm}>确认并创建事项</Button>
-        {item.feishuMessageId && <Button loading={retrying} onClick={onRetry}>重新分析</Button>}
-        {item.agentRunId && <Button type="link" onClick={() => onOpenAgentRun?.(item.agentRunId!)}>AgentRun 详情</Button>}
-        <Text type="secondary">版本 {item.version} · {item.id}</Text>
-      </div>
+    <Card variant="borderless" className="filter-card">
+      <Tabs activeKey={view} items={views} onChange={(key) => setView(key as InboxView)} />
+      <Space wrap>
+        <Input allowClear prefix={<SearchOutlined />} value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索消息正文" style={{ width: 240 }} />
+        <Select allowClear value={category} onChange={setCategory} placeholder="建议分类" style={{ width: 160 }} options={Object.entries(categoryLabels).map(([value, label]) => ({ value, label }))} />
+        <Input allowClear value={chatId} onChange={(event) => setChatId(event.target.value)} placeholder="群聊 ID" style={{ width: 180 }} />
+        <DatePicker.RangePicker value={dates} onChange={(value) => setDates(value)} />
+      </Space>
     </Card>
-  );
-}
-
-function AnalysisSection({ title, values }: { title: string; values?: string[] }) {
-  if (!values?.length) return null;
-  return <div className="rationale-box"><strong>{title}</strong>{values.map((value, index) => <span key={`${title}-${index}`}>· {value}</span>)}</div>;
+    <Card variant="borderless" style={{ marginTop: 14 }}>
+      <QueryState loading={query.isLoading} error={query.error} empty={!items.length} onRetry={() => void query.refetch()}>
+        <Table rowKey="id" columns={columns} dataSource={items} scroll={{ x: 2050 }} pagination={{ pageSize: 20 }} />
+      </QueryState>
+      <div className="updated-at">最近更新：{query.dataUpdatedAt ? new Date(query.dataUpdatedAt).toLocaleString() : '—'}</div>
+    </Card>
+  </div>;
 }

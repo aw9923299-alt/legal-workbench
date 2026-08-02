@@ -75,8 +75,7 @@ interface IngestResult {
 
 ```http
 GET /api/v1/integrations/feishu/status
-POST /api/v1/integrations/feishu/pause
-POST /api/v1/integrations/feishu/resume
+POST /api/v1/integrations/feishu/reconnect
 POST /api/v1/integrations/feishu/reconcile
 ```
 
@@ -84,22 +83,31 @@ POST /api/v1/integrations/feishu/reconcile
 
 ```ts
 interface FeishuIntegrationStatus {
-  connected: boolean;
-  paused: boolean;
+  connectionMode: 'long_connection' | 'webhook';
+  status: 'disabled' | 'starting' | 'connected' | 'degraded' | 'disconnected' | 'failed';
   lastEventAt?: string;
-  lastProcessedAt?: string;
-  lagSeconds?: number;
-  lastCursor?: string;
-  uncoveredWindow?: { from: string; to: string; reason: string };
-  recentErrors: IntegrationError[];
+  lastConnectedAt?: string;
+  lastDisconnectedAt?: string;
+  lastErrorCode?: string;
+  lastErrorMessage?: string;
+  reconnectCount: number;
+  lastReconcileAt?: string;
+  lastReconcileStatus?: 'completed' | 'partial' | 'local_only';
+  lastReconcileMessage?: string;
 }
 ```
+
+`reconnect`、`reconcile` 需要认证 Actor、`Idempotency-Key` 和 Correlation ID，并写审计。补偿只覆盖配置群聊的指定时间窗；未配置时返回 `partial/local_only`。
 
 ## 3.3 消息研判与 AgentRun
 
 ```http
+GET  /api/v1/feishu/messages?status=&search=&category=&chatId=&from=&to=
+GET  /api/v1/feishu/messages/:messageId
 GET  /api/v1/agent-runs?status=<status>&limit=<1..200>
 GET  /api/v1/agent-runs/:runId
+POST /api/v1/agent-runs/:runId/retry
+POST /api/v1/agent-runs/:runId/cancel
 POST /api/v1/feishu/messages/:messageId/analyse
 POST /api/v1/feishu/messages/:messageId/retry-analysis
 GET  /api/v1/feishu/messages/:messageId/analysis
@@ -109,7 +117,9 @@ GET  /api/v1/feishu/messages/:messageId/analysis
 
 若待确认 Candidate 已存在，重新分析的合法相关结果原位更新其 AgentRun、建议和版本；若新结果为无关，则旧待确认 Candidate 转为 `rejected`，不可继续确认。已由人工确认或关联的 Candidate 不被重新分析覆盖。
 
-`analysis` 返回：飞书消息来源与处理状态、ContextSnapshot 摘要、AgentRun 状态/版本/尝试/心跳/错误、研判 JSON、Candidate ID 与 `canRetry`。AgentRun 详情还返回实际授权来源列表、Prompt 快照和受限 stdout/stderr，用于审计。
+`analysis` 返回：飞书消息来源与处理状态、ContextSnapshot 摘要、AgentRun 状态/版本/尝试/心跳/错误、研判 JSON、Candidate ID 与 `canRetry`。AgentRun 详情还返回实际授权来源列表、Prompt/Runtime/AgentDefinition 版本、状态历史、租约、校验错误、修复标志、可用时的 Token 用量和受限 stdout/stderr，用于审计。Candidate 详情返回递增分析 revision 与 superseded 关系。
+
+`POST /api/v1/system/recover-pending-jobs` 与后台定时任务复用同一 PostgreSQL recovery service；写接口要求 Actor、Idempotency-Key、Correlation ID、权限和审计。恢复操作只重建 Outbox/状态，不在 API 线程运行 Codex。
 
 ## 4. 消息候选接口
 
@@ -118,13 +128,11 @@ POST   /api/v1/inbox/candidates
 GET    /api/v1/inbox/candidates
 GET    /api/v1/inbox/candidates/:id
 POST   /api/v1/inbox/candidates/:id/confirm-create
-POST   /api/v1/inbox/candidates/:id/confirm-link
-POST   /api/v1/inbox/candidates/:id/confirm-update
-POST   /api/v1/inbox/candidates/:id/information-only
-POST   /api/v1/inbox/candidates/:id/ignore
-POST   /api/v1/inbox/candidates/:id/reanalyze
-POST   /api/v1/inbox/candidates/batch
+GET    /api/v1/inbox/candidates/:id/revisions
+POST   /api/v1/inbox/candidates/:id/resolve
 ```
+
+`resolve` 统一承载 `link_existing/update_existing/information_only/ignore`，避免为同一业务动作创建同义接口；关联/更新要求 `matterId`，并只登记可审计关系，不静默改写 Matter 已确认字段。重新分析使用消息或 AgentRun retry API。
 
 创建Candidate、`confirm-create`和新增WorkItem必须已建立认证 Session，写操作还必须携带：
 
@@ -469,14 +477,16 @@ interface DomainEventEnvelope<T> {
 GET /api/v1/events/stream
 ```
 
-事件包括：
+当前已实现事件：`system.health`、`message.ingested`、`agent-run.updated`、`candidate.created`、`outbox.failed`。事件携带脱敏健康快照，前端收到后使对应 Query 失效并重新按权限查询；断线后指数退避重连并启用 15 秒轮询。
 
-- 新消息候选；
-- Agent 状态更新；
-- 新审核项；
-- 发送结果；
-- 飞书连接告警；
-- 知识索引完成；
-- 任务期限临近。
+系统接口：
 
-SSE 只发送对象 ID 和最小摘要，前端再按权限查询详情。
+```http
+GET  /api/v1/system/health
+GET  /api/v1/system/metrics
+POST /api/v1/system/recover-pending-jobs
+GET  /api/v1/system/outbox/dead-letters
+POST /api/v1/system/outbox/dead-letters/:id/requeue
+```
+
+上述写操作要求认证 Actor、`Idempotency-Key`、Correlation ID 和审计；死信重入队保留原记录并创建新 Outbox 事件。
