@@ -32,3 +32,7 @@ class IdempotencyConflictError(DomainError):
 
 class StaleAgentAttemptError(DomainError):
     code = "STALE_AGENT_ATTEMPT"
+
+
+class StorageQuotaExceededError(DomainError):
+    code = "ATTACHMENT_STORAGE_QUOTA_EXCEEDED"

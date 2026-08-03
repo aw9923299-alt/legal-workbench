@@ -8,7 +8,13 @@ from typing import TypedDict
 from uuid import UUID, uuid4
 
 from legal_workbench.application.ports import UnitOfWorkFactory
-from legal_workbench.domain.entities import ContextSnapshot, FeishuMessage
+from legal_workbench.domain.entities import (
+    ContextSnapshot,
+    DocumentSegment,
+    FeishuMessage,
+    MessageAttachment,
+)
+from legal_workbench.domain.enums import DocumentExtractionStatus
 from legal_workbench.domain.errors import EntityNotFoundError
 
 
@@ -56,6 +62,8 @@ class ContextSnapshotBuilder:
         max_text_characters: int,
         max_single_message_characters: int | None = None,
         max_attachments: int = 10,
+        max_attachment_segments: int = 100,
+        max_single_attachment_segment_characters: int = 4000,
         builder_version: str = "2.0.0",
         selection_policy_version: str = "thread-v2",
         now: Callable[[], datetime] | None = None,
@@ -66,6 +74,8 @@ class ContextSnapshotBuilder:
             or max_text_characters < 1
             or single_limit < 1
             or max_attachments < 0
+            or max_attachment_segments < 1
+            or max_single_attachment_segment_characters < 1
         ):
             raise ValueError("Context bounds must be positive.")
         self._uow_factory = uow_factory
@@ -73,6 +83,10 @@ class ContextSnapshotBuilder:
         self._max_text_characters = max_text_characters
         self._max_single_message_characters = single_limit
         self._max_attachments = max_attachments
+        self._max_attachment_segments = max_attachment_segments
+        self._max_single_attachment_segment_characters = (
+            max_single_attachment_segment_characters
+        )
         self._builder_version = builder_version
         self._selection_policy_version = selection_policy_version
         self._now = now or (lambda: datetime.now(UTC))
@@ -97,14 +111,40 @@ class ContextSnapshotBuilder:
             selected = self._select_messages(current, available)
             all_attachment_ids = _attachment_ids(selected)
             attachment_ids = all_attachment_ids[: self._max_attachments]
+            attachment_by_file_key: dict[str, MessageAttachment] = {}
+            for selected_message in selected:
+                for attachment in await uow.feishu.list_attachments(selected_message.id):
+                    if attachment.file_key in attachment_ids:
+                        attachment_by_file_key[attachment.file_key] = attachment
+            attachments = sorted(attachment_by_file_key.values(), key=lambda value: str(value.id))
+            analysable_attachments = [
+                value
+                for value in attachments
+                if value.authorized_for_analysis
+                and value.extraction_status == DocumentExtractionStatus.SUCCEEDED
+            ]
+            document_segments = await uow.documents.list_latest_segments(
+                [value.id for value in analysable_attachments]
+            )
             participants = sorted({message.sender_id for message in selected if message.sender_id})
             content, content_metrics = self._build_content(
                 selected,
                 current_message_id=current.message_id,
                 allowed_attachment_ids=set(attachment_ids),
             )
+            (
+                included_segments,
+                excluded_segments,
+                attachment_reasons,
+            ) = self._add_attachment_segments(
+                content,
+                content_metrics,
+                attachments=attachments,
+                segments=document_segments,
+            )
             available_unique_count = len({value.message_id for value in available})
             reasons = list(content_metrics["reasons"])
+            reasons.extend(attachment_reasons)
             if available_unique_count > len(selected):
                 reasons.append("message_count_limit")
             if len(all_attachment_ids) > len(attachment_ids):
@@ -121,6 +161,16 @@ class ContextSnapshotBuilder:
                         }
                         for message in selected
                     ]
+                    + [
+                        {
+                            "attachmentId": str(value.id),
+                            "sha256": value.sha256,
+                            "extractionStatus": value.extraction_status.value,
+                            "extractorVersion": value.extractor_version,
+                            "authorizedForAnalysis": value.authorized_for_analysis,
+                        }
+                        for value in attachments
+                    ]
                 ).encode("utf-8")
             ).hexdigest()
             thread_metadata: dict[str, object] = {
@@ -132,7 +182,8 @@ class ContextSnapshotBuilder:
             permission_snapshot: dict[str, object] = {
                 "allowedMessageDatabaseIds": [str(message.id) for message in selected],
                 "allowedMessageIds": [message.message_id for message in selected],
-                "allowedAttachmentIds": attachment_ids,
+                "allowedAttachmentIds": [str(value.id) for value in analysable_attachments],
+                "allowedAttachmentFileKeys": attachment_ids,
                 "databaseAccess": False,
                 "networkAccess": False,
                 "repositoryAccess": False,
@@ -148,6 +199,8 @@ class ContextSnapshotBuilder:
                 "messageIds": [message.message_id for message in selected],
                 "participantIds": participants,
                 "attachmentIds": attachment_ids,
+                "includedSegments": included_segments,
+                "excludedSegments": excluded_segments,
                 "threadMetadata": thread_metadata,
                 "permissionSnapshot": permission_snapshot,
                 "content": content,
@@ -173,6 +226,8 @@ class ContextSnapshotBuilder:
                 message_ids=[message.message_id for message in selected],
                 file_ids=attachment_ids,
                 attachment_ids=attachment_ids,
+                included_segments=included_segments,
+                excluded_segments=excluded_segments,
                 relevant_matter_ids=[],
                 participant_ids=participants,
                 permission_snapshot=permission_snapshot,
@@ -203,6 +258,98 @@ class ContextSnapshotBuilder:
         if current.message_id not in {message.message_id for message in selected}:
             selected = [*selected[1:], current]
         return sorted(selected, key=_message_order)
+
+    def _add_attachment_segments(
+        self,
+        content: dict[str, object],
+        metrics: _ContentMetrics,
+        *,
+        attachments: Sequence[MessageAttachment],
+        segments: Sequence[DocumentSegment],
+    ) -> tuple[list[dict[str, object]], list[dict[str, object]], list[str]]:
+        attachment_by_id = {value.id: value for value in attachments}
+        segment_attachment_ids = {value.attachment_id for value in segments}
+        remaining = max(self._max_text_characters - metrics["includedSize"], 0)
+        included: list[dict[str, object]] = []
+        excluded: list[dict[str, object]] = []
+        segment_content: list[dict[str, object]] = []
+        reasons: list[str] = []
+
+        for attachment in attachments:
+            reason: str | None = None
+            if not attachment.authorized_for_analysis:
+                reason = "attachment_not_authorized"
+            elif attachment.extraction_status == DocumentExtractionStatus.BODY_UNAVAILABLE:
+                reason = "attachment_body_unavailable"
+            elif attachment.extraction_status == DocumentExtractionStatus.FAILED:
+                reason = "attachment_extraction_failed"
+            elif (
+                attachment.extraction_status == DocumentExtractionStatus.SUCCEEDED
+                and attachment.id not in segment_attachment_ids
+            ):
+                reason = "attachment_segments_missing"
+            if reason is not None:
+                excluded.append(
+                    {
+                        "attachmentId": str(attachment.id),
+                        "fileName": attachment.file_name,
+                        "reason": reason,
+                    }
+                )
+                reasons.append(reason)
+
+        for segment in sorted(
+            segments,
+            key=lambda value: (
+                str(value.attachment_id),
+                value.page_number or 0,
+                value.paragraph_number,
+            ),
+        ):
+            mapped_attachment = attachment_by_id.get(segment.attachment_id)
+            if mapped_attachment is None:
+                continue
+            citation: dict[str, object] = {
+                "attachmentId": str(mapped_attachment.id),
+                "fileName": mapped_attachment.file_name,
+                "pageNumber": segment.page_number,
+                "paragraphNumber": segment.paragraph_number,
+                "contentHash": segment.content_hash,
+            }
+            metrics["originalSize"] += len(segment.content)
+            if len(segment.content) > self._max_single_attachment_segment_characters:
+                excluded.append(
+                    {**citation, "reason": "attachment_segment_character_limit"}
+                )
+                reasons.append("attachment_segment_character_limit")
+                continue
+            if len(included) >= self._max_attachment_segments:
+                excluded.append({**citation, "reason": "attachment_segment_count_limit"})
+                reasons.append("attachment_segment_count_limit")
+                continue
+            if len(segment.content) > remaining:
+                excluded.append({**citation, "reason": "attachment_character_limit"})
+                reasons.append("attachment_character_limit")
+                continue
+            included.append(citation)
+            segment_content.append(
+                {
+                    **citation,
+                    "content": segment.content,
+                    "untrustedInput": True,
+                }
+            )
+            remaining -= len(segment.content)
+            metrics["includedSize"] += len(segment.content)
+
+        content["attachmentSegments"] = segment_content
+        content["includedSegments"] = included
+        content["excludedSegments"] = excluded
+        content["truncated"] = bool(metrics["reasons"] or reasons)
+        content["truncationReason"] = ",".join(sorted(set([*metrics["reasons"], *reasons]))) or None
+        content["originalSize"] = metrics["originalSize"]
+        content["includedSize"] = metrics["includedSize"]
+        return included, excluded, reasons
 
     def _build_content(
         self,

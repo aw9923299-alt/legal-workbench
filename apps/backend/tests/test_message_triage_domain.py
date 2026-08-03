@@ -86,6 +86,8 @@ def valid_input(**overrides: object) -> dict[str, object]:
             "messageIds": ["om_current"],
             "participantIds": ["ou_sender"],
             "attachmentIds": [],
+            "includedSegments": [],
+            "excludedSegments": [],
             "builderVersion": "2.0.0",
             "selectionPolicyVersion": "thread-v2",
             "currentMessageVersion": 1,
@@ -103,6 +105,7 @@ def valid_input(**overrides: object) -> dict[str, object]:
             "repositoryAccess": False,
             "shellWriteAccess": False,
             "allowedMessageIds": ["om_current"],
+            "allowedAttachmentIds": [],
         },
     }
     payload.update(overrides)
@@ -146,6 +149,58 @@ def test_confirmed_facts_must_reference_authorized_messages() -> None:
 
     with pytest.raises(DomainValidationError, match="unauthorized source"):
         validate_confirmed_fact_sources(result, {"om_parent"})
+
+
+def test_attachment_fact_must_reference_an_exact_authorized_segment() -> None:
+    citation = {
+        "attachmentId": "attachment-1",
+        "fileName": "合同.pdf",
+        "pageNumber": 2,
+        "paragraphNumber": 3,
+        "contentHash": "c" * 64,
+    }
+    result = MessageJudgementResult.model_validate(
+        valid_result(
+            confirmedFacts=[
+                {
+                    "statement": "合同期限一年",
+                    "attachmentCitation": citation,
+                }
+            ]
+        )
+    )
+
+    validate_confirmed_fact_sources(
+        result,
+        {"om_current"},
+        {("attachment-1", "合同.pdf", 2, 3, "c" * 64)},
+    )
+    with pytest.raises(DomainValidationError, match="unauthorized attachment segment"):
+        validate_confirmed_fact_sources(result, {"om_current"}, set())
+
+
+@pytest.mark.parametrize(
+    "fact",
+    [
+        {"statement": "没有引用"},
+        {
+            "statement": "重复引用",
+            "sourceMessageId": "om_current",
+            "attachmentCitation": {
+                "attachmentId": "attachment-1",
+                "fileName": "合同.pdf",
+                "pageNumber": 2,
+                "paragraphNumber": 3,
+                "contentHash": "c" * 64,
+            },
+        },
+    ],
+)
+def test_confirmed_fact_requires_exactly_one_evidence_source(
+    fact: dict[str, object],
+) -> None:
+    with pytest.raises(ValidationError, match="exactly one evidence source"):
+        MessageJudgementResult.model_validate(valid_result(confirmedFacts=[fact]))
 
 
 def test_irrelevant_message_never_creates_candidate() -> None:

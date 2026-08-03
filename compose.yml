@@ -101,7 +101,8 @@ services:
       - --concurrency=1
     volumes:
       - ./data/codex-runs:/data/codex-runs
-      - ./data/feishu-attachments:/data/feishu-attachments:ro
+      - ./data/feishu-attachments:/data/feishu-attachments
+      - ./data/document-extractions:/data/document-extractions
     depends_on:
       api:
         condition: service_healthy

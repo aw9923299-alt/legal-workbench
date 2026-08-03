@@ -7,7 +7,16 @@ from uuid import UUID, uuid4
 import pytest
 
 from legal_workbench.application.context_snapshots import ContextSnapshotBuilder
-from legal_workbench.domain.entities import ContextSnapshot, FeishuMessage
+from legal_workbench.domain.entities import (
+    ContextSnapshot,
+    DocumentSegment,
+    FeishuMessage,
+    MessageAttachment,
+)
+from legal_workbench.domain.enums import (
+    AttachmentDownloadStatus,
+    DocumentExtractionStatus,
+)
 
 
 def make_message(
@@ -38,9 +47,15 @@ def make_message(
 
 
 class FakeFeishuRepository:
-    def __init__(self, current: FeishuMessage, context: list[FeishuMessage]) -> None:
+    def __init__(
+        self,
+        current: FeishuMessage,
+        context: list[FeishuMessage],
+        attachments: tuple[MessageAttachment, ...] = (),
+    ) -> None:
         self.current = current
         self.context = context
+        self.attachments = attachments
 
     async def get_message_by_id(self, message_id: UUID) -> FeishuMessage | None:
         return self.current if self.current.id == message_id else None
@@ -50,6 +65,18 @@ class FakeFeishuRepository:
     ) -> list[FeishuMessage]:
         assert message.id == self.current.id
         return self.context[:limit]
+
+    async def list_attachments(self, message_id: UUID) -> tuple[MessageAttachment, ...]:
+        return tuple(value for value in self.attachments if value.feishu_message_id == message_id)
+
+
+class FakeDocumentRepository:
+    def __init__(self, segments: tuple[DocumentSegment, ...] = ()) -> None:
+        self.segments = segments
+
+    async def list_latest_segments(self, attachment_ids: list[UUID]) -> tuple[DocumentSegment, ...]:
+        allowed = set(attachment_ids)
+        return tuple(value for value in self.segments if value.attachment_id in allowed)
 
 
 class FakeSnapshotRepository:
@@ -75,9 +102,15 @@ class FakeSnapshotRepository:
 
 
 class FakeUnitOfWork:
-    def __init__(self, feishu: FakeFeishuRepository, snapshots: FakeSnapshotRepository) -> None:
+    def __init__(
+        self,
+        feishu: FakeFeishuRepository,
+        snapshots: FakeSnapshotRepository,
+        documents: FakeDocumentRepository | None = None,
+    ) -> None:
         self.feishu = feishu
         self.context_snapshots = snapshots
+        self.documents = documents or FakeDocumentRepository()
         self.commits = 0
 
     async def __aenter__(self) -> FakeUnitOfWork:
@@ -125,9 +158,7 @@ async def test_builder_is_bounded_deterministic_and_reuses_identical_snapshot() 
     assert len(first.content_hash) == 64
     assert first.content["truncated"] is True
     current_entry = next(
-        value
-        for value in first.content["messages"]
-        if value["messageId"] == "om_current"
+        value for value in first.content["messages"] if value["messageId"] == "om_current"
     )
     assert "CURRENT" in str(current_entry["content"])
     assert uow.commits == 1
@@ -190,3 +221,115 @@ async def test_builder_records_multidimensional_truncation_and_message_versions(
     assert snapshot.selection_policy_version == "thread-v2"
     assert snapshot.content["messages"][0]["messageVersion"] == 7  # type: ignore[index]
     assert len(snapshot.attachment_ids) == 2
+
+
+@pytest.mark.asyncio
+async def test_builder_includes_only_authorized_attachment_segments_with_citations() -> None:
+    now = datetime(2026, 8, 1, 12, 0, tzinfo=UTC)
+    current = make_message("om_current", created_at=now, text="请审核附件合同")
+    current.attachments = [{"fileKey": "file-om_current", "fileName": "合同.txt"}]
+    attachment = MessageAttachment(
+        id=uuid4(),
+        feishu_message_id=current.id,
+        message_version_id=uuid4(),
+        file_key="file-om_current",
+        file_name="合同.txt",
+        mime_type="text/plain",
+        size=8,
+        download_status=AttachmentDownloadStatus.DOWNLOADED,
+        authorized_for_analysis=True,
+        extraction_status=DocumentExtractionStatus.SUCCEEDED,
+    )
+    segment = DocumentSegment(
+        id=uuid4(),
+        extraction_id=uuid4(),
+        attachment_id=attachment.id,
+        page_number=None,
+        paragraph_number=1,
+        start_offset=0,
+        end_offset=8,
+        content="合同期限一年。",
+        content_hash="0" * 64,
+    )
+    uow = FakeUnitOfWork(
+        FakeFeishuRepository(current, [current], (attachment,)),
+        FakeSnapshotRepository(),
+        FakeDocumentRepository((segment,)),
+    )
+
+    snapshot = await ContextSnapshotBuilder(
+        lambda: uow,
+        max_messages=2,
+        max_text_characters=1000,
+        now=lambda: now,
+    ).build_for_feishu_message(current.id)
+
+    assert snapshot.included_segments == [
+        {
+            "attachmentId": str(attachment.id),
+            "fileName": "合同.txt",
+            "pageNumber": None,
+            "paragraphNumber": 1,
+            "contentHash": "0" * 64,
+        }
+    ]
+    assert snapshot.excluded_segments == []
+    assert snapshot.content["attachmentSegments"][0]["content"] == "合同期限一年。"  # type: ignore[index]
+    assert snapshot.permission_snapshot["allowedAttachmentIds"] == [str(attachment.id)]
+
+
+@pytest.mark.asyncio
+async def test_builder_bounds_attachment_segment_count_and_single_segment_size() -> None:
+    now = datetime(2026, 8, 1, 12, 0, tzinfo=UTC)
+    current = make_message("om_current", created_at=now, text="附件")
+    current.attachments = [{"fileKey": "file-om_current", "fileName": "合同.txt"}]
+    attachment = MessageAttachment(
+        id=uuid4(),
+        feishu_message_id=current.id,
+        message_version_id=uuid4(),
+        file_key="file-om_current",
+        file_name="合同.txt",
+        mime_type="text/plain",
+        size=20,
+        download_status=AttachmentDownloadStatus.DOWNLOADED,
+        authorized_for_analysis=True,
+        extraction_status=DocumentExtractionStatus.SUCCEEDED,
+    )
+    segments = (
+        DocumentSegment(
+            id=uuid4(), extraction_id=uuid4(), attachment_id=attachment.id,
+            page_number=None, paragraph_number=1, start_offset=0, end_offset=6,
+            content="超过单段上限", content_hash="1" * 64,
+        ),
+        DocumentSegment(
+            id=uuid4(), extraction_id=uuid4(), attachment_id=attachment.id,
+            page_number=None, paragraph_number=2, start_offset=8, end_offset=10,
+            content="可用", content_hash="2" * 64,
+        ),
+        DocumentSegment(
+            id=uuid4(), extraction_id=uuid4(), attachment_id=attachment.id,
+            page_number=None, paragraph_number=3, start_offset=12, end_offset=14,
+            content="超额", content_hash="3" * 64,
+        ),
+    )
+    uow = FakeUnitOfWork(
+        FakeFeishuRepository(current, [current], (attachment,)),
+        FakeSnapshotRepository(),
+        FakeDocumentRepository(segments),
+    )
+
+    snapshot = await ContextSnapshotBuilder(
+        lambda: uow,
+        max_messages=2,
+        max_text_characters=1000,
+        max_attachment_segments=1,
+        max_single_attachment_segment_characters=4,
+        now=lambda: now,
+    ).build_for_feishu_message(current.id)
+
+    assert [value["paragraphNumber"] for value in snapshot.included_segments] == [2]
+    assert [value["reason"] for value in snapshot.excluded_segments] == [
+        "attachment_segment_character_limit",
+        "attachment_segment_count_limit",
+    ]
+    assert snapshot.truncated is True

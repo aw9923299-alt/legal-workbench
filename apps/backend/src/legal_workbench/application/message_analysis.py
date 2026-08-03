@@ -90,6 +90,15 @@ class MessageAnalysisError(RuntimeError):
         self.retryable = retryable
 
 
+def _positive_snapshot_integer(value: object, *, field_name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise InvalidStateTransitionError(
+            "ContextSnapshot contains an invalid attachment citation.",
+            details={"field": field_name},
+        )
+    return value
+
+
 @dataclass(frozen=True, slots=True)
 class RequestFeishuMessageAnalysisCommand:
     message_id: UUID
@@ -357,14 +366,11 @@ class AnalyseFeishuMessageHandler:
                             "The queued AgentDefinition no longer exists.",
                             retryable=False,
                         )
-                    return PreparedAnalysis(
-                        run=runs[0], definition=definition, snapshot=snapshot
-                    )
+                    return PreparedAnalysis(run=runs[0], definition=definition, snapshot=snapshot)
                 if (
                     command.recover_interrupted_run
                     and runs
-                    and runs[0].status
-                    in {AgentRunStatus.PREPARING, AgentRunStatus.RUNNING}
+                    and runs[0].status in {AgentRunStatus.PREPARING, AgentRunStatus.RUNNING}
                 ):
                     interrupted = runs[0]
                     await AgentAttemptService(
@@ -488,9 +494,7 @@ class AnalyseFeishuMessageHandler:
                     )
             definition = await uow.agent_definitions.get_active(MESSAGE_JUDGEMENT_KEY)
             if definition is None:
-                existing_definition = await uow.agent_definitions.get(
-                    self._default_definition.id
-                )
+                existing_definition = await uow.agent_definitions.get(self._default_definition.id)
                 if existing_definition is not None:
                     raise MessageAnalysisError(
                         "AGENT_DEFINITION_DISABLED",
@@ -587,9 +591,7 @@ class AnalyseFeishuMessageHandler:
             run.transition_to(AgentRunStatus.PREPARING)
             run.transition_to(AgentRunStatus.RUNNING)
             run.worker_id = command.worker_id or run.worker_id or "analysis-worker"
-            run.lease_expires_at = datetime.now(UTC) + timedelta(
-                seconds=self._lease_seconds
-            )
+            run.lease_expires_at = datetime.now(UTC) + timedelta(seconds=self._lease_seconds)
             lease = await AgentAttemptService(
                 uow.agent_run_attempts,
                 lease_seconds=self._lease_seconds,
@@ -698,7 +700,7 @@ class AnalyseFeishuMessageHandler:
                             for value in output.deadline_candidates
                         ],
                         related_matter_proposals=[],
-                        evidence_refs=[fact.source_message_id for fact in output.confirmed_facts],
+                        evidence_refs=self._evidence_refs(output),
                         agent_run_id=run.id,
                     )
                     candidate.feishu_message_id = message.id
@@ -736,9 +738,7 @@ class AnalyseFeishuMessageHandler:
                             value.model_dump(by_alias=True, mode="json")
                             for value in output.deadline_candidates
                         ],
-                        evidence_refs=[
-                            fact.source_message_id for fact in output.confirmed_facts
-                        ],
+                        evidence_refs=self._evidence_refs(output),
                         agent_run_id=run.id,
                         requires_manual_review=requires_manual_review,
                         analysis_payload=output_payload,
@@ -822,9 +822,7 @@ class AnalyseFeishuMessageHandler:
         analysis_payload: dict[str, object],
     ) -> None:
         existing_revisions = await uow.candidates.list_revisions(candidate_id)
-        revision_number = (
-            max((value.revision for value in existing_revisions), default=0) + 1
-        )
+        revision_number = max((value.revision for value in existing_revisions), default=0) + 1
         await uow.candidates.append_revision(
             CandidateRevision(
                 id=uuid4(),
@@ -940,6 +938,27 @@ class AnalyseFeishuMessageHandler:
         return proposals
 
     @staticmethod
+    def _evidence_refs(output: object) -> list[str]:
+        from legal_workbench.agents.message_judgement import MessageJudgementResult
+
+        validated = MessageJudgementResult.model_validate(output)
+        references = [
+            value.source_message_id
+            for value in validated.confirmed_facts
+            if value.source_message_id is not None
+        ]
+        references.extend(
+            "attachment:"
+            f"{citation.attachment_id}:"
+            f"page:{citation.page_number or 'none'}:"
+            f"paragraph:{citation.paragraph_number}:"
+            f"sha256:{citation.content_hash}"
+            for value in validated.confirmed_facts
+            if (citation := value.attachment_citation) is not None
+        )
+        return list(dict.fromkeys(references))
+
+    @staticmethod
     def _sources(run: AgentRun, snapshot: ContextSnapshot) -> list[AgentRunSource]:
         sources = [
             AgentRunSource(
@@ -993,6 +1012,55 @@ class AnalyseFeishuMessageHandler:
                     source_hash=sha256(attachment_id.encode("utf-8")).hexdigest(),
                     display_name=f"Attachment metadata {attachment_id}",
                     citation_metadata={"metadataOnly": True},
+                )
+            )
+        for segment in snapshot.included_segments:
+            attachment_value = segment.get("attachmentId")
+            file_name_value = segment.get("fileName")
+            content_hash_value = segment.get("contentHash")
+            if (
+                not isinstance(attachment_value, str)
+                or not attachment_value
+                or not isinstance(file_name_value, str)
+                or not file_name_value
+                or not isinstance(content_hash_value, str)
+                or len(content_hash_value) != 64
+            ):
+                raise InvalidStateTransitionError(
+                    "ContextSnapshot contains an invalid attachment citation."
+                )
+            attachment_id = attachment_value
+            file_name = file_name_value
+            page_value = segment.get("pageNumber")
+            page_number = (
+                _positive_snapshot_integer(page_value, field_name="pageNumber")
+                if page_value is not None
+                else None
+            )
+            paragraph_number = _positive_snapshot_integer(
+                segment["paragraphNumber"], field_name="paragraphNumber"
+            )
+            content_hash = content_hash_value
+            locator = (
+                f"{attachment_id}:page:{page_number or 'none'}:"
+                f"paragraph:{paragraph_number}"
+            )
+            sources.append(
+                AgentRunSource(
+                    id=uuid4(),
+                    agent_run_id=run.id,
+                    source_type=AgentRunSourceType.ATTACHMENT,
+                    source_id=locator,
+                    source_version=f"page:{page_number or 'none'}:paragraph:{paragraph_number}",
+                    source_hash=content_hash,
+                    display_name=file_name,
+                    citation_metadata={
+                        "segment": True,
+                        "attachmentId": attachment_id,
+                        "fileName": file_name,
+                        "pageNumber": page_number,
+                        "paragraphNumber": paragraph_number,
+                    },
                 )
             )
         return sources

@@ -12,11 +12,13 @@ from legal_workbench.infrastructure.repositories import (
     SqlAlchemyAgentRunAttemptRepository,
     SqlAlchemyAgentRunRepository,
     SqlAlchemyAgentRunSourceRepository,
+    SqlAlchemyAttachmentStorageQuotaRepository,
     SqlAlchemyAuditEventRepository,
     SqlAlchemyCommunicationRepository,
     SqlAlchemyContextSnapshotRepository,
     SqlAlchemyDeadlineRepository,
     SqlAlchemyDependencyRepository,
+    SqlAlchemyDocumentRepository,
     SqlAlchemyDraftArtifactRepository,
     SqlAlchemyFeishuRepository,
     SqlAlchemyIdempotencyRepository,
@@ -53,6 +55,8 @@ class SqlAlchemyUnitOfWork(UnitOfWork):
         self.review_records = SqlAlchemyReviewRecordRepository(self._session)
         self.communications = SqlAlchemyCommunicationRepository(self._session)
         self.feishu = SqlAlchemyFeishuRepository(self._session)
+        self.documents = SqlAlchemyDocumentRepository(self._session)
+        self.storage_quota = SqlAlchemyAttachmentStorageQuotaRepository(self._session)
         self.audit_events = SqlAlchemyAuditEventRepository(self._session)
         self.outbox_events = SqlAlchemyOutboxEventRepository(self._session)
         self.idempotency = SqlAlchemyIdempotencyRepository(self._session)

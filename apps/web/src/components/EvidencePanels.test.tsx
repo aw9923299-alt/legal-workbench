@@ -15,4 +15,24 @@ describe('evidence boundaries', () => {
     expect(screen.getByRole('region', { name: 'AI推断' })).toHaveClass('inferred-facts');
     expect(screen.getByText(/未经人工确认/)).toBeInTheDocument();
   });
+
+  it('renders attachment page and paragraph without exposing a local path', () => {
+    render(<EvidencePanels result={{
+      legalRelevance: 'relevant', messageRole: 'new_request', actionability: 'create_candidate',
+      suggestedTitle: '审核合同', categoryCandidates: [], deadlineCandidates: [],
+      confirmedFacts: [{
+        statement: '合同期限一年', sourceMessageId: null,
+        attachmentCitation: {
+          attachmentId: 'attachment-1', fileName: '合同.pdf', pageNumber: 2,
+          paragraphNumber: 3, contentHash: 'c'.repeat(64),
+        },
+      }],
+      inferredFacts: [], missingInformation: [], reasons: ['附件有明确约定'], confidence: 0.8,
+    }} />);
+
+    expect(screen.getByRole('link', { name: /合同\.pdf · 第2页 · 第3段/ })).toHaveAttribute(
+      'href', '#attachment-attachment-1',
+    );
+    expect(screen.queryByText(/local|\/data\//i)).not.toBeInTheDocument();
+  });
 });

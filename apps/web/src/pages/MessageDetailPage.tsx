@@ -61,6 +61,31 @@ export default function MessageDetailPage() {
     onSuccess: () => { message.success('已要求重新分析，历史版本保留'); invalidate(); },
     onError: (error) => message.error(error instanceof Error ? error.message : '重新分析失败'),
   });
+  const authorizeAttachment = useMutation({
+    mutationFn: async ({ attachmentId, authorized }: { attachmentId: string; authorized: boolean }) => {
+      const key = `attachment-authorization:${attachmentId}:${authorized}`;
+      const payload = { authorized };
+      const context = getOrCreateMutationContext(key, payload);
+      try {
+        const result = await legalApi.setAttachmentAnalysisAuthorization(
+          messageId,
+          attachmentId,
+          authorized,
+          context,
+        );
+        clearMutationContext(key);
+        return result;
+      } catch (error) {
+        if (isDefinitiveMutationFailure(error)) clearMutationContext(key);
+        throw error;
+      }
+    },
+    onSuccess: (_result, variables) => {
+      message.success(variables.authorized ? '已授权附件正文；请点击重新分析生成新版本' : '已撤销附件正文授权');
+      void detail.refetch();
+    },
+    onError: (error) => message.error(error instanceof Error ? error.message : '附件授权失败'),
+  });
   const resolve = useMutation({
     mutationFn: async ({ action, selectedMatter }: { action: 'link_existing' | 'update_existing' | 'information_only' | 'ignore'; selectedMatter?: string }) => {
       if (!candidate.data) throw new Error('Candidate 尚未加载');
@@ -155,7 +180,43 @@ export default function MessageDetailPage() {
             <Divider>线程上下文</Divider>
             <Timeline items={detail.data.contextMessages.map((value) => ({ children: <><Text strong>{value.senderId ?? '未知发送人'}</Text><Paragraph>{value.plainText || value.unsupportedReason || '无正文'}</Paragraph></> }))} />
             <Divider>附件元数据</Divider>
-            <List dataSource={detail.data.attachments} locale={{ emptyText: '无附件' }} renderItem={(file) => <List.Item><List.Item.Meta title={file.fileName} description={`${file.mimeType ?? '未知类型'} · ${file.size ?? '未知大小'} · ${file.downloadStatus}`} /><Tag color={file.authorizedForAnalysis ? 'green' : 'default'}>{file.authorizedForAnalysis ? '已授权分析' : '未授权正文'}</Tag></List.Item>} />
+            <List
+              dataSource={detail.data.attachments}
+              locale={{ emptyText: '无附件' }}
+              renderItem={(file) => (
+                <List.Item
+                  id={`attachment-${file.id}`}
+                  actions={file.downloadStatus === 'downloaded' ? [
+                    <Button
+                      key="authorization"
+                      size="small"
+                      loading={authorizeAttachment.isPending}
+                      onClick={() => authorizeAttachment.mutate({
+                        attachmentId: file.id,
+                        authorized: !file.authorizedForAnalysis,
+                      })}
+                    >
+                      {file.authorizedForAnalysis ? '撤销正文授权' : '授权正文给 Codex'}
+                    </Button>,
+                  ] : undefined}
+                >
+                  <List.Item.Meta
+                    title={file.fileName}
+                    description={[
+                      file.mimeType ?? '未知类型',
+                      file.size ?? '未知大小',
+                      `下载 ${file.downloadStatus}`,
+                      `解析 ${file.extractionStatus}`,
+                      file.extractionStatus === 'body_unavailable' ? '正文暂不可解析' : null,
+                      file.extractionErrorCode,
+                    ].filter(Boolean).join(' · ')}
+                  />
+                  <Tag color={file.authorizedForAnalysis ? 'green' : 'default'}>
+                    {file.authorizedForAnalysis ? '已授权分析' : '未授权正文'}
+                  </Tag>
+                </List.Item>
+              )}
+            />
             <Collapse items={[
               { key: 'versions', label: `编辑/撤回历史（${detail.data.versions.length}）`, children: <Timeline items={detail.data.versions.map((version) => ({ children: `v${version.revision} · ${version.isRecalled ? '已撤回' : version.plainText || '无正文'} · ${new Date(version.createdAt).toLocaleString()}` }))} /> },
               { key: 'raw', label: '查看受控原始 Payload', children: <pre className="agent-json">{JSON.stringify(detail.data.rawPayload, null, 2)}</pre> },

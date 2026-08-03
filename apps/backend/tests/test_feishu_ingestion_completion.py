@@ -77,9 +77,7 @@ def test_post_message_flattens_readable_text_without_losing_structure() -> None:
         }
     }
 
-    normalized = normalize_feishu_event(
-        envelope(message_type="post", content=post)
-    )
+    normalized = normalize_feishu_event(envelope(message_type="post", content=post))
 
     assert normalized.message is not None
     assert normalized.message.plain_text == "合同审核\n请审核 采购合同\n@法务"
@@ -99,9 +97,7 @@ def test_attachment_message_extracts_metadata(
     file_key: str,
     file_name: str,
 ) -> None:
-    normalized = normalize_feishu_event(
-        envelope(message_type=message_type, content=content)
-    )
+    normalized = normalize_feishu_event(envelope(message_type=message_type, content=content))
 
     assert normalized.message is not None
     assert normalized.message.attachments[0].file_key == file_key
@@ -141,9 +137,7 @@ def test_edit_and_recall_events_are_classified(
 
     assert normalized.operation == operation
     assert normalized.external_message_id == "om-1"
-    assert normalized.should_trigger_analysis is (
-        operation == FeishuMessageOperation.EDIT
-    )
+    assert normalized.should_trigger_analysis is (operation == FeishuMessageOperation.EDIT)
 
 
 def test_real_long_connection_requires_app_credentials() -> None:
@@ -170,7 +164,7 @@ def test_real_webhook_requires_verification_token() -> None:
 def test_feishu_operational_tables_preserve_connection_versions_and_attachments() -> None:
     connection = Base.metadata.tables["integration_connections"]
     versions = Base.metadata.tables["feishu_message_versions"]
-    attachments = Base.metadata.tables["feishu_attachments"]
+    attachments = Base.metadata.tables["message_attachments"]
 
     assert {
         "connection_mode",
@@ -183,6 +177,15 @@ def test_feishu_operational_tables_preserve_connection_versions_and_attachments(
     assert {"revision", "content_hash", "raw_payload", "edited_at", "recalled_at"}.issubset(
         versions.columns.keys()
     )
-    assert {"file_key", "sha256", "local_path", "download_status", "download_error"}.issubset(
-        attachments.columns.keys()
-    )
+    assert {
+        "file_key",
+        "sha256",
+        "local_path",
+        "download_status",
+        "download_error",
+        "extraction_status",
+        "extractor_version",
+        "page_count",
+        "character_count",
+        "extraction_error_code",
+    }.issubset(attachments.columns.keys())

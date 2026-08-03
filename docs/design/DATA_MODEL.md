@@ -60,7 +60,7 @@ interface FeishuMessage {
 - `(tenant_id, event_id)`；
 - `(tenant_id, message_id)`；消息正文变化进入不可变 `FeishuMessageVersion`，不覆盖历史审计。
 
-`integration_connections` 持久化连接模式、状态、最近连接/断开/事件、错误、重连次数和最近补偿结果。`feishu_message_versions` 为每次创建、编辑或撤回追加修订；`feishu_attachments` 保存 file key、名称、MIME、大小、SHA-256、本地路径、下载状态和 `authorized_for_analysis`。迁移 `20260801_0005` 可降级并保留 0004 原有消息行。
+`integration_connections` 持久化连接模式、状态、最近连接/断开/事件、错误、重连次数和最近补偿结果。`feishu_message_versions` 为每次创建、编辑或撤回追加修订。迁移 `20260803_0008` 将原 `feishu_attachments` 原地重命名为 `message_attachments` 并保留历史行，增加提取状态、Extractor版本、页数、字符数和稳定错误码；`document_versions`、`document_extractions`、`document_segments` 分别保存文件版本、每次解析结果和带页码/段落/偏移/哈希的正文片段，`storage_quota_reservations` 用 PostgreSQL 协调并发下载配额。降级恢复原附件表名和原有行。
 
 ## 2.2 FileAsset
 
@@ -99,6 +99,8 @@ interface ContextSnapshot {
   messageIds: string[];
   participantIds: string[];
   attachmentIds: string[];
+  includedSegments: Array<Record<string, unknown>>;
+  excludedSegments: Array<Record<string, unknown>>;
   threadMetadata: Record<string, unknown>;
   permissionSnapshot: Record<string, unknown>;
   content: Record<string, unknown>;
@@ -115,7 +117,7 @@ interface ContextSnapshot {
 }
 ```
 
-快照一经创建不可修改。当前消息必选，父消息、根消息和同线程最近消息由确定性规则限量选取；附件仅记录元数据。复用哈希同时包含消息/附件版本、上下文排序、Builder 版本和选择策略版本；消息数、单条字符、总字符和附件数的截断原因及原始/纳入大小均持久化。`(source_type, source_id, content_hash)` 唯一，并通过事务级 advisory lock 避免并发重复。
+快照一经创建不可修改。当前消息必选，父消息、根消息和同线程最近消息由确定性规则限量选取；只有人工授权且提取成功的附件片段可进入快照，并受片段数量、单段字符和总字符限制。纳入与排除的定位及原因均持久化。复用哈希同时包含消息/附件版本、授权/提取状态、片段引用、上下文排序、Builder 版本和选择策略版本；消息数、单条字符、总字符、附件数及附件片段的截断原因与原始/纳入大小均持久化。`(source_type, source_id, content_hash)` 唯一，并通过事务级 advisory lock 避免并发重复。
 
 0004 迁移不会按旧版客户端提供的 `content_hash/source_ids` 合并历史审计行；每条旧快照以自身 UUID 回填 `source_id`，因此重复旧数据仍被完整保留。0003 Candidate 中可能存在的外部 `agent_run_id` 先保存到 `analysis_payload.legacyAgentRunId`，downgrade 时恢复。
 
@@ -416,7 +418,7 @@ interface AgentRun {
 
 ### 2.12.1 AgentRunSource
 
-`AgentRunSource` 只追加记录本次实际授权使用的来源：`feishu_message`、`context_snapshot`、`attachment`、`knowledge_document`、`historical_matter`、`approved_example`。消息研判当前记录快照、当前/父/线程消息及附件元数据，并保留来源版本、SHA-256 和引用元数据。
+`AgentRunSource` 只追加记录本次实际授权使用的来源：`feishu_message`、`context_snapshot`、`attachment`、`knowledge_document`、`historical_matter`、`approved_example`。消息研判记录快照、当前/父/线程消息、附件元数据，并为每个实际纳入的附件片段追加一条真实内容哈希和页码/段落定位来源；不保存或返回本地文件路径。
 
 ## 2.13 DraftArtifact
 
@@ -693,7 +695,11 @@ outbox_events
 outbox_dead_letters
 integration_connections
 feishu_message_versions
-feishu_attachments
+message_attachments
+document_versions
+document_extractions
+document_segments
+storage_quota_reservations
 agent_run_status_events
 candidate_revisions
 ```

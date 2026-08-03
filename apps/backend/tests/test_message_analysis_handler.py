@@ -34,6 +34,7 @@ from legal_workbench.domain.entities import (
 from legal_workbench.domain.enums import (
     AgentAttemptStatus,
     AgentDefinitionStatus,
+    AgentRunSourceType,
     AgentRunStatus,
     CandidateStatus,
     FeishuMessageStatus,
@@ -132,6 +133,10 @@ class FeishuRepository:
         self, message: FeishuMessage, *, limit: int
     ) -> Sequence[FeishuMessage]:
         return [message]
+
+    async def list_attachments(self, message_id: UUID) -> Sequence[object]:
+        del message_id
+        return []
 
     async def save_message(self, message: FeishuMessage) -> None:
         self.state.messages[message.id] = message
@@ -249,8 +254,7 @@ class AttemptRepository:
             (
                 value
                 for value in self.state.attempts
-                if value.run_id == lease.run_id
-                and value.attempt_number == lease.attempt_number
+                if value.run_id == lease.run_id and value.attempt_number == lease.attempt_number
             ),
             None,
         )
@@ -297,9 +301,7 @@ class CandidateRepository:
 
     async def list_revisions(self, candidate_id: UUID) -> Sequence[CandidateRevision]:
         return [
-            value
-            for value in self.state.candidate_revisions
-            if value.candidate_id == candidate_id
+            value for value in self.state.candidate_revisions if value.candidate_id == candidate_id
         ]
 
 
@@ -311,11 +313,18 @@ class AppendRepository:
         self.values.append(value)
 
 
+class DocumentRepository:
+    async def list_latest_segments(self, attachment_ids: Sequence[UUID]) -> Sequence[object]:
+        del attachment_ids
+        return []
+
+
 class FakeUnitOfWork:
     def __init__(self, state: FakeState) -> None:
         self.state = state
         self.context_snapshots = SnapshotRepository(state)
         self.feishu = FeishuRepository(state)
+        self.documents = DocumentRepository()
         self.agent_definitions = DefinitionRepository(state)
         self.agent_runs = RunRepository(state)
         self.agent_run_attempts = AttemptRepository(state)
@@ -434,6 +443,50 @@ async def test_valid_output_commits_before_runtime_and_creates_candidate(tmp_pat
     assert len(state.candidate_revisions) == 1
     assert any(isinstance(event, AuditEvent) for event in state.audit_events)
     assert any(isinstance(event, OutboxEvent) for event in state.outbox_events)
+
+
+@pytest.mark.asyncio
+async def test_included_attachment_segment_becomes_a_hashed_run_source(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    state = FakeState(tmp_path)
+    message = make_message()
+    state.messages[message.id] = message
+    result = await make_handler(state, FakeRuntime(state)).execute(
+        AnalyseFeishuMessageCommand(
+            message_id=message.id,
+            actor_id="system",
+            actor_source="worker",
+            correlation_id="corr-attachment-source",
+        )
+    )
+    run = state.runs[result.agent_run_id]
+    snapshot = state.snapshots[run.context_snapshot_id]
+    snapshot.included_segments = [
+        {
+            "attachmentId": "11111111-1111-4111-8111-111111111111",
+            "fileName": "合同.pdf",
+            "pageNumber": 2,
+            "paragraphNumber": 3,
+            "contentHash": "c" * 64,
+        }
+    ]
+
+    sources = AnalyseFeishuMessageHandler._sources(run, snapshot)
+    segment_source = next(
+        value
+        for value in sources
+        if value.source_type == AgentRunSourceType.ATTACHMENT
+        and value.citation_metadata.get("segment") is True
+    )
+
+    assert segment_source.source_hash == "c" * 64
+    assert segment_source.source_id.endswith("page:2:paragraph:3")
+    assert segment_source.citation_metadata == {
+        "segment": True,
+        "attachmentId": "11111111-1111-4111-8111-111111111111",
+        "fileName": "合同.pdf",
+        "pageNumber": 2,
+        "paragraphNumber": 3,
+    }
 
 
 @pytest.mark.asyncio

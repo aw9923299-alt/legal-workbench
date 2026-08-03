@@ -312,3 +312,12 @@ class AttachmentDownloadStatus(StrEnum):
     DOWNLOADED = "downloaded"
     FAILED = "failed"
     NOT_REQUESTED = "not_requested"
+
+
+class DocumentExtractionStatus(StrEnum):
+    NOT_REQUESTED = "not_requested"
+    PENDING = "pending"
+    EXTRACTING = "extracting"
+    SUCCEEDED = "succeeded"
+    BODY_UNAVAILABLE = "body_unavailable"
+    FAILED = "failed"

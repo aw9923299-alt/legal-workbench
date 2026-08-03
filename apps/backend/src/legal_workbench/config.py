@@ -57,6 +57,10 @@ class Settings(BaseSettings):
     feishu_tenant_key: str | None = None
     feishu_attachment_root: str = "/data/feishu-attachments"
     feishu_attachment_max_bytes: int = 50 * 1024 * 1024
+    feishu_attachment_total_quota_bytes: int = 5 * 1024 * 1024 * 1024
+    document_extraction_work_root: str = "/data/document-extractions"
+    document_extraction_timeout_seconds: int = 30
+    document_extraction_max_output_bytes: int = 5 * 1024 * 1024
 
     knowledge_root: str = "/data/knowledge"
     codex_runs_root: str = "/data/codex-runs"
@@ -90,6 +94,8 @@ class Settings(BaseSettings):
     context_max_text_characters: int = 20000
     context_max_single_message_characters: int = 8000
     context_max_attachments: int = 10
+    context_max_attachment_segments: int = 100
+    context_max_single_attachment_segment_characters: int = 4000
     context_builder_version: str = "2.0.0"
     context_selection_policy_version: str = "thread-v2"
     message_analysis_manual_review_threshold: float = 0.75

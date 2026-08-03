@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Sequence
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 from hashlib import sha256
 from uuid import UUID, uuid4
@@ -23,6 +23,9 @@ from legal_workbench.domain.entities import (
     Communication,
     ContextSnapshot,
     Deadline,
+    DocumentExtraction,
+    DocumentSegment,
+    DocumentVersion,
     DraftArtifact,
     FeishuAttachment,
     FeishuMessage,
@@ -48,6 +51,7 @@ from legal_workbench.domain.enums import (
     CandidateStatus,
     CommunicationStatus,
     DeadlineStatus,
+    DocumentExtractionStatus,
     FeishuMessageStatus,
     MatterCategory,
     ReviewDecision,
@@ -66,6 +70,9 @@ from legal_workbench.infrastructure.models import (
     CommunicationModel,
     ContextSnapshotModel,
     DeadlineModel,
+    DocumentExtractionModel,
+    DocumentSegmentModel,
+    DocumentVersionModel,
     DraftArtifactModel,
     FeishuAttachmentModel,
     FeishuEventModel,
@@ -79,6 +86,7 @@ from legal_workbench.infrastructure.models import (
     PriorityConfirmationModel,
     ReviewPackageModel,
     ReviewRecordModel,
+    StorageQuotaReservationModel,
     WorkItemDependencyModel,
     WorkItemModel,
 )
@@ -115,6 +123,8 @@ class SqlAlchemyContextSnapshotRepository:
                 ),
                 snapshot_version=snapshot.snapshot_version,
                 attachment_ids=snapshot.attachment_ids,
+                included_segments=snapshot.included_segments,
+                excluded_segments=snapshot.excluded_segments,
                 thread_metadata=snapshot.thread_metadata,
                 content=snapshot.content,
             )
@@ -151,6 +161,8 @@ class SqlAlchemyContextSnapshotRepository:
             source_id=model.source_id,
             snapshot_version=model.snapshot_version,
             attachment_ids=model.attachment_ids,
+            included_segments=model.included_segments,
+            excluded_segments=model.excluded_segments,
             thread_metadata=model.thread_metadata,
             content=model.content,
             builder_version=model.builder_version,
@@ -560,9 +572,7 @@ class SqlAlchemyAgentRunRepository:
         models = (await self._session.execute(statement)).scalars().all()
         return [self._to_domain(model) for model in models]
 
-    async def list_status_events(
-        self, run_id: UUID
-    ) -> Sequence[AgentRunStatusChange]:
+    async def list_status_events(self, run_id: UUID) -> Sequence[AgentRunStatusChange]:
         statement = (
             select(AgentRunStatusEventModel)
             .where(AgentRunStatusEventModel.agent_run_id == run_id)
@@ -695,9 +705,7 @@ class SqlAlchemyAgentRunAttemptRepository:
         if (await self._session.execute(statement)).scalar_one_or_none() is None:
             self._raise_stale(lease)
 
-    async def complete(
-        self, lease: AgentAttemptLease, *, finished_at: datetime
-    ) -> None:
+    async def complete(self, lease: AgentAttemptLease, *, finished_at: datetime) -> None:
         statement = (
             update(AgentRunAttemptModel)
             .where(*self._active_lease_predicates(lease))
@@ -1652,9 +1660,7 @@ class SqlAlchemyFeishuRepository:
             self._tracked_messages[model.id] = model
         return [self._message_to_domain(model) for model in models]
 
-    async def list_queued_without_active_run(
-        self, *, limit: int
-    ) -> Sequence[FeishuMessage]:
+    async def list_queued_without_active_run(self, *, limit: int) -> Sequence[FeishuMessage]:
         active_run_exists = exists(
             select(AgentRunModel.id).where(
                 AgentRunModel.feishu_message_id == FeishuMessageModel.id,
@@ -1764,29 +1770,32 @@ class SqlAlchemyFeishuRepository:
     async def add_attachments(self, attachments: Sequence[FeishuAttachment]) -> None:
         models = [
             FeishuAttachmentModel(
-                    id=value.id,
-                    feishu_message_id=value.feishu_message_id,
-                    message_version_id=value.message_version_id,
-                    file_key=value.file_key,
-                    file_name=value.file_name,
-                    mime_type=value.mime_type,
-                    size=value.size,
-                    sha256=value.sha256,
-                    local_path=value.local_path,
-                    download_status=value.download_status,
-                    download_error=value.download_error,
-                    authorized_for_analysis=value.authorized_for_analysis,
-                    created_at=value.created_at,
-                    updated_at=value.updated_at,
+                id=value.id,
+                feishu_message_id=value.feishu_message_id,
+                message_version_id=value.message_version_id,
+                file_key=value.file_key,
+                file_name=value.file_name,
+                mime_type=value.mime_type,
+                size=value.size,
+                sha256=value.sha256,
+                local_path=value.local_path,
+                download_status=value.download_status,
+                download_error=value.download_error,
+                authorized_for_analysis=value.authorized_for_analysis,
+                extraction_status=value.extraction_status,
+                extractor_version=value.extractor_version,
+                page_count=value.page_count,
+                character_count=value.character_count,
+                extraction_error_code=value.extraction_error_code,
+                created_at=value.created_at,
+                updated_at=value.updated_at,
             )
             for value in attachments
         ]
         self._tracked_attachments.update({model.id: model for model in models})
         self._session.add_all(models)
 
-    async def list_pending_attachments(
-        self, message_id: UUID
-    ) -> Sequence[FeishuAttachment]:
+    async def list_pending_attachments(self, message_id: UUID) -> Sequence[FeishuAttachment]:
         statement = select(FeishuAttachmentModel).where(
             FeishuAttachmentModel.feishu_message_id == message_id,
             FeishuAttachmentModel.download_status == AttachmentDownloadStatus.PENDING,
@@ -1805,6 +1814,18 @@ class SqlAlchemyFeishuRepository:
         self._tracked_attachments.update({model.id: model for model in models})
         return [self._attachment_to_domain(model) for model in models]
 
+    async def get_attachment_for_update(self, attachment_id: UUID) -> FeishuAttachment | None:
+        statement = (
+            select(FeishuAttachmentModel)
+            .where(FeishuAttachmentModel.id == attachment_id)
+            .with_for_update()
+        )
+        model = (await self._session.execute(statement)).scalar_one_or_none()
+        if model is None:
+            return None
+        self._tracked_attachments[attachment_id] = model
+        return self._attachment_to_domain(model)
+
     async def save_attachment(self, attachment: FeishuAttachment) -> None:
         model = self._tracked_attachments.get(attachment.id)
         if model is None:
@@ -1816,6 +1837,11 @@ class SqlAlchemyFeishuRepository:
         model.download_status = attachment.download_status
         model.download_error = attachment.download_error
         model.authorized_for_analysis = attachment.authorized_for_analysis
+        model.extraction_status = attachment.extraction_status
+        model.extractor_version = attachment.extractor_version
+        model.page_count = attachment.page_count
+        model.character_count = attachment.character_count
+        model.extraction_error_code = attachment.extraction_error_code
         model.updated_at = attachment.updated_at
 
     async def get_connection(
@@ -1891,6 +1917,11 @@ class SqlAlchemyFeishuRepository:
             download_status=model.download_status,
             download_error=model.download_error,
             authorized_for_analysis=model.authorized_for_analysis,
+            extraction_status=model.extraction_status,
+            extractor_version=model.extractor_version,
+            page_count=model.page_count,
+            character_count=model.character_count,
+            extraction_error_code=model.extraction_error_code,
             created_at=model.created_at,
             updated_at=model.updated_at,
         )
@@ -1945,6 +1976,281 @@ class SqlAlchemyFeishuRepository:
             edited_at=model.edited_at,
             recalled_at=model.recalled_at,
             unsupported_reason=model.unsupported_reason,
+        )
+
+
+class SqlAlchemyAttachmentStorageQuotaRepository:
+    LOCK_OPERATION = "attachment_storage_quota"
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def reserve(
+        self,
+        *,
+        attachment_id: UUID,
+        requested_bytes: int,
+        total_bytes: int,
+        observed_used_bytes: int,
+        expires_at: datetime,
+    ) -> UUID | None:
+        if min(requested_bytes, total_bytes, observed_used_bytes) < 0:
+            raise ValueError("Storage quota values cannot be negative.")
+        await self._session.execute(
+            select(func.pg_advisory_xact_lock(func.hashtextextended(self.LOCK_OPERATION, 0)))
+        )
+        now = datetime.now(UTC)
+        await self._session.execute(
+            update(StorageQuotaReservationModel)
+            .where(
+                StorageQuotaReservationModel.status == "reserved",
+                StorageQuotaReservationModel.expires_at <= now,
+            )
+            .values(status="expired", updated_at=now)
+        )
+        stored_value = (
+            await self._session.execute(
+                select(func.coalesce(func.sum(FeishuAttachmentModel.size), 0)).where(
+                    FeishuAttachmentModel.download_status == AttachmentDownloadStatus.DOWNLOADED
+                )
+            )
+        ).scalar_one()
+        stored_bytes = int(stored_value or 0)
+        reserved_value = (
+            await self._session.execute(
+                select(
+                    func.coalesce(func.sum(StorageQuotaReservationModel.requested_bytes), 0)
+                ).where(
+                    StorageQuotaReservationModel.status == "reserved",
+                    StorageQuotaReservationModel.expires_at > now,
+                )
+            )
+        ).scalar_one()
+        reserved_bytes = int(reserved_value or 0)
+        used_bytes = max(stored_bytes, observed_used_bytes)
+        if used_bytes + reserved_bytes + requested_bytes > total_bytes:
+            return None
+        token = uuid4()
+        self._session.add(
+            StorageQuotaReservationModel(
+                id=uuid4(),
+                attachment_id=attachment_id,
+                reservation_token=token,
+                requested_bytes=requested_bytes,
+                status="reserved",
+                expires_at=expires_at,
+            )
+        )
+        return token
+
+    async def commit(self, reservation_token: UUID) -> None:
+        await self._set_status(reservation_token, status="committed")
+
+    async def release(self, reservation_token: UUID) -> None:
+        await self._set_status(reservation_token, status="released")
+
+    async def _set_status(self, reservation_token: UUID, *, status: str) -> None:
+        statement = (
+            select(StorageQuotaReservationModel)
+            .where(
+                StorageQuotaReservationModel.reservation_token == reservation_token,
+                StorageQuotaReservationModel.status == "reserved",
+            )
+            .with_for_update()
+        )
+        model = (await self._session.execute(statement)).scalar_one_or_none()
+        if model is None:
+            raise RuntimeError("Storage quota reservation is no longer active.")
+        model.status = status
+        model.updated_at = datetime.now(UTC)
+
+
+class SqlAlchemyDocumentRepository:
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+        self._tracked_extractions: dict[UUID, DocumentExtractionModel] = {}
+
+    async def find_version(
+        self, *, attachment_id: UUID, content_sha256: str
+    ) -> DocumentVersion | None:
+        statement = select(DocumentVersionModel).where(
+            DocumentVersionModel.attachment_id == attachment_id,
+            DocumentVersionModel.content_sha256 == content_sha256,
+        )
+        model = (await self._session.execute(statement)).scalar_one_or_none()
+        return None if model is None else self._version_to_domain(model)
+
+    async def next_version(self, attachment_id: UUID) -> int:
+        statement = select(func.coalesce(func.max(DocumentVersionModel.version), 0)).where(
+            DocumentVersionModel.attachment_id == attachment_id
+        )
+        return int((await self._session.execute(statement)).scalar_one()) + 1
+
+    async def add_version(self, version: DocumentVersion) -> None:
+        self._session.add(
+            DocumentVersionModel(
+                id=version.id,
+                attachment_id=version.attachment_id,
+                version=version.version,
+                content_sha256=version.content_sha256,
+                file_name=version.file_name,
+                mime_type=version.mime_type,
+                size=version.size,
+                local_path=version.local_path,
+                created_at=version.created_at,
+            )
+        )
+
+    async def add_extraction(self, extraction: DocumentExtraction) -> None:
+        model = DocumentExtractionModel(
+            id=extraction.id,
+            document_version_id=extraction.document_version_id,
+            status=extraction.status,
+            extractor_version=extraction.extractor_version,
+            page_count=extraction.page_count,
+            character_count=extraction.character_count,
+            error_code=extraction.error_code,
+            started_at=extraction.started_at,
+            finished_at=extraction.finished_at,
+            created_at=extraction.created_at,
+        )
+        self._tracked_extractions[extraction.id] = model
+        self._session.add(model)
+
+    async def find_latest_extraction(
+        self, document_version_id: UUID
+    ) -> DocumentExtraction | None:
+        statement = (
+            select(DocumentExtractionModel)
+            .where(DocumentExtractionModel.document_version_id == document_version_id)
+            .order_by(
+                DocumentExtractionModel.created_at.desc(),
+                DocumentExtractionModel.id.desc(),
+            )
+            .limit(1)
+        )
+        model = (await self._session.execute(statement)).scalar_one_or_none()
+        return None if model is None else self._extraction_to_domain(model)
+
+    async def get_extraction_for_update(self, extraction_id: UUID) -> DocumentExtraction | None:
+        statement = (
+            select(DocumentExtractionModel)
+            .where(DocumentExtractionModel.id == extraction_id)
+            .with_for_update()
+        )
+        model = (await self._session.execute(statement)).scalar_one_or_none()
+        if model is None:
+            return None
+        self._tracked_extractions[extraction_id] = model
+        return self._extraction_to_domain(model)
+
+    async def save_extraction(self, extraction: DocumentExtraction) -> None:
+        model = self._tracked_extractions.get(extraction.id)
+        if model is None:
+            model = await self._session.get(DocumentExtractionModel, extraction.id)
+        if model is None:
+            raise RuntimeError(f"DocumentExtraction {extraction.id} is not tracked")
+        model.status = extraction.status
+        model.extractor_version = extraction.extractor_version
+        model.page_count = extraction.page_count
+        model.character_count = extraction.character_count
+        model.error_code = extraction.error_code
+        model.finished_at = extraction.finished_at
+
+    async def get_version(self, version_id: UUID) -> DocumentVersion | None:
+        model = await self._session.get(DocumentVersionModel, version_id)
+        return None if model is None else self._version_to_domain(model)
+
+    async def add_segments(self, segments: Sequence[DocumentSegment]) -> None:
+        self._session.add_all(
+            [
+                DocumentSegmentModel(
+                    id=value.id,
+                    extraction_id=value.extraction_id,
+                    attachment_id=value.attachment_id,
+                    page_number=value.page_number,
+                    paragraph_number=value.paragraph_number,
+                    start_offset=value.start_offset,
+                    end_offset=value.end_offset,
+                    content=value.content,
+                    content_hash=value.content_hash,
+                    created_at=value.created_at,
+                )
+                for value in segments
+            ]
+        )
+
+    async def list_latest_segments(
+        self, attachment_ids: Sequence[UUID]
+    ) -> Sequence[DocumentSegment]:
+        if not attachment_ids:
+            return []
+        statement = (
+            select(DocumentSegmentModel, DocumentExtractionModel.created_at)
+            .join(
+                DocumentExtractionModel,
+                DocumentExtractionModel.id == DocumentSegmentModel.extraction_id,
+            )
+            .where(
+                DocumentSegmentModel.attachment_id.in_(list(attachment_ids)),
+                DocumentExtractionModel.status == DocumentExtractionStatus.SUCCEEDED,
+            )
+            .order_by(
+                DocumentSegmentModel.attachment_id,
+                DocumentExtractionModel.created_at.desc(),
+                DocumentSegmentModel.paragraph_number,
+            )
+        )
+        rows = (await self._session.execute(statement)).all()
+        latest: dict[UUID, UUID] = {}
+        segments: list[DocumentSegment] = []
+        for model, _created_at in rows:
+            extraction_id = latest.setdefault(model.attachment_id, model.extraction_id)
+            if model.extraction_id != extraction_id:
+                continue
+            segments.append(
+                DocumentSegment(
+                    id=model.id,
+                    extraction_id=model.extraction_id,
+                    attachment_id=model.attachment_id,
+                    page_number=model.page_number,
+                    paragraph_number=model.paragraph_number,
+                    start_offset=model.start_offset,
+                    end_offset=model.end_offset,
+                    content=model.content,
+                    content_hash=model.content_hash,
+                    created_at=model.created_at,
+                )
+            )
+        return segments
+
+    @staticmethod
+    def _version_to_domain(model: DocumentVersionModel) -> DocumentVersion:
+        return DocumentVersion(
+            id=model.id,
+            attachment_id=model.attachment_id,
+            version=model.version,
+            content_sha256=model.content_sha256,
+            file_name=model.file_name,
+            mime_type=model.mime_type,
+            size=model.size,
+            local_path=model.local_path,
+            created_at=model.created_at,
+        )
+
+    @staticmethod
+    def _extraction_to_domain(model: DocumentExtractionModel) -> DocumentExtraction:
+        return DocumentExtraction(
+            id=model.id,
+            document_version_id=model.document_version_id,
+            status=model.status,
+            extractor_version=model.extractor_version,
+            page_count=model.page_count,
+            character_count=model.character_count,
+            error_code=model.error_code,
+            started_at=model.started_at,
+            finished_at=model.finished_at,
+            created_at=model.created_at,
         )
 
 

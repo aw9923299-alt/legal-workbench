@@ -253,6 +253,19 @@ export const legalApi = {
     return request(`/feishu/messages/${messageId}`);
   },
 
+  setAttachmentAnalysisAuthorization(
+    messageId: string,
+    attachmentId: string,
+    authorized: boolean,
+    mutation?: MutationContext,
+  ): Promise<FeishuMessageDetail['attachments'][number] & { idempotentReplay: boolean }> {
+    return request(
+      `/feishu/messages/${messageId}/attachments/${attachmentId}/analysis-authorization`,
+      { method: 'POST', body: JSON.stringify({ authorized }) },
+      { write: true, mutation },
+    );
+  },
+
   listCandidates(status = 'pending_confirmation'): Promise<MessageCandidate[]> {
     return request(`/inbox/candidates?status=${encodeURIComponent(status)}&limit=100`);
   },

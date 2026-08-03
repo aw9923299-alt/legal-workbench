@@ -6,7 +6,7 @@
 
 ### 1.1 实现状态
 
-- **已实现**：持久化 AgentDefinition/AgentRun/AgentRunSource/DraftArtifact，以及 `message_judgement@2.0.0`、严格 Pydantic Schema、CLI 版本/隔离认证健康检查、一次受控修复、状态事件、Worker 租约、Candidate revision、Celery 调度和 PostgreSQL 恢复。
+- **已实现**：持久化 AgentDefinition/AgentRun/AgentRunSource/DraftArtifact，以及 `message_judgement@2.1.0`、严格 Pydantic Schema、CLI 版本/隔离认证健康检查、一次受控修复、状态事件、Worker 租约、Candidate revision、附件片段引用、Celery 调度和 PostgreSQL 恢复。
 - **部分实现**：容器模式使用专用 UID、最小环境变量和工作目录约束；宿主机模式不具备可证明的 OS 级读取白名单。
 - **占位实现**：DraftArtifact 本轮仅建模，未开发通用产物 UI。
 - **尚未实现**：事项归并、任务规划、优先级建议、结果汇总、知识检索和所有专业 Agent。本文中对这些 Agent 的约束是后续设计要求，不代表已上线。
@@ -159,7 +159,7 @@ examples/
 evaluation/
 ```
 
-### 4.1 已激活定义：`message_judgement@1.0.0`
+### 4.1 已激活定义：`message_judgement@2.1.0`
 
 该 Agent 只处理消息法务相关性、消息作用、行动性、建议标题/分类/期限、事实/推断、缺失信息、理由和置信度。`allowedTools=[]`、`allowedKnowledgeScopes=[]`、`requiresHumanReview=true`。
 
@@ -175,7 +175,7 @@ inferredFacts, missingInformation, reasons, confidence
 
 - Pydantic 使用 `extra=forbid`，所有置信度限制在 0–1；
 - 必须输出纯 JSON，不得使用 Markdown 代码块；
-- 每条 `confirmedFacts` 必须带 `sourceMessageId`，且 ID 必须在快照的 `allowedMessageIds` 内；
+- 每条 `confirmedFacts` 必须且只能选择 `sourceMessageId` 或 `attachmentCitation`；消息 ID 必须在快照 `allowedMessageIds` 内，附件引用必须精确匹配已纳入片段的附件 ID、文件名、页码、段落号和内容哈希；
 - 事实与推断严格分字段；输出或业务规则失败时不创建 Candidate；
 - `irrelevant` 或 `actionability=ignore` 不创建 Candidate；其他合法结果只创建 `pending_confirmation` Candidate，不自动建 Matter。
 

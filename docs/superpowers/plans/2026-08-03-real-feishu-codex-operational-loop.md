@@ -182,7 +182,7 @@ git commit -m "feat: fence Codex agent attempts"
 - Produces: `DocumentExtractionService.prepare/complete/fail` with no external work inside a transaction.
 - Consumes: existing downloaded attachment rows and Outbox dispatcher.
 
-- [ ] **Step 1: Write failing security and format tests**
+- [x] **Step 1: Write failing security and format tests**
 
 ```python
 def test_attachment_path_must_remain_below_root(tmp_path):
@@ -198,17 +198,17 @@ def test_scanned_pdf_is_body_unavailable(scanned_pdf):
 
 Also cover DOCX, TXT, Markdown, oversized files, quota exhaustion, parse timeout, filename sanitization, and no macro/script execution.
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 Run: `.venv/bin/python -m pytest apps/backend/tests/test_document_extraction.py apps/backend/tests/test_document_extraction_process.py -q`
 
 Expected: failure because extraction models and services are absent.
 
-- [ ] **Step 3: Add dependencies and migration**
+- [x] **Step 3: Add dependencies and migration**
 
 Add `pypdf>=5,<7` and `python-docx>=1.1,<2`. Rename `feishu_attachments` to `message_attachments` while preserving rows; add extraction metadata. Create document version, extraction, segment, and quota reservation tables. Downgrade restores the original table name and columns without deleting migrated attachment rows.
 
-- [ ] **Step 4: Implement deterministic extractors**
+- [x] **Step 4: Implement deterministic extractors**
 
 ```python
 @dataclass(frozen=True, slots=True)
@@ -227,15 +227,15 @@ class DocumentExtractor(Protocol):
 
 PDF extraction iterates pages without executing actions; DOCX reads paragraph XML only; TXT/Markdown decode UTF-8 with explicit failure codes. Empty PDF text becomes `body_unavailable`.
 
-- [ ] **Step 5: Run parser in an isolated bounded process**
+- [x] **Step 5: Run parser in an isolated bounded process**
 
 Invoke `python -I -m legal_workbench.integrations.document_extractors` with one authorized file path, an output file in a per-extraction `0700` directory, a timeout, and bounded output. The child receives no database, Redis, Feishu, or Codex credentials.
 
-- [ ] **Step 6: Implement storage quota and download handoff**
+- [x] **Step 6: Implement storage quota and download handoff**
 
 Reserve bytes in PostgreSQL before download, enforce per-file and total limits, write to a safe resolved path with `0600`, compute SHA-256, then enqueue `DocumentExtractionRequested`. Release reservations on deterministic failure.
 
-- [ ] **Step 7: Run RED→GREEN regression**
+- [x] **Step 7: Run RED→GREEN regression**
 
 Run:
 
@@ -245,7 +245,7 @@ Run:
 .venv/bin/python -m mypy --config-file apps/backend/pyproject.toml apps/backend/src
 ```
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add apps/backend
@@ -275,7 +275,7 @@ git commit -m "feat: extract message attachment content"
 - Produces: `AttachmentCitation` and Snapshot `includedSegments/excludedSegments`.
 - Produces: `validate_attachment_citations(result, snapshot)`.
 
-- [ ] **Step 1: Write failing Snapshot and business-rule tests**
+- [x] **Step 1: Write failing Snapshot and business-rule tests**
 
 ```python
 async def test_snapshot_records_included_and_excluded_attachment_segments(builder):
@@ -289,15 +289,15 @@ def test_fact_citation_hash_must_match_snapshot():
         validate_attachment_citations(result_with_wrong_hash, snapshot)
 ```
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 Run: `.venv/bin/python -m pytest apps/backend/tests/test_attachment_context_citations.py apps/backend/tests/test_context_snapshot_builder.py -q`
 
-- [ ] **Step 3: Extend Snapshot selection deterministically**
+- [x] **Step 3: Extend Snapshot selection deterministically**
 
 Select ready segments by attachment ID, page, paragraph, and UUID. Apply maximum segment count, single-segment characters, and total attachment characters. Persist both included identifiers and excluded identifiers with stable truncation reasons.
 
-- [ ] **Step 4: Extend Agent fact schema**
+- [x] **Step 4: Extend Agent fact schema**
 
 ```python
 class AttachmentCitation(BaseModel):
@@ -315,11 +315,11 @@ class ConfirmedFact(BaseModel):
 
 Exactly one evidence source is required. Business validation confirms that the cited attachment segment was included in the immutable Snapshot.
 
-- [ ] **Step 5: Persist auditable AgentRun sources and expose citations**
+- [x] **Step 5: Persist auditable AgentRun sources and expose citations**
 
 Create one `AgentRunSource` per included attachment segment with the real content hash and locator metadata. The UI renders a linkable page/paragraph citation and never exposes unrestricted local paths.
 
-- [ ] **Step 6: Run RED→GREEN regression and commit**
+- [x] **Step 6: Run RED→GREEN regression and commit**
 
 ```bash
 .venv/bin/python -m pytest apps/backend/tests/test_attachment_context_citations.py apps/backend/tests/test_context_snapshot_builder.py apps/backend/tests/test_message_analysis_handler.py -q

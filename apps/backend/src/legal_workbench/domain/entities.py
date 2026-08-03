@@ -23,6 +23,7 @@ from legal_workbench.domain.enums import (
     DeadlineType,
     DependencyStatus,
     DependencyType,
+    DocumentExtractionStatus,
     DraftArtifactStatus,
     FeishuEventStatus,
     FeishuMessageStatus,
@@ -748,6 +749,8 @@ class ContextSnapshot:
     source_id: str | None = None
     snapshot_version: int = 1
     attachment_ids: list[str] = field(default_factory=list)
+    included_segments: list[dict[str, object]] = field(default_factory=list)
+    excluded_segments: list[dict[str, object]] = field(default_factory=list)
     thread_metadata: dict[str, object] = field(default_factory=dict)
     content: dict[str, object] = field(default_factory=dict)
     builder_version: str = "1.0.0"
@@ -915,9 +918,7 @@ class AgentRunAttempt:
         require_aware(heartbeat_at, field_name="Agent attempt heartbeat")
         require_aware(lease_expires_at, field_name="Agent attempt lease expiry")
         if lease_expires_at <= heartbeat_at:
-            raise DomainValidationError(
-                "Agent attempt lease expiry must follow its heartbeat."
-            )
+            raise DomainValidationError("Agent attempt lease expiry must follow its heartbeat.")
         self.heartbeat_at = heartbeat_at
         self.lease_expires_at = lease_expires_at
 
@@ -936,9 +937,7 @@ class AgentRunAttempt:
             AgentAttemptStatus.TIMED_OUT,
             AgentAttemptStatus.CANCELLED,
         }:
-            raise DomainValidationError(
-                "Agent attempt failure requires a failure terminal status."
-            )
+            raise DomainValidationError("Agent attempt failure requires a failure terminal status.")
         finished_at = now or utc_now()
         require_aware(finished_at, field_name="Agent attempt failure time")
         self.status = status
@@ -999,9 +998,7 @@ class AgentRun:
     created_at: datetime = field(default_factory=utc_now)
     updated_at: datetime = field(default_factory=utc_now)
     version: int = 1
-    pending_status_changes: list[AgentRunStatusChange] = field(
-        default_factory=list, repr=False
-    )
+    pending_status_changes: list[AgentRunStatusChange] = field(default_factory=list, repr=False)
 
     _TRANSITIONS: ClassVar[dict[AgentRunStatus, set[AgentRunStatus]]] = {
         AgentRunStatus.QUEUED: {
@@ -1180,7 +1177,7 @@ class FeishuMessageVersion:
 
 
 @dataclass(slots=True)
-class FeishuAttachment:
+class MessageAttachment:
     id: UUID
     feishu_message_id: UUID
     message_version_id: UUID
@@ -1193,8 +1190,142 @@ class FeishuAttachment:
     local_path: str | None = None
     download_error: str | None = None
     authorized_for_analysis: bool = False
+    extraction_status: DocumentExtractionStatus = DocumentExtractionStatus.NOT_REQUESTED
+    extractor_version: str | None = None
+    page_count: int | None = None
+    character_count: int | None = None
+    extraction_error_code: str | None = None
     created_at: datetime = field(default_factory=utc_now)
     updated_at: datetime = field(default_factory=utc_now)
+
+
+FeishuAttachment = MessageAttachment
+
+
+@dataclass(frozen=True, slots=True)
+class ExtractedSegment:
+    page_number: int | None
+    paragraph_number: int
+    start_offset: int
+    end_offset: int
+    content: str
+    content_hash: str
+
+    def __post_init__(self) -> None:
+        if self.paragraph_number < 1:
+            raise DomainValidationError("Document paragraph number must be positive.")
+        if self.page_number is not None and self.page_number < 1:
+            raise DomainValidationError("Document page number must be positive.")
+        if self.start_offset < 0 or self.end_offset < self.start_offset:
+            raise DomainValidationError("Document segment offsets are invalid.")
+        if self.end_offset - self.start_offset != len(self.content):
+            raise DomainValidationError("Document segment offsets do not match its content.")
+        if text_hash(self.content) != self.content_hash:
+            raise DomainValidationError("Document segment content hash is invalid.")
+
+
+@dataclass(frozen=True, slots=True)
+class ExtractedDocument:
+    status: DocumentExtractionStatus
+    segments: tuple[ExtractedSegment, ...]
+    page_count: int | None
+    character_count: int
+    extractor_version: str = "document-text-v1"
+    error_code: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentVersion:
+    id: UUID
+    attachment_id: UUID
+    version: int
+    content_sha256: str
+    file_name: str
+    mime_type: str
+    size: int
+    local_path: str
+    created_at: datetime = field(default_factory=utc_now)
+
+    def __post_init__(self) -> None:
+        if self.version < 1 or self.size < 0:
+            raise DomainValidationError("Document version metadata is invalid.")
+        if len(self.content_sha256) != 64:
+            raise DomainValidationError("Document version SHA-256 is invalid.")
+
+
+@dataclass(slots=True)
+class DocumentExtraction:
+    id: UUID
+    document_version_id: UUID
+    status: DocumentExtractionStatus
+    extractor_version: str
+    page_count: int | None = None
+    character_count: int = 0
+    error_code: str | None = None
+    started_at: datetime = field(default_factory=utc_now)
+    finished_at: datetime | None = None
+    created_at: datetime = field(default_factory=utc_now)
+
+    def complete(
+        self,
+        result: ExtractedDocument,
+        *,
+        now: datetime | None = None,
+    ) -> None:
+        if self.status != DocumentExtractionStatus.EXTRACTING:
+            raise InvalidStateTransitionError("Only an extracting document can complete.")
+        if result.status not in {
+            DocumentExtractionStatus.SUCCEEDED,
+            DocumentExtractionStatus.BODY_UNAVAILABLE,
+        }:
+            raise DomainValidationError("Document completion result is not successful.")
+        self.status = result.status
+        self.extractor_version = result.extractor_version
+        self.page_count = result.page_count
+        self.character_count = result.character_count
+        self.error_code = result.error_code
+        self.finished_at = now or utc_now()
+
+    def fail(self, error_code: str, *, now: datetime | None = None) -> None:
+        if self.status != DocumentExtractionStatus.EXTRACTING:
+            raise InvalidStateTransitionError("Only an extracting document can fail.")
+        self.status = DocumentExtractionStatus.FAILED
+        self.error_code = error_code
+        self.finished_at = now or utc_now()
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentSegment:
+    id: UUID
+    extraction_id: UUID
+    attachment_id: UUID
+    page_number: int | None
+    paragraph_number: int
+    start_offset: int
+    end_offset: int
+    content: str
+    content_hash: str
+    created_at: datetime = field(default_factory=utc_now)
+
+    @classmethod
+    def from_extracted(
+        cls,
+        *,
+        extraction_id: UUID,
+        attachment_id: UUID,
+        segment: ExtractedSegment,
+    ) -> DocumentSegment:
+        return cls(
+            id=uuid4(),
+            extraction_id=extraction_id,
+            attachment_id=attachment_id,
+            page_number=segment.page_number,
+            paragraph_number=segment.paragraph_number,
+            start_offset=segment.start_offset,
+            end_offset=segment.end_offset,
+            content=segment.content,
+            content_hash=segment.content_hash,
+        )
 
 
 @dataclass(slots=True)

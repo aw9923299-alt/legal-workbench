@@ -12,11 +12,13 @@
 
 补偿同步只查询 `FEISHU_RECONCILE_CHAT_IDS` 明确列出的群聊和可配置时间窗，数据库通过事件/消息唯一约束吸收重复。飞书接口不是全租户游标日志；未配置群聊或权限不足时状态为 `partial/local_only`，不得承诺绝不漏消息。
 
-附件只下载到 `FEISHU_ATTACHMENT_ROOT/<tenant>/<message UUID>`，校验最大字节数、计算 SHA-256 并登记路径。`authorized_for_analysis=false` 为默认值，本轮不做 OCR、正文解析或向量化。
+附件只下载到 `FEISHU_ATTACHMENT_ROOT/<tenant>/<message UUID>`，校验单文件上限和 PostgreSQL 协调的总磁盘配额，使用清理后的文件名、私有权限和 SHA-256 登记。正文提取在限时、限输出、无数据库/Redis/飞书/Codex凭证的子进程中完成；当前只支持文本型 PDF、DOCX、UTF-8 TXT 和 Markdown。图片、扫描 PDF、宏文档和其他格式只保存元数据并显示“正文暂不可解析”，不做 OCR、不执行宏或 PDF 脚本。
+
+`authorized_for_analysis=false` 仍是默认值。只有人工授权且解析成功的片段能进入后续 ContextSnapshot；片段受数量、单段字符和总字符三重上限约束。API 和前端不返回附件本地路径，Codex 只接收被选中的不可信 JSON 片段，不能读取附件目录。
 
 ## Codex Runtime
 
-Codex是唯一推理和生成AI。所有业务调用统一经过`CodexCliRuntime`，由 Celery Worker 调用，负责AgentDefinition、提示词版本、单次工作目录、授权来源、工具权限、超时、重试、Schema和审计。当前仅`message_judgement@2.0.0`已实现。启动前检查固定 CLI 版本、隔离 API Key 和运行目录；正文始终作为不可信业务证据，失败输出最多使用同一 ContextSnapshot 修复一次。
+Codex是唯一推理和生成AI。所有业务调用统一经过`CodexCliRuntime`，由 Celery Worker 调用，负责AgentDefinition、提示词版本、单次工作目录、授权来源、工具权限、超时、重试、Schema和审计。当前仅`message_judgement@2.1.0`已实现。启动前检查固定 CLI 版本、隔离 API Key 和运行目录；正文始终作为不可信业务证据，失败输出最多使用同一 ContextSnapshot 修复一次。每条确认事实只能引用授权消息或一个精确附件片段，附件引用包含附件 ID、文件名、页码、段落号和正文哈希。
 
 AgentRun、状态事件、Candidate 修订、租约和失败码全部存 PostgreSQL。Celery Beat 定期扫描丢失队列投递与过期租约并重建 Outbox；Redis 不保存唯一业务事实。
 

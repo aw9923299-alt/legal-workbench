@@ -104,7 +104,7 @@ legal-workbench/
 
 已通过模拟验证：断线重试与优雅退出、标准化、版本表/附件表、配置 fail-closed、迁移升降级和 PostgreSQL 主链路。
 
-尚未验证/实现：当前环境没有飞书测试应用凭证，未进行真实长连接/远端补偿；加密 Webhook 尚未实现；附件正文解析不在本轮范围。
+后续增量：迁移 `20260803_0008` 已增加附件文档版本、隔离正文提取、片段、总磁盘配额和人工正文授权；真实飞书测试消息、官方长连接/远端补偿仍按用户要求后置，加密 Webhook 尚未实现。
 
 ## 阶段5：Codex Runtime与消息研判 Agent（本轮已完成）
 
@@ -112,7 +112,7 @@ legal-workbench/
 
 - AgentDefinition/AgentRun/AgentRunSource/DraftArtifact 模型与版本；
 - 独立运行目录、无工具白名单、受控来源与 Schema/业务校验；
-- ContextSnapshot v2 确定性选取、版本/排序复用键、多维限界与 `message_judgement@2.0.0`；
+- ContextSnapshot v2 确定性选取、版本/排序复用键、多维限界、附件片段引用与 `message_judgement@2.1.0`；
 - Codex CLI 版本/隔离认证健康检查、Prompt 注入边界和一次 Schema 修复重试；
 - AgentRun 心跳、租约、只追加状态历史、超时、尝试、错误分类、指数退避和死信；
 - Candidate revision 历史及 Redis/Worker 丢失后的 PostgreSQL 定时恢复；

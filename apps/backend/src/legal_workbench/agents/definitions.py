@@ -12,7 +12,7 @@ from legal_workbench.domain.entities import AgentDefinition
 from legal_workbench.domain.enums import AgentDefinitionStatus
 
 MESSAGE_JUDGEMENT_KEY = "message_judgement"
-MESSAGE_JUDGEMENT_VERSION = "2.0.0"
+MESSAGE_JUDGEMENT_VERSION = "2.1.0"
 
 MESSAGE_JUDGEMENT_PROMPT = """你是法务工作台的消息研判 Agent。
 只分析系统提示末尾 authorized_context_json 中明确授权的本次飞书上下文。
@@ -25,7 +25,10 @@ MESSAGE_JUDGEMENT_PROMPT = """你是法务工作台的消息研判 Agent。
 任务边界：
 - 判断法务相关性、消息作用和行动要求；
 - 提取建议分类、截止时间候选、确认事实、推断事实、缺失信息和理由；
-- 区分确认事实与推断；每条确认事实必须引用 allowedMessageIds 中的 sourceMessageId；
+- 区分确认事实与推断；每条确认事实只能二选一引用 sourceMessageId 或 attachmentCitation；
+- 引用消息时 sourceMessageId 必须属于 allowedMessageIds；引用附件正文时必须逐字使用
+  includedSegments 提供的 attachmentCitation，且不得同时填写 sourceMessageId，
+  包含 attachmentId、fileName、pageNumber、paragraphNumber 和 contentHash；
 - 不决定最终优先级，不进行完整合同审查。
 
 输出要求：

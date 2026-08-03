@@ -2,7 +2,7 @@
 
 运行在本地 Mac 上的法务智能工作系统。系统从经过授权的飞书消息中发现工作，由受控的 Codex Agent 完成消息研判、事项归并、任务规划、专业分析、回复草拟、日报和复盘；所有发送给其他人员的内容必须经过法务审核。
 
-> 当前已实现 `FeishuEvent → FeishuMessage → Outbox → ContextSnapshot → AgentRun → MessageCandidate → 人工创建/关联 Matter` 受控闭环，以及官方 SDK 长连接/Webhook 双入口、断线重连、消息版本与附件元数据、时间窗补偿、运行中心、系统状态和 SSE/轮询恢复。真实飞书与真实 Codex 均需显式开启并提供可用凭证；知识解析和专业 Agent 尚未实现。
+> 当前已实现 `FeishuEvent → FeishuMessage → 附件正文提取 → ContextSnapshot → AgentRun → MessageCandidate → 人工创建/关联 Matter` 受控闭环，以及官方 SDK 长连接/Webhook 双入口、断线重连、消息版本、时间窗补偿、运行中心、系统状态和 SSE/轮询恢复。PDF/DOCX/TXT/Markdown 可受控解析，图片和扫描 PDF 明确显示正文不可用。真实飞书与真实 Codex 均需显式开启并提供可用凭证；通用知识库解析和专业 Agent 尚未实现。
 
 ## 核心闭环
 
@@ -154,6 +154,7 @@ npm run build
 - Codex CLI 统一 Runtime：独立运行目录、授权 JSON stdin、禁用 Shell/代码模式/网络搜索、输入输出审计、超时终止、心跳、输出大小限制和错误分类；
 - Codex 启动前检查二进制、固定版本、隔离认证和运行目录；输出失败只允许使用同一快照做一次 Schema 修复重试；
 - ContextSnapshot 记录 Builder/选择策略/消息与附件版本以及多维截断指标；AgentRun 状态事件和 Candidate 分析修订只追加保存；
+- 附件以 `message_attachments → document_versions → document_extractions → document_segments` 保存；解析在无应用凭证的隔离子进程中执行，正文授权、片段限界和附件事实引用均可审计；
 - Celery Beat 以 PostgreSQL advisory lock 扫描丢失的 queued 投递和过期 Worker 租约，重建 Outbox 或进入 `dead_letter`，Redis 清空不丢业务事实；
 - 合法结果自动建立待人工确认 Candidate；无关消息不建 Candidate，任何置信度均不自动建立 Matter；
 - Candidate确认创建Matter和初始WorkItem的事务闭环；
@@ -180,8 +181,8 @@ npm run build
 
 ## 当前开发顺序
 
-1. 在测试飞书应用上验证长连接、撤回和按群聊时间窗补偿，并评审加密 Webhook；
-2. 在容器内使用真实凭证执行 Codex 安全冒烟与故障注入测试；
-3. 完成生产会话签发、权限策略、代理级出网限制和备份恢复演练；
-4. 对消息查询和 SSE 做分页、事件游标与压力测试，并对前端大包做路由级分包；
-5. 上述核心闭环通过真实集成验收后，再单独规划知识检索和专业 Agent，不在本轮范围内扩展。
+1. 完成 MatterUpdateProposal 的人工审批与乐观锁；
+2. 补齐 WorkItem 生命周期和真实数据今日工作台；
+3. 完成 `/setup`、Mac 常驻、自检、备份、诊断和恢复闭环；
+4. 在 Worker 认证可用时执行真实 Codex 安全冒烟；
+5. 真实飞书测试消息和官方长连接验收按用户要求后置，恢复时单独执行且人工确认个人未读状态。

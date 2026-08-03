@@ -2,15 +2,26 @@ from datetime import datetime
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request, Response, status
 
-from legal_workbench.api.dependencies import get_uow_factory
+from legal_workbench.api.auth import RequestActor
+from legal_workbench.api.dependencies import (
+    get_correlation_id,
+    get_idempotency_key,
+    get_request_actor,
+    get_uow_factory,
+)
 from legal_workbench.api.schemas.feishu import (
     CandidateRevisionResponse,
     FeishuAttachmentResponse,
     FeishuMessageDetailResponse,
     FeishuMessageSummaryResponse,
     FeishuMessageVersionResponse,
+    SetAttachmentAuthorizationRequest,
+    SetAttachmentAuthorizationResponse,
+)
+from legal_workbench.application.attachment_authorization import (
+    AttachmentAuthorizationService,
 )
 from legal_workbench.application.queries import (
     FeishuInboxQueryService,
@@ -106,9 +117,7 @@ async def list_feishu_messages(
             if value.candidate
             and _proposal_value(value.candidate.category_proposals, "category") == category
         ]
-    return [
-        _summary(value.message, run=value.run, candidate=value.candidate) for value in values
-    ]
+    return [_summary(value.message, run=value.run, candidate=value.candidate) for value in values]
 
 
 @router.get("/{message_id}", response_model=FeishuMessageDetailResponse)
@@ -116,23 +125,50 @@ async def get_feishu_message(
     message_id: UUID,
     uow_factory: Annotated[SqlAlchemyUnitOfWorkFactory, Depends(get_uow_factory)],
 ) -> FeishuMessageDetailResponse:
-    details: FeishuMessageDetails = await FeishuInboxQueryService(uow_factory).get(
-        message_id
-    )
+    details: FeishuMessageDetails = await FeishuInboxQueryService(uow_factory).get(message_id)
     summary = _summary(details.message, run=details.run, candidate=details.candidate)
     return FeishuMessageDetailResponse(
         **summary.model_dump(),
         structured_content=details.message.structured_content,
         raw_payload=details.message.raw_message,
         context_messages=[_summary(value) for value in details.context_messages],
-        versions=[
-            FeishuMessageVersionResponse.model_validate(value) for value in details.versions
-        ],
+        versions=[FeishuMessageVersionResponse.model_validate(value) for value in details.versions],
         attachments=[
             FeishuAttachmentResponse.model_validate(value) for value in details.attachments
         ],
         candidate_revisions=[
-            CandidateRevisionResponse.model_validate(value)
-            for value in details.candidate_revisions
+            CandidateRevisionResponse.model_validate(value) for value in details.candidate_revisions
         ],
+    )
+
+
+@router.post(
+    "/{message_id}/attachments/{attachment_id}/analysis-authorization",
+    response_model=SetAttachmentAuthorizationResponse,
+)
+async def set_attachment_analysis_authorization(
+    message_id: UUID,
+    attachment_id: UUID,
+    payload: SetAttachmentAuthorizationRequest,
+    request: Request,
+    response: Response,
+    actor: Annotated[RequestActor, Depends(get_request_actor)],
+    idempotency_key: Annotated[str, Depends(get_idempotency_key)],
+    uow_factory: Annotated[SqlAlchemyUnitOfWorkFactory, Depends(get_uow_factory)],
+) -> SetAttachmentAuthorizationResponse:
+    result = await AttachmentAuthorizationService(uow_factory).execute(
+        message_id=message_id,
+        attachment_id=attachment_id,
+        authorized=payload.authorized,
+        actor_id=actor.actor_id,
+        actor_source=actor.identity_source,
+        correlation_id=get_correlation_id(request),
+        idempotency_key=idempotency_key,
+    )
+    if result.idempotent_replay:
+        response.status_code = status.HTTP_200_OK
+    attachment = FeishuAttachmentResponse.model_validate(result.attachment)
+    return SetAttachmentAuthorizationResponse(
+        **attachment.model_dump(),
+        idempotent_replay=result.idempotent_replay,
     )

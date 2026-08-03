@@ -6,7 +6,7 @@
 
 ### 1.1 实现状态（2026-08-01）
 
-- **已实现**：飞书官方 SDK 长连接/Verification Token Webhook 双入口、原始事件/消息幂等落库、连接状态、消息版本、附件元数据与受控下载、时间窗补偿、Outbox 可靠投递、限界且版本化的消息上下文快照、`message_judgement@2.0.0`、Codex 启动健康检查、一次受控输出修复、AgentRun 状态历史/租约、Candidate 修订历史、PostgreSQL 恢复扫描，以及真实数据驱动的收件箱/消息详情/运行中心/系统状态页。
+- **已实现**：飞书官方 SDK 长连接/Verification Token Webhook 双入口、原始事件/消息幂等落库、连接状态、消息版本、附件受控下载与 PDF/DOCX/TXT/Markdown 正文提取、时间窗补偿、Outbox 可靠投递、限界且版本化的消息/附件上下文快照、`message_judgement@2.1.0`、Codex 启动健康检查、一次受控输出修复、AgentRun 状态历史/租约、Candidate 修订历史、PostgreSQL 恢复扫描，以及真实数据驱动的收件箱/消息详情/运行中心/系统状态页。
 - **部分实现**：真实飞书凭证未在当前环境联调，Webhook 加密载荷仍拒绝；容器 Runtime 已尽量缩小 OS/环境边界，宿主机模式仍依赖 Codex 只读 sandbox。
 - **占位实现**：`DraftArtifact` 已有通用模型，消息研判主产物仍是 `MessageCandidate`。
 - **尚未实现**：飞书加密 Webhook；知识解析/检索；事项归并、任务规划和专业 Agent；自动外发。
@@ -121,7 +121,8 @@ FeishuMessage
 → 保存原始载荷哈希和受控正文
 → 同一事务写入 FeishuMessageReceived Outbox
 → Dispatcher 显式 Handler 投递 Celery
-→ 确定性选取当前/父/线程消息和附件元数据
+→ 附件受控下载、隔离解析和人工正文授权
+→ 确定性选取当前/父/线程消息与限界附件片段
 → 保存不可变 ContextSnapshot
 → 创建 AgentRun 并提交准备事务
 → 事务外执行 Codex Runtime

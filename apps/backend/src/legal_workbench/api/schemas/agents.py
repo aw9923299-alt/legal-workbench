@@ -70,6 +70,8 @@ class ContextSnapshotSummaryResponse(ApiModel):
     snapshot_version: int
     message_ids: list[str]
     attachment_ids: list[str]
+    included_segments: list[dict[str, object]]
+    excluded_segments: list[dict[str, object]]
     participant_ids: list[str]
     content_hash: str
     truncated: bool

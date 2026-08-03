@@ -4,7 +4,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from legal_workbench.domain.errors import DomainValidationError
 
@@ -33,6 +33,8 @@ class ContextSnapshotInput(StrictMessageModel):
     message_ids: list[str]
     participant_ids: list[str]
     attachment_ids: list[str]
+    included_segments: list[dict[str, object]]
+    excluded_segments: list[dict[str, object]]
     thread_metadata: dict[str, object]
     content: dict[str, object]
     builder_version: str
@@ -51,6 +53,7 @@ class AgentConstraintsInput(StrictMessageModel):
     repository_access: Literal[False]
     shell_write_access: Literal[False]
     allowed_message_ids: list[str]
+    allowed_attachment_ids: list[str]
 
 
 class MessageJudgementInput(StrictMessageModel):
@@ -115,9 +118,26 @@ class DeadlineCandidate(StrictMessageModel):
     confidence: float = Field(ge=0, le=1)
 
 
+class AttachmentFactCitation(StrictMessageModel):
+    attachment_id: str = Field(min_length=1)
+    file_name: str = Field(min_length=1)
+    page_number: int | None = Field(default=None, ge=1)
+    paragraph_number: int = Field(ge=1)
+    content_hash: str = Field(min_length=64, max_length=64)
+
+
 class ConfirmedFact(StrictMessageModel):
     statement: str = Field(min_length=1)
-    source_message_id: str = Field(min_length=1)
+    source_message_id: str | None = Field(default=None, min_length=1)
+    attachment_citation: AttachmentFactCitation | None = None
+
+    @model_validator(mode="after")
+    def require_exactly_one_evidence_source(self) -> ConfirmedFact:
+        if (self.source_message_id is None) == (self.attachment_citation is None):
+            raise ValueError(
+                "A confirmed fact must reference exactly one evidence source."
+            )
+        return self
 
 
 class InferredFact(StrictMessageModel):
@@ -141,19 +161,43 @@ class MessageJudgementResult(StrictMessageModel):
 
 
 def validate_confirmed_fact_sources(
-    result: MessageJudgementResult, authorized_message_ids: set[str]
+    result: MessageJudgementResult,
+    authorized_message_ids: set[str],
+    authorized_attachment_citations: set[tuple[str, str, int | None, int, str]] | None = None,
 ) -> None:
     unauthorized = sorted(
         {
             fact.source_message_id
             for fact in result.confirmed_facts
-            if fact.source_message_id not in authorized_message_ids
+            if fact.source_message_id is not None
+            and fact.source_message_id not in authorized_message_ids
         }
     )
     if unauthorized:
         raise DomainValidationError(
             "Confirmed facts reference an unauthorized source message.",
             details={"sourceMessageIds": unauthorized},
+        )
+    allowed_citations = authorized_attachment_citations or set()
+    unauthorized_attachments = sorted(
+        {
+            citation.attachment_id
+            for fact in result.confirmed_facts
+            if (citation := fact.attachment_citation) is not None
+            and (
+                citation.attachment_id,
+                citation.file_name,
+                citation.page_number,
+                citation.paragraph_number,
+                citation.content_hash,
+            )
+            not in allowed_citations
+        }
+    )
+    if unauthorized_attachments:
+        raise DomainValidationError(
+            "Confirmed facts reference an unauthorized attachment segment.",
+            details={"attachmentIds": unauthorized_attachments},
         )
 
 

@@ -71,7 +71,17 @@ export interface MessageJudgementResult {
   suggestedTitle: string;
   categoryCandidates: CategoryCandidate[];
   deadlineCandidates: DeadlineCandidate[];
-  confirmedFacts: Array<{ statement: string; sourceMessageId: string }>;
+  confirmedFacts: Array<{
+    statement: string;
+    sourceMessageId: string | null;
+    attachmentCitation?: {
+      attachmentId: string;
+      fileName: string;
+      pageNumber: number | null;
+      paragraphNumber: number;
+      contentHash: string;
+    } | null;
+  }>;
   inferredFacts: Array<{ statement: string; basis: string; confidence: number }>;
   missingInformation: string[];
   reasons: string[];
@@ -204,10 +214,14 @@ export interface FeishuMessageDetail extends FeishuMessageSummary {
     mimeType: string | null;
     size: number | null;
     sha256: string | null;
-    localPath: string | null;
     downloadStatus: string;
     downloadError: string | null;
     authorizedForAnalysis: boolean;
+    extractionStatus: 'not_requested' | 'pending' | 'extracting' | 'succeeded' | 'body_unavailable' | 'failed';
+    extractorVersion: string | null;
+    pageCount: number | null;
+    characterCount: number | null;
+    extractionErrorCode: string | null;
   }>;
   candidateRevisions: CandidateRevision[];
 }
@@ -227,6 +241,8 @@ export interface MessageAnalysis {
     snapshotVersion: number;
     messageIds: string[];
     attachmentIds: string[];
+    includedSegments: Array<Record<string, unknown>>;
+    excludedSegments: Array<Record<string, unknown>>;
     participantIds: string[];
     contentHash: string;
     truncated: boolean;

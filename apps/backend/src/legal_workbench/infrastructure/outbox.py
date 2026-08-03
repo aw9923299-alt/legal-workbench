@@ -65,10 +65,16 @@ async def _handle_feishu_message(_: OutboxDispatcher, event: ClaimedOutboxEvent)
         args=[str(event.aggregate_id), actor_id, actor_source, event.correlation_id],
         kwargs={
             "force_new_run": bool(event.payload.get("forceNewRun", False)),
-            "recover_interrupted_run": bool(
-                event.payload.get("recoverInterruptedRun", False)
-            ),
+            "recover_interrupted_run": bool(event.payload.get("recoverInterruptedRun", False)),
         },
+        headers={"correlation_id": event.correlation_id},
+    )
+
+
+async def _handle_document_extraction(_: OutboxDispatcher, event: ClaimedOutboxEvent) -> None:
+    celery_app.send_task(
+        "document.extract",
+        args=[str(event.aggregate_id), event.correlation_id],
         headers={"correlation_id": event.correlation_id},
     )
 
@@ -125,9 +131,7 @@ class OutboxDispatcher:
         operation = f"requeue_outbox_dead_letter:{dead_letter_id}"
         request_hash = hashlib.sha256(str(dead_letter_id).encode()).hexdigest()
         async with self._session_factory() as session, session.begin():
-            record = await session.get(
-                OutboxDeadLetterModel, dead_letter_id, with_for_update=True
-            )
+            record = await session.get(OutboxDeadLetterModel, dead_letter_id, with_for_update=True)
             if record is None:
                 raise LookupError("Outbox dead letter was not found.")
             existing = await session.scalar(
@@ -381,6 +385,8 @@ OUTBOX_HANDLERS: dict[str, OutboxHandler] = {
     "CommunicationSendRequested": _handle_communication_send,
     "FeishuMessageReceived": _handle_feishu_message,
     "FeishuMessageAnalysisRequested": _handle_feishu_message,
+    "FeishuMessageAttachmentsPending": _handle_internal_notification,
+    "DocumentExtractionRequested": _handle_document_extraction,
     "LegalMatterCreated": _handle_internal_notification,
     "MessageCandidateCreated": _handle_internal_notification,
     "MessageCandidateResolved": _handle_internal_notification,

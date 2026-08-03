@@ -6,6 +6,7 @@ from typing import Any
 from uuid import UUID
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     CheckConstraint,
     DateTime,
@@ -45,6 +46,7 @@ from legal_workbench.domain.enums import (
     DeadlineType,
     DependencyStatus,
     DependencyType,
+    DocumentExtractionStatus,
     DraftArtifactStatus,
     FeishuEventStatus,
     FeishuMessageStatus,
@@ -116,6 +118,12 @@ class ContextSnapshotModel(UuidPrimaryKeyMixin, TimestampMixin, Base):
         JSONB, nullable=False, default=list, server_default=JSON_EMPTY_LIST
     )
     attachment_ids: Mapped[list[str]] = mapped_column(
+        JSONB, nullable=False, default=list, server_default=JSON_EMPTY_LIST
+    )
+    included_segments: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB, nullable=False, default=list, server_default=JSON_EMPTY_LIST
+    )
+    excluded_segments: Mapped[list[dict[str, Any]]] = mapped_column(
         JSONB, nullable=False, default=list, server_default=JSON_EMPTY_LIST
     )
     relevant_matter_ids: Mapped[list[str]] = mapped_column(
@@ -802,13 +810,14 @@ class FeishuMessageVersionModel(UuidPrimaryKeyMixin, Base):
     )
 
 
-class FeishuAttachmentModel(UuidPrimaryKeyMixin, TimestampMixin, Base):
-    __tablename__ = "feishu_attachments"
+class MessageAttachmentModel(UuidPrimaryKeyMixin, TimestampMixin, Base):
+    __tablename__ = "message_attachments"
     __table_args__ = (
         UniqueConstraint(
-            "message_version_id", "file_key", name="uq_feishu_attachments_version_file"
+            "message_version_id", "file_key", name="uq_message_attachments_version_file"
         ),
-        Index("ix_feishu_attachments_status_created", "download_status", "created_at"),
+        Index("ix_message_attachments_status_created", "download_status", "created_at"),
+        Index("ix_message_attachments_extraction_status", "extraction_status", "created_at"),
     )
 
     feishu_message_id: Mapped[UUID] = mapped_column(
@@ -831,6 +840,145 @@ class FeishuAttachmentModel(UuidPrimaryKeyMixin, TimestampMixin, Base):
     authorized_for_analysis: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default=FALSE_DEFAULT
     )
+    extraction_status: Mapped[DocumentExtractionStatus] = mapped_column(
+        enum_type(
+            DocumentExtractionStatus,
+            name="message_attachment_extraction_status",
+            length=24,
+        ),
+        nullable=False,
+        default=DocumentExtractionStatus.NOT_REQUESTED,
+        server_default=DocumentExtractionStatus.NOT_REQUESTED.value,
+    )
+    extractor_version: Mapped[str | None] = mapped_column(String(80))
+    page_count: Mapped[int | None] = mapped_column(Integer)
+    character_count: Mapped[int | None] = mapped_column(Integer)
+    extraction_error_code: Mapped[str | None] = mapped_column(String(100))
+
+
+FeishuAttachmentModel = MessageAttachmentModel
+
+
+class DocumentVersionModel(UuidPrimaryKeyMixin, Base):
+    __tablename__ = "document_versions"
+    __table_args__ = (
+        UniqueConstraint(
+            "attachment_id",
+            "version",
+            name="uq_document_versions_attachment_version",
+        ),
+        UniqueConstraint(
+            "attachment_id",
+            "content_sha256",
+            name="uq_document_versions_attachment_sha256",
+        ),
+        Index("ix_document_versions_attachment_created", "attachment_id", "created_at"),
+    )
+
+    attachment_id: Mapped[UUID] = mapped_column(
+        ForeignKey("message_attachments.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    content_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    file_name: Mapped[str] = mapped_column(String(500), nullable=False)
+    mime_type: Mapped[str] = mapped_column(String(160), nullable=False)
+    size: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    local_path: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class DocumentExtractionModel(UuidPrimaryKeyMixin, Base):
+    __tablename__ = "document_extractions"
+    __table_args__ = (
+        Index(
+            "ix_document_extractions_version_created",
+            "document_version_id",
+            "created_at",
+        ),
+        Index("ix_document_extractions_status_started", "status", "started_at"),
+    )
+
+    document_version_id: Mapped[UUID] = mapped_column(
+        ForeignKey("document_versions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    status: Mapped[DocumentExtractionStatus] = mapped_column(
+        enum_type(
+            DocumentExtractionStatus,
+            name="document_extraction_status",
+            length=24,
+        ),
+        nullable=False,
+    )
+    extractor_version: Mapped[str] = mapped_column(String(80), nullable=False)
+    page_count: Mapped[int | None] = mapped_column(Integer)
+    character_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    error_code: Mapped[str | None] = mapped_column(String(100))
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class DocumentSegmentModel(UuidPrimaryKeyMixin, Base):
+    __tablename__ = "document_segments"
+    __table_args__ = (
+        UniqueConstraint(
+            "extraction_id",
+            "paragraph_number",
+            name="uq_document_segments_extraction_paragraph",
+        ),
+        Index(
+            "ix_document_segments_attachment_order",
+            "attachment_id",
+            "page_number",
+            "paragraph_number",
+        ),
+    )
+
+    extraction_id: Mapped[UUID] = mapped_column(
+        ForeignKey("document_extractions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    attachment_id: Mapped[UUID] = mapped_column(
+        ForeignKey("message_attachments.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    page_number: Mapped[int | None] = mapped_column(Integer)
+    paragraph_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    start_offset: Mapped[int] = mapped_column(Integer, nullable=False)
+    end_offset: Mapped[int] = mapped_column(Integer, nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class StorageQuotaReservationModel(UuidPrimaryKeyMixin, TimestampMixin, Base):
+    __tablename__ = "storage_quota_reservations"
+    __table_args__ = (
+        UniqueConstraint("reservation_token", name="uq_storage_quota_reservations_token"),
+        Index("ix_storage_quota_reservations_status_expiry", "status", "expires_at"),
+    )
+
+    attachment_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("message_attachments.id", ondelete="SET NULL"), nullable=True
+    )
+    reservation_token: Mapped[UUID] = mapped_column(nullable=False)
+    requested_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
 class AgentDefinitionModel(UuidPrimaryKeyMixin, TimestampMixin, Base):
@@ -930,18 +1078,14 @@ class AgentRunModel(UuidPrimaryKeyMixin, TimestampMixin, VersionedMixin, Base):
     )
     token_usage: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     worker_id: Mapped[str | None] = mapped_column(String(160), index=True)
-    lease_expires_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), index=True
-    )
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
 
 
 class AgentRunAttemptModel(UuidPrimaryKeyMixin, Base):
     __tablename__ = "agent_run_attempts"
     __table_args__ = (
         CheckConstraint("attempt_number > 0", name="attempt_number"),
-        UniqueConstraint(
-            "agent_run_id", "attempt_number", name="uq_agent_run_attempts_number"
-        ),
+        UniqueConstraint("agent_run_id", "attempt_number", name="uq_agent_run_attempts_number"),
         UniqueConstraint("lease_token", name="uq_agent_run_attempts_lease_token"),
         Index(
             "ix_agent_run_attempts_status_expiry",
@@ -960,13 +1104,9 @@ class AgentRunAttemptModel(UuidPrimaryKeyMixin, Base):
         enum_type(AgentAttemptStatus, name="agent_attempt_status", length=20),
         nullable=False,
     )
-    lease_expires_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False
-    )
+    lease_expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    heartbeat_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False
-    )
+    heartbeat_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     failure_code: Mapped[str | None] = mapped_column(String(80))
     failure_message: Mapped[str | None] = mapped_column(Text)
@@ -997,9 +1137,7 @@ class AgentRunStatusEventModel(UuidPrimaryKeyMixin, Base):
 class CandidateRevisionModel(UuidPrimaryKeyMixin, Base):
     __tablename__ = "candidate_revisions"
     __table_args__ = (
-        UniqueConstraint(
-            "candidate_id", "revision", name="uq_candidate_revisions_revision"
-        ),
+        UniqueConstraint("candidate_id", "revision", name="uq_candidate_revisions_revision"),
         Index("ix_candidate_revisions_candidate_created", "candidate_id", "created_at"),
     )
 

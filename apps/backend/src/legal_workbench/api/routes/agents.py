@@ -99,8 +99,7 @@ def _run_response(details: AgentRunDetails) -> AgentRunResponse:
         version=run.version,
         sources=[AgentRunSourceResponse.model_validate(source) for source in details.sources],
         status_events=[
-            AgentRunStatusEventResponse.model_validate(value)
-            for value in details.status_events
+            AgentRunStatusEventResponse.model_validate(value) for value in details.status_events
         ],
         candidate_id=details.candidate.id if details.candidate else None,
     )
@@ -139,6 +138,8 @@ def _analysis_response(details: FeishuMessageAnalysisDetails) -> MessageAnalysis
                 snapshot_version=snapshot.snapshot_version,
                 message_ids=snapshot.message_ids,
                 attachment_ids=snapshot.attachment_ids,
+                included_segments=snapshot.included_segments,
+                excluded_segments=snapshot.excluded_segments,
                 participant_ids=snapshot.participant_ids,
                 content_hash=snapshot.content_hash,
                 truncated=bool(snapshot.content.get("truncated", False)),
@@ -212,9 +213,7 @@ async def retry_agent_run(
     )
 
 
-@router.post(
-    "/agent-runs/{run_id}/cancel", response_model=AgentRunOperationResponse
-)
+@router.post("/agent-runs/{run_id}/cancel", response_model=AgentRunOperationResponse)
 async def cancel_agent_run(
     run_id: UUID,
     request: Request,
