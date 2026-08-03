@@ -30,6 +30,7 @@ from legal_workbench.infrastructure.repositories import (
     SqlAlchemyPriorityConfirmationRepository,
     SqlAlchemyReviewPackageRepository,
     SqlAlchemyReviewRecordRepository,
+    SqlAlchemySetupRepository,
     SqlAlchemyWorkItemRepository,
 )
 
@@ -63,6 +64,7 @@ class SqlAlchemyUnitOfWork(UnitOfWork):
         self.documents = SqlAlchemyDocumentRepository(self._session)
         self.storage_quota = SqlAlchemyAttachmentStorageQuotaRepository(self._session)
         self.evaluations = SqlAlchemyEvaluationRepository(self._session)
+        self.setup = SqlAlchemySetupRepository(self._session)
         self.audit_events = SqlAlchemyAuditEventRepository(self._session)
         self.outbox_events = SqlAlchemyOutboxEventRepository(self._session)
         self.idempotency = SqlAlchemyIdempotencyRepository(self._session)

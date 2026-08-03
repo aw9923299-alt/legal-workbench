@@ -35,7 +35,10 @@ from legal_workbench.domain.entities import (
     FeishuMessageVersion,
     FeishuRawEvent,
     IdempotencyRecord,
+    IntegrationCheckRun,
     IntegrationConnection,
+    IntegrationCredential,
+    IntegrationScope,
     LegalMatter,
     MatterUpdateProposal,
     MessageCandidate,
@@ -43,6 +46,7 @@ from legal_workbench.domain.entities import (
     PriorityConfirmation,
     ReviewPackage,
     ReviewRecord,
+    SystemSetting,
     WorkItem,
     WorkItemDependency,
 )
@@ -87,7 +91,10 @@ from legal_workbench.infrastructure.models import (
     FeishuMessageModel,
     FeishuMessageVersionModel,
     IdempotencyRecordModel,
+    IntegrationCheckRunModel,
     IntegrationConnectionModel,
+    IntegrationCredentialModel,
+    IntegrationScopeModel,
     LegalMatterModel,
     MatterUpdateProposalModel,
     MessageCandidateModel,
@@ -96,6 +103,7 @@ from legal_workbench.infrastructure.models import (
     ReviewPackageModel,
     ReviewRecordModel,
     StorageQuotaReservationModel,
+    SystemSettingModel,
     WorkItemDependencyModel,
     WorkItemModel,
 )
@@ -2499,9 +2507,7 @@ class SqlAlchemyEvaluationRepository:
 
     async def get_run_for_update(self, run_id: UUID) -> EvaluationRun | None:
         statement = (
-            select(EvaluationRunModel)
-            .where(EvaluationRunModel.id == run_id)
-            .with_for_update()
+            select(EvaluationRunModel).where(EvaluationRunModel.id == run_id).with_for_update()
         )
         model = (await self._session.execute(statement)).scalar_one_or_none()
         if model is None:
@@ -2602,6 +2608,235 @@ class SqlAlchemyEvaluationRepository:
             failure_code=model.failure_code,
             runtime_version=model.runtime_version,
             runtime_execution_id=model.runtime_execution_id,
+            created_at=model.created_at,
+        )
+
+
+class SqlAlchemySetupRepository:
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+        self._tracked_checks: dict[UUID, IntegrationCheckRunModel] = {}
+
+    async def get_setting(self, key: str) -> SystemSetting | None:
+        model = await self._session.scalar(
+            select(SystemSettingModel).where(SystemSettingModel.key == key)
+        )
+        return None if model is None else self._setting_to_domain(model)
+
+    async def save_setting(self, value: SystemSetting) -> None:
+        model = await self._session.scalar(
+            select(SystemSettingModel).where(SystemSettingModel.key == value.key)
+        )
+        if model is None:
+            self._session.add(
+                SystemSettingModel(
+                    id=value.id,
+                    key=value.key,
+                    value=value.value,
+                    value_type=value.value_type,
+                    updated_by=value.updated_by,
+                    version=value.version,
+                    created_at=value.created_at,
+                    updated_at=value.updated_at,
+                )
+            )
+            return
+        model.value = value.value
+        model.value_type = value.value_type
+        model.updated_by = value.updated_by
+        model.updated_at = value.updated_at
+        model.version = value.version
+
+    async def get_credential(
+        self, *, provider: str, credential_kind: str
+    ) -> IntegrationCredential | None:
+        model = await self._session.scalar(
+            select(IntegrationCredentialModel).where(
+                IntegrationCredentialModel.provider == provider,
+                IntegrationCredentialModel.credential_kind == credential_kind,
+            )
+        )
+        return None if model is None else self._credential_to_domain(model)
+
+    async def save_credential(self, value: IntegrationCredential) -> None:
+        model = await self._session.scalar(
+            select(IntegrationCredentialModel).where(
+                IntegrationCredentialModel.provider == value.provider,
+                IntegrationCredentialModel.credential_kind == value.credential_kind,
+            )
+        )
+        if model is None:
+            self._session.add(
+                IntegrationCredentialModel(
+                    id=value.id,
+                    provider=value.provider,
+                    credential_kind=value.credential_kind,
+                    secret_ref=value.secret_ref,
+                    configured=value.configured,
+                    masked_hint=value.masked_hint,
+                    last_validated_at=value.last_validated_at,
+                    last_validation_status=value.last_validation_status,
+                    last_error_code=value.last_error_code,
+                    version=value.version,
+                    created_at=value.created_at,
+                    updated_at=value.updated_at,
+                )
+            )
+            return
+        model.secret_ref = value.secret_ref
+        model.configured = value.configured
+        model.masked_hint = value.masked_hint
+        model.last_validated_at = value.last_validated_at
+        model.last_validation_status = value.last_validation_status
+        model.last_error_code = value.last_error_code
+        model.updated_at = value.updated_at
+        model.version = value.version
+
+    async def list_scopes(self, *, provider: str) -> Sequence[IntegrationScope]:
+        models = (
+            (
+                await self._session.execute(
+                    select(IntegrationScopeModel)
+                    .where(IntegrationScopeModel.provider == provider)
+                    .order_by(IntegrationScopeModel.display_name, IntegrationScopeModel.id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        return [self._scope_to_domain(model) for model in models]
+
+    async def add_check(self, value: IntegrationCheckRun) -> None:
+        model = IntegrationCheckRunModel(
+            id=value.id,
+            provider=value.provider,
+            check_kind=value.check_kind,
+            status=value.status,
+            requested_by=value.requested_by,
+            correlation_id=value.correlation_id,
+            state=value.state,
+            error_code=value.error_code,
+            detail=value.detail,
+            runtime_version=value.runtime_version,
+            started_at=value.started_at,
+            finished_at=value.finished_at,
+            created_at=value.created_at,
+        )
+        self._tracked_checks[value.id] = model
+        self._session.add(model)
+
+    async def get_check(self, check_run_id: UUID) -> IntegrationCheckRun | None:
+        model = await self._session.get(IntegrationCheckRunModel, check_run_id)
+        if model is None:
+            return None
+        self._tracked_checks[check_run_id] = model
+        return self._check_to_domain(model)
+
+    async def get_check_for_update(self, check_run_id: UUID) -> IntegrationCheckRun | None:
+        model = await self._session.scalar(
+            select(IntegrationCheckRunModel)
+            .where(IntegrationCheckRunModel.id == check_run_id)
+            .with_for_update()
+        )
+        if model is None:
+            return None
+        self._tracked_checks[check_run_id] = model
+        return self._check_to_domain(model)
+
+    async def save_check(self, value: IntegrationCheckRun) -> None:
+        model = self._tracked_checks.get(value.id)
+        if model is None:
+            model = await self._session.get(IntegrationCheckRunModel, value.id)
+        if model is None:
+            raise RuntimeError(f"Integration check {value.id} is not tracked")
+        model.status = value.status
+        model.state = value.state
+        model.error_code = value.error_code
+        model.detail = value.detail
+        model.runtime_version = value.runtime_version
+        model.started_at = value.started_at
+        model.finished_at = value.finished_at
+
+    async def latest_check(self, *, provider: str, check_kind: str) -> IntegrationCheckRun | None:
+        model = await self._session.scalar(
+            select(IntegrationCheckRunModel)
+            .where(
+                IntegrationCheckRunModel.provider == provider,
+                IntegrationCheckRunModel.check_kind == check_kind,
+            )
+            .order_by(IntegrationCheckRunModel.created_at.desc())
+            .limit(1)
+        )
+        return None if model is None else self._check_to_domain(model)
+
+    @staticmethod
+    def _setting_to_domain(model: SystemSettingModel) -> SystemSetting:
+        return SystemSetting(
+            id=model.id,
+            key=model.key,
+            value=model.value,
+            value_type=model.value_type,
+            updated_by=model.updated_by,
+            version=model.version,
+            created_at=model.created_at,
+            updated_at=model.updated_at,
+        )
+
+    @staticmethod
+    def _credential_to_domain(
+        model: IntegrationCredentialModel,
+    ) -> IntegrationCredential:
+        return IntegrationCredential(
+            id=model.id,
+            provider=model.provider,
+            credential_kind=model.credential_kind,
+            secret_ref=model.secret_ref,
+            configured=model.configured,
+            masked_hint=model.masked_hint,
+            last_validated_at=model.last_validated_at,
+            last_validation_status=model.last_validation_status,
+            last_error_code=model.last_error_code,
+            version=model.version,
+            created_at=model.created_at,
+            updated_at=model.updated_at,
+        )
+
+    @staticmethod
+    def _scope_to_domain(model: IntegrationScopeModel) -> IntegrationScope:
+        return IntegrationScope(
+            id=model.id,
+            provider=model.provider,
+            external_scope_id=model.external_scope_id,
+            display_name=model.display_name,
+            status=model.status,
+            sync_mode=model.sync_mode,
+            last_message_at=model.last_message_at,
+            last_error_code=model.last_error_code,
+            last_error_message=model.last_error_message,
+            last_compensated_at=model.last_compensated_at,
+            last_compensation_status=model.last_compensation_status,
+            approved_by=model.approved_by,
+            approved_at=model.approved_at,
+            version=model.version,
+            created_at=model.created_at,
+            updated_at=model.updated_at,
+        )
+
+    @staticmethod
+    def _check_to_domain(model: IntegrationCheckRunModel) -> IntegrationCheckRun:
+        return IntegrationCheckRun(
+            id=model.id,
+            provider=model.provider,
+            check_kind=model.check_kind,
+            status=model.status,
+            requested_by=model.requested_by,
+            correlation_id=model.correlation_id,
+            started_at=model.started_at,
+            state=model.state,
+            error_code=model.error_code,
+            detail=model.detail,
+            runtime_version=model.runtime_version,
+            finished_at=model.finished_at,
             created_at=model.created_at,
         )
 

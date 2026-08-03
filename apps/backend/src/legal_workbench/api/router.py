@@ -16,6 +16,7 @@ from legal_workbench.api.routes.matters import router as matters_router
 from legal_workbench.api.routes.messages import router as messages_router
 from legal_workbench.api.routes.outbox import router as outbox_router
 from legal_workbench.api.routes.reviews import router as reviews_router
+from legal_workbench.api.routes.setup import router as setup_router
 from legal_workbench.api.routes.system import router as system_router
 from legal_workbench.api.routes.work_items import router as work_items_router
 
@@ -36,3 +37,4 @@ api_router.include_router(system_router, dependencies=authenticated)
 api_router.include_router(messages_router, dependencies=authenticated)
 api_router.include_router(events_router, dependencies=authenticated)
 api_router.include_router(evaluations_router, dependencies=authenticated)
+api_router.include_router(setup_router, dependencies=authenticated)

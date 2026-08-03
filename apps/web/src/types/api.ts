@@ -338,6 +338,84 @@ export interface SystemHealth {
   };
 }
 
+export type SetupState =
+  | 'not_configured'
+  | 'invalid_credentials'
+  | 'permission_missing'
+  | 'connected'
+  | 'disconnected'
+  | 'cli_missing'
+  | 'version_mismatch'
+  | 'unauthenticated'
+  | 'authenticated'
+  | 'runtime_unreachable'
+  | 'ready'
+  | 'not_executed'
+  | 'pending';
+
+export interface SetupComponent {
+  state: SetupState;
+  message: string;
+  correlationId: string;
+  errorCode: string | null;
+}
+
+export interface SetupStatus {
+  generatedAt: string;
+  correlationId: string;
+  overallState: SetupState;
+  basicServices: Record<string, string>;
+  feishu: {
+    credentials: {
+      configured: boolean;
+      appIdMasked: string | null;
+      secretMasked: string | null;
+      lastValidationStatus: string | null;
+      lastErrorCode: string | null;
+    };
+    permissions: SetupComponent;
+    scopes: SetupComponent;
+    connection: SetupComponent;
+    testMessage: SetupComponent;
+    manualUnreadAcceptance: SetupComponent;
+    eventSource: string;
+    receiveDirectMessages: boolean;
+    groupMentionsOnly: boolean;
+    configuredGroupAllMessages: boolean;
+    allowedScopeCount: number;
+    excludedScopeCount: number;
+  };
+  codex: {
+    cli: SetupComponent;
+    version: SetupComponent;
+    authentication: SetupComponent;
+    smokeTest: SetupComponent;
+    expectedVersion: string;
+    detectedVersion: string | null;
+  };
+  steps: Array<{
+    number: number;
+    key: string;
+    title: string;
+    component: SetupComponent;
+  }>;
+}
+
+export interface SetupActionResult {
+  state: SetupState;
+  message: string;
+  correlationId: string;
+  errorCode: string | null;
+}
+
+export interface CodexCheckRequested {
+  checkRunId: string;
+  state: SetupState;
+  message: string;
+  correlationId: string;
+  idempotentReplay: boolean;
+}
+
 export interface FeishuConnection {
   integrationType: string;
   connectionMode: string;

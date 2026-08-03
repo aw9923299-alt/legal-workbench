@@ -1,19 +1,26 @@
 import asyncio
+from hashlib import sha256
 from pathlib import Path
 from typing import Any
 from uuid import UUID
 
 from legal_workbench.agents.codex_cli import CodexCliRuntime
+from legal_workbench.agents.codex_health import CodexRuntimeHealthChecker
 from legal_workbench.agents.definitions import build_message_judgement_definition
 from legal_workbench.agents.runtime import AgentRuntimeError, DisabledAgentRuntime
 from legal_workbench.application.analysis_recovery import AnalysisRecoveryService
 from legal_workbench.application.context_snapshots import ContextSnapshotBuilder
 from legal_workbench.application.document_extraction import DocumentExtractionService
+from legal_workbench.application.evaluations import (
+    EvaluationFixtureCase,
+    RealCodexEvaluationExecutor,
+)
 from legal_workbench.application.message_analysis import (
     AnalyseFeishuMessageCommand,
     AnalyseFeishuMessageHandler,
     MessageAnalysisError,
 )
+from legal_workbench.application.setup import execute_codex_setup_check
 from legal_workbench.config import get_settings
 from legal_workbench.infrastructure.celery_app import celery_app
 from legal_workbench.infrastructure.outbox import OutboxDispatcher
@@ -21,6 +28,38 @@ from legal_workbench.infrastructure.unit_of_work import SqlAlchemyUnitOfWorkFact
 from legal_workbench.integrations.document_extractors import (
     IsolatedExtractionProcessRunner,
 )
+
+
+class _CodexSmokeExecutor:
+    def __init__(self, runtime: CodexCliRuntime) -> None:
+        self._executor = RealCodexEvaluationExecutor(runtime)
+
+    async def execute(self, *, check_run_id: UUID) -> tuple[str | None, str | None]:
+        text = "请判断这条合成测试消息是否属于合同审核请求。"
+        execution = await self._executor.execute(
+            EvaluationFixtureCase(
+                case_key="setup_contract_smoke",
+                case_version=1,
+                input_payload={
+                    "messageId": "setup-smoke-contract-001",
+                    "messageType": "text",
+                    "text": text,
+                },
+                expected_output={
+                    "legalRelevance": "relevant",
+                    "messageRole": "new_request",
+                    "candidateCreated": True,
+                    "category": "contract",
+                    "deadlines": [],
+                    "facts": [],
+                    "inferences": [],
+                    "missingInformation": [],
+                },
+                content_hash=sha256(text.encode()).hexdigest(),
+            ),
+            evaluation_run_id=check_run_id,
+        )
+        return execution.runtime_version, execution.failure_code
 
 
 @celery_app.task(name="system.ping")  # type: ignore[untyped-decorator]
@@ -63,6 +102,35 @@ def recover_analysis() -> dict[str, int]:
         "missingRunsRequeued": result.missing_runs_requeued,
         "staleRunsRequeued": result.stale_runs_requeued,
         "deadLettered": result.dead_lettered,
+    }
+
+
+@celery_app.task(name="setup.codex_check")  # type: ignore[untyped-decorator]
+def run_codex_setup_check(
+    check_run_id: str,
+    correlation_id: str = "",
+) -> dict[str, str | None]:
+    settings = get_settings()
+    runtime = CodexCliRuntime(runs_root=settings.codex_runs_root)
+    result = asyncio.run(
+        execute_codex_setup_check(
+            check_run_id=UUID(check_run_id),
+            uow_factory=SqlAlchemyUnitOfWorkFactory(),
+            health_checker=CodexRuntimeHealthChecker(
+                command=settings.codex_command,
+                expected_version=settings.codex_expected_version,
+                runs_root=settings.codex_runs_root,
+            ),
+            real_runtime_enabled=settings.enable_real_codex,
+            smoke_executor=(_CodexSmokeExecutor(runtime) if settings.enable_real_codex else None),
+        )
+    )
+    return {
+        "checkRunId": str(result.id),
+        "state": result.state,
+        "errorCode": result.error_code,
+        "runtimeVersion": result.runtime_version,
+        "correlationId": correlation_id or result.correlation_id,
     }
 
 

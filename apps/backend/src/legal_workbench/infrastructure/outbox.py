@@ -79,6 +79,14 @@ async def _handle_document_extraction(_: OutboxDispatcher, event: ClaimedOutboxE
     )
 
 
+async def _handle_codex_setup_check(_: OutboxDispatcher, event: ClaimedOutboxEvent) -> None:
+    celery_app.send_task(
+        "setup.codex_check",
+        args=[str(event.aggregate_id), event.correlation_id],
+        headers={"correlation_id": event.correlation_id},
+    )
+
+
 async def _handle_internal_notification(_: OutboxDispatcher, event: ClaimedOutboxEvent) -> None:
     logger.info(
         "outbox_internal_event_acknowledged",
@@ -387,6 +395,7 @@ OUTBOX_HANDLERS: dict[str, OutboxHandler] = {
     "FeishuMessageAnalysisRequested": _handle_feishu_message,
     "FeishuMessageAttachmentsPending": _handle_internal_notification,
     "DocumentExtractionRequested": _handle_document_extraction,
+    "CodexSetupCheckRequested": _handle_codex_setup_check,
     "LegalMatterCreated": _handle_internal_notification,
     "MessageCandidateCreated": _handle_internal_notification,
     "MessageCandidateResolved": _handle_internal_notification,

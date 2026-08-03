@@ -52,8 +52,11 @@ from legal_workbench.domain.enums import (
     EvaluationRuntimeType,
     FeishuEventStatus,
     FeishuMessageStatus,
+    IntegrationCheckStatus,
     IntegrationConnectionMode,
     IntegrationConnectionStatus,
+    IntegrationScopeStatus,
+    IntegrationSyncMode,
     LegalRelevance,
     LegalRisk,
     MatterCategory,
@@ -1378,6 +1381,91 @@ class EvaluationResultModel(UuidPrimaryKeyMixin, Base):
     failure_code: Mapped[str | None] = mapped_column(String(80))
     runtime_version: Mapped[str | None] = mapped_column(String(80))
     runtime_execution_id: Mapped[UUID | None] = mapped_column()
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class SystemSettingModel(UuidPrimaryKeyMixin, TimestampMixin, VersionedMixin, Base):
+    __tablename__ = "system_settings"
+
+    key: Mapped[str] = mapped_column(String(160), nullable=False, unique=True)
+    value: Mapped[Any] = mapped_column(JSONB, nullable=False)
+    value_type: Mapped[str] = mapped_column(String(24), nullable=False)
+    updated_by: Mapped[str] = mapped_column(String(160), nullable=False)
+
+
+class IntegrationCredentialModel(UuidPrimaryKeyMixin, TimestampMixin, VersionedMixin, Base):
+    __tablename__ = "integration_credentials"
+    __table_args__ = (
+        UniqueConstraint("provider", "credential_kind", name="uq_integration_credential"),
+    )
+
+    provider: Mapped[str] = mapped_column(String(40), nullable=False)
+    credential_kind: Mapped[str] = mapped_column(String(80), nullable=False)
+    secret_ref: Mapped[str | None] = mapped_column(String(120))
+    configured: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=FALSE_DEFAULT
+    )
+    masked_hint: Mapped[str | None] = mapped_column(String(40))
+    last_validated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_validation_status: Mapped[str | None] = mapped_column(String(40))
+    last_error_code: Mapped[str | None] = mapped_column(String(100))
+
+
+class IntegrationScopeModel(UuidPrimaryKeyMixin, TimestampMixin, VersionedMixin, Base):
+    __tablename__ = "integration_scopes"
+    __table_args__ = (
+        UniqueConstraint("provider", "external_scope_id", name="uq_integration_scope"),
+        Index("ix_integration_scopes_provider_status", "provider", "status"),
+    )
+
+    provider: Mapped[str] = mapped_column(String(40), nullable=False)
+    external_scope_id: Mapped[str] = mapped_column(String(200), nullable=False)
+    display_name: Mapped[str | None] = mapped_column(String(240))
+    status: Mapped[IntegrationScopeStatus] = mapped_column(
+        enum_type(IntegrationScopeStatus, name="integration_scope_status", length=20),
+        nullable=False,
+    )
+    sync_mode: Mapped[IntegrationSyncMode] = mapped_column(
+        enum_type(IntegrationSyncMode, name="integration_sync_mode", length=24),
+        nullable=False,
+    )
+    last_message_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_error_code: Mapped[str | None] = mapped_column(String(100))
+    last_error_message: Mapped[str | None] = mapped_column(Text)
+    last_compensated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_compensation_status: Mapped[str | None] = mapped_column(String(40))
+    approved_by: Mapped[str | None] = mapped_column(String(160))
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class IntegrationCheckRunModel(UuidPrimaryKeyMixin, Base):
+    __tablename__ = "integration_check_runs"
+    __table_args__ = (
+        Index(
+            "ix_integration_check_runs_provider_kind_created",
+            "provider",
+            "check_kind",
+            "created_at",
+        ),
+        Index("ix_integration_check_runs_status", "status", "created_at"),
+    )
+
+    provider: Mapped[str] = mapped_column(String(40), nullable=False)
+    check_kind: Mapped[str] = mapped_column(String(80), nullable=False)
+    status: Mapped[IntegrationCheckStatus] = mapped_column(
+        enum_type(IntegrationCheckStatus, name="integration_check_status", length=20),
+        nullable=False,
+    )
+    requested_by: Mapped[str] = mapped_column(String(160), nullable=False)
+    correlation_id: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    state: Mapped[str] = mapped_column(String(40), nullable=False, server_default="pending")
+    error_code: Mapped[str | None] = mapped_column(String(100))
+    detail: Mapped[str | None] = mapped_column(Text)
+    runtime_version: Mapped[str | None] = mapped_column(String(80))
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

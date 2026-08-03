@@ -30,7 +30,10 @@ from legal_workbench.domain.entities import (
     FeishuMessageVersion,
     FeishuRawEvent,
     IdempotencyRecord,
+    IntegrationCheckRun,
     IntegrationConnection,
+    IntegrationCredential,
+    IntegrationScope,
     LegalMatter,
     MatterUpdateProposal,
     MessageAttachment,
@@ -39,6 +42,7 @@ from legal_workbench.domain.entities import (
     PriorityConfirmation,
     ReviewPackage,
     ReviewRecord,
+    SystemSetting,
     WorkItem,
     WorkItemDependency,
 )
@@ -325,6 +329,23 @@ class EvaluationRepository(Protocol):
     async def list_results(self, run_id: UUID) -> Sequence[EvaluationResult]: ...
 
 
+class SetupRepository(Protocol):
+    async def get_setting(self, key: str) -> SystemSetting | None: ...
+    async def save_setting(self, value: SystemSetting) -> None: ...
+    async def get_credential(
+        self, *, provider: str, credential_kind: str
+    ) -> IntegrationCredential | None: ...
+    async def save_credential(self, value: IntegrationCredential) -> None: ...
+    async def list_scopes(self, *, provider: str) -> Sequence[IntegrationScope]: ...
+    async def add_check(self, value: IntegrationCheckRun) -> None: ...
+    async def get_check(self, check_run_id: UUID) -> IntegrationCheckRun | None: ...
+    async def get_check_for_update(self, check_run_id: UUID) -> IntegrationCheckRun | None: ...
+    async def save_check(self, value: IntegrationCheckRun) -> None: ...
+    async def latest_check(
+        self, *, provider: str, check_kind: str
+    ) -> IntegrationCheckRun | None: ...
+
+
 class UnitOfWork(Protocol):
     context_snapshots: ContextSnapshotRepository
     candidates: MessageCandidateRepository
@@ -346,6 +367,7 @@ class UnitOfWork(Protocol):
     documents: DocumentRepository
     storage_quota: AttachmentStorageQuotaRepository
     evaluations: EvaluationRepository
+    setup: SetupRepository
     audit_events: AuditEventRepository
     outbox_events: OutboxEventRepository
     idempotency: IdempotencyRepository

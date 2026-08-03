@@ -53,7 +53,7 @@ FeishuEvent → FeishuMessage → 附件下载/正文提取
 
 ## 数据库与运行时验证
 
-- PostgreSQL 18 独立测试数据库上执行最新迁移往返，当前版本为 `20260803_0011 (head)`；
+- PostgreSQL 18 独立测试数据库上执行最新迁移往返，当前版本为 `20260803_0012 (head)`；
 - 在 `20260801_0003` 插入两个历史重复 ContextSnapshot 和一个历史 Candidate 外部 Agent UUID 后执行升级/降级，快照没有被合并删除，历史 UUID 可完整恢复；
 - PostgreSQL 集成测试验证 `FeishuMessage → ContextSnapshot → AgentRun → MessageCandidate`，结果为 `2 passed, 62 deselected`；
 - Worker 镜像按唯一 `CODEX_CLI_VERSION=0.146.0` 构建成功，与当前宿主 `codex-cli 0.146.0` 精确一致；
@@ -143,6 +143,16 @@ FeishuEvent → FeishuMessage → 附件下载/正文提取
 - **已通过自动化验证**：默认后端 `176 passed, 9 skipped`，开启 PostgreSQL 集成后 `185 passed`；Ruff 和 mypy 通过。Fake CLI 结果 11/11、`failureRate=0`、`realInferenceExecuted=false`；该满分只验证评估管线，不作为真实模型质量结论；
 - **未执行**：隔离 Runner 未配置 Codex 认证，真实 Codex 评估未执行；真实飞书测试消息与官方长连接仍按用户指示后置。
 
+## 阶段十一增量结果：首次配置与隔离检查向导
+
+- **已实现**：迁移 `20260803_0012` 新增 `system_settings`、`integration_credentials`、`integration_scopes` 和只追加 `integration_check_runs`；专用测试库执行 `0012 → 0011 → 0012` 成功；
+- **已实现**：本地 `SecretProvider` 使用目录 `0700`、文件 `0600`、`fsync` 和原子替换；数据库和 API 只保存/返回 `secret_ref`、配置标记和掩码，测试验证随机 Secret 未进入 PostgreSQL；
+- **已实现**：六个 `/api/v1/setup/*` 接口和九步 `/setup` 页面；加载、失败、重试、精确状态、稳定错误码、可读说明和 Correlation ID 均可见，写入型 Secret 输入提交后立即清空；
+- **已实现**：Codex 验证/真实冒烟请求与 Outbox 同事务写入，隔离 Worker 执行健康检查或合成非敏感推理后写回；API、Web、Redis、飞书连接器和 Agent 输入不获得 Codex 认证；
+- **明确延后**：飞书 validate/start/stop 不保存新 Secret、不建立连接，统一返回 `not_executed / REAL_FEISHU_PHASE_DEFERRED`；测试消息、官方长连接和个人未读人工验收仍未执行，页面不会显示为成功；
+- **已通过自动化验证**：默认后端 `187 passed, 10 skipped`，开启 PostgreSQL 集成后 `197 passed`；Setup 后端 11 个单元/API 测试和 1 个 PostgreSQL 测试通过，前端 Setup 3 个测试、typecheck 和生产构建通过；Ruff 与 mypy 通过。Vite 仍只有已知大 chunk 警告；
+- **未执行**：当前 Worker 未提供 Codex 认证，真实 Codex Setup 冒烟只完成安全排队与实现，没有运行成功结果，不声称真实推理通过。
+
 ## 最终验证命令
 
 提交前以本节记录的最终结果为准。宿主 `.venv` 为 Python 3.14.6，生产镜像按项目基线使用 Python 3.12.13：
@@ -154,12 +164,12 @@ cd apps/backend
 ../../.venv/bin/ruff check .
 ../../.venv/bin/mypy --config-file pyproject.toml src
 ../../.venv/bin/pytest --disable-warnings
-# 176 passed, 9 skipped（默认不启用 PostgreSQL 集成）
+# 187 passed, 10 skipped（默认不启用 PostgreSQL 集成）
 
 RUN_POSTGRES_INTEGRATION_TESTS=1 \
 LEGAL_WORKBENCH_TEST_DATABASE_URL="${LOCAL_TEST_DATABASE_URL}" \
 ../../.venv/bin/pytest --disable-warnings
-# 185 passed
+# 197 passed
 
 ../../.venv/bin/python ../../scripts/smoke_test_codex_triage.py \
   --database-url postgresql+psycopg://legal_workbench:change-me-local-only@127.0.0.1:5432/legal_workbench_stage3_019fbdd2 \
@@ -176,7 +186,7 @@ npm install
 npm run typecheck
 npm run test
 npm run build
-# 10 test files / 24 tests passed；构建成功
+# 11 test files / 27 tests passed；构建成功
 cd ../..
 docker compose config --quiet
 docker compose build
@@ -191,7 +201,7 @@ LEGAL_WORKBENCH_DATABASE_URL=postgresql+psycopg://legal_workbench:change-me-loca
   ../../.venv/bin/alembic -c alembic.ini downgrade -1
 LEGAL_WORKBENCH_DATABASE_URL=postgresql+psycopg://legal_workbench:change-me-local-only@127.0.0.1:5432/legal_workbench_stage3_019fbdd2 \
   ../../.venv/bin/alembic -c alembic.ini upgrade head
-# 20260803_0011 (head)
+# 20260803_0012 (head)
 
 cd ../..
 docker compose run --rm --no-deps --entrypoint codex worker --version
@@ -200,7 +210,7 @@ docker compose run --rm --no-deps --entrypoint id worker codex-agent
 # uid=10001(codex-agent) gid=10001(codex-agent) groups=10001(codex-agent)
 ```
 
-结果：截至消息研判质量评估阶段，`git diff --check`、Ruff、mypy、185 个含 PostgreSQL 集成的后端测试、0011 迁移往返、前端 typecheck/10 文件 24 测试/build 和 Compose 静态配置均通过；附件阶段的 Worker 镜像与解析依赖验证、Fake Runtime 冒烟和故障恢复证据继续有效。Vite 构建产生单个约 `1,437 kB`（gzip约 `452 kB`）chunk 警告，不影响构建成功。
+结果：截至首次配置向导阶段，`git diff --check`、Ruff、mypy、197 个含 PostgreSQL 集成的后端测试、0012 迁移往返、前端 typecheck/11 文件 27 测试/build 和 Compose 静态配置均通过；附件阶段的 Worker 镜像与解析依赖验证、Fake Runtime 冒烟和故障恢复证据继续有效。Vite 构建产生单个约 `1,469 kB`（gzip约 `459 kB`）chunk 警告，不影响构建成功。
 
 `npm audit` 返回 `2 high`：两项均源自 React Router 的 RSC Action CSRF 公告 `GHSA-qwww-vcr4-c8h2`。当前 Registry 最新 `react-router-dom` 为 `7.18.2`，公告要求 `>=8.3.0`，暂无可安装修复版本；本项目是纯 Vite SPA，不启用 RSC/Server Actions，但该上游告警仍明确保留，未通过降级或强制安装掩盖。
 

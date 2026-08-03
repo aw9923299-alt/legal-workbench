@@ -173,6 +173,7 @@ npm run build
 - AI 收件箱、消息详情、Agent 运行中心和系统状态页使用真实 FastAPI 数据；支持状态/分类/时间/群聊筛选、Candidate 人工动作、运行重试/取消、补偿同步、遗留任务恢复和死信重新入队；
 - SSE 推送系统健康、消息、AgentRun、Candidate 和 Outbox 变化，断开后按指数退避重连并回退到有限频率轮询；
 - AI 质量评估使用 11 类合成非敏感版本化 Fixture，持久化 EvaluationCase/Run/Result，并确定性汇总相关性、分类、期限、角色、事实引用、推断误报、缺失信息、Schema、耗时、失败和重试指标；Fake 只验证评估管线，只有显式真实 Runner 结果才代表模型质量；
+- `/setup` 九步向导从 PostgreSQL 和实时探针恢复基础服务、飞书凭证掩码/授权范围、Codex CLI/版本/认证/冒烟状态；本地 SecretProvider 使用 `0700/0600` 和原子替换，Codex 验证与冒烟只排队给隔离 Worker；
 - Agent stdout/stderr 常见凭证格式脱敏，运行目录只返回受控逻辑路径；所有新增写操作继续要求后端 Actor、Idempotency-Key、Correlation ID 和审计。
 
 部分实现：
@@ -184,7 +185,7 @@ npm run build
 
 ## 当前开发顺序
 
-1. 完成 `/setup`、飞书授权范围管理和明确的延后状态；
+1. 完成飞书授权范围管理页面；
 2. 完成 Mac 常驻、自检、备份、诊断和恢复闭环；
 3. 在专用 Runner 认证可用时执行真实 Codex 安全冒烟与真实评估；
 4. 真实飞书测试消息和官方长连接验收按用户要求后置，恢复时单独执行且人工确认个人未读状态。

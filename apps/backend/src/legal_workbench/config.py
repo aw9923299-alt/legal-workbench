@@ -56,6 +56,11 @@ class Settings(BaseSettings):
     feishu_reconnect_max_seconds: int = 30
     feishu_reconcile_window_minutes: int = 60
     feishu_reconcile_chat_ids: list[str] = Field(default_factory=list)
+    feishu_allowed_chat_ids: list[str] = Field(default_factory=list)
+    feishu_excluded_chat_ids: list[str] = Field(default_factory=list)
+    feishu_receive_direct_messages: bool = True
+    feishu_group_mentions_only: bool = True
+    feishu_configured_group_all_messages: bool = True
     feishu_tenant_key: str | None = None
     feishu_attachment_root: str = "/data/feishu-attachments"
     feishu_attachment_max_bytes: int = 50 * 1024 * 1024
@@ -66,6 +71,7 @@ class Settings(BaseSettings):
 
     knowledge_root: str = "/data/knowledge"
     codex_runs_root: str = "/data/codex-runs"
+    setup_secret_root: str = "/data/local-secrets"
     codex_command: str = "codex"
     codex_cli_version: str = Field(
         default="0.146.0",

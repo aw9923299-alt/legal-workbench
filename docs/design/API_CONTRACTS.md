@@ -426,6 +426,19 @@ GET  /api/v1/evaluations/runs/:runId
 
 评估创建请求默认 `runtimeType=fake`，必须携带认证 Session、`Idempotency-Key` 和 Correlation ID；相同键只返回原 EvaluationRun。响应包含不可变 Fixture/AgentDefinition 版本、逐用例结果和相关性、分类、期限、角色、事实引用、推断误报、缺失信息、Schema 首次通过、平均耗时、失败率及重试率。`runtimeType=real` 还要求 `allowRealRuntime=true` 和服务端真实 Codex 门禁；当前 API 进程不持有 Codex 认证，因此真实路径由专用 CLI Runner 执行。评估不得启用规则、修改 Prompt 或改变 AgentDefinition 状态。
 
+## 12.2 首次配置接口
+
+```http
+GET  /api/v1/setup/status
+POST /api/v1/setup/feishu/validate
+POST /api/v1/setup/feishu/start
+POST /api/v1/setup/feishu/stop
+POST /api/v1/setup/codex/validate
+POST /api/v1/setup/codex/smoke-test
+```
+
+状态只返回 `configured`、掩码、稳定状态/错误码、可读说明和 Correlation ID，不返回 Secret。Codex 两个写接口返回 `202` 与 `checkRunId`，请求经事务 Outbox 交给只在 Worker 中可用的认证环境；外部运行期间不持有数据库事务。按当前用户确认，三个飞书写接口均不验证、不保存新 Secret、不启动连接，只返回 `not_executed / REAL_FEISHU_PHASE_DEFERRED`。
+
 ## 13. 日报和复盘接口
 
 ```http

@@ -26,6 +26,7 @@ import MessageDetailPage from './pages/MessageDetailPage';
 import MatterUpdateProposalPage from './pages/MatterUpdateProposalPage';
 import ReviewCenterPage from './pages/ReviewCenterPage';
 import SecurityPage from './pages/SecurityPage';
+import SetupPage from './pages/SetupPage';
 import SystemStatusPage from './pages/SystemStatusPage';
 import TaskCenterPage from './pages/TaskCenterPage';
 import TaskDetailPage from './pages/TaskDetailPage';
@@ -43,6 +44,7 @@ const navItems = [
   { key: '/library', icon: <DatabaseOutlined />, label: '法务事项库' },
   { key: '/agent-runs', icon: <RobotOutlined />, label: 'Agent 运行中心' },
   { key: '/security', icon: <SafetyCertificateOutlined />, label: '数据与权限' },
+  { key: '/setup', icon: <SettingOutlined />, label: '首次配置' },
   { key: '/system', icon: <SettingOutlined />, label: '系统状态' },
 ];
 
@@ -77,6 +79,7 @@ function RouteContent() {
     <Route path="/agent-runs" element={<AgentCenterPage />} />
     <Route path="/agent-runs/:runId" element={<AgentRunDetailPage />} />
     <Route path="/system" element={<SystemStatusPage />} />
+    <Route path="/setup" element={<SetupPage />} />
     <Route path="/matters" element={<TaskCenterPage onOpenMatter={(id) => navigate(`/matters/${id}`)} />} />
     <Route path="/matters/:matterId" element={<MatterDetailRoute />} />
     <Route path="/matter-update-proposals/:proposalId" element={<MatterUpdateProposalPage />} />

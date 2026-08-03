@@ -722,9 +722,20 @@ candidate_revisions
 evaluation_cases
 evaluation_runs
 evaluation_results
+system_settings
+integration_credentials
+integration_scopes
+integration_check_runs
 ```
 
 使用 `version` 字段进行乐观锁；异步事件采用事务 Outbox，避免数据库提交成功但队列消息丢失。
+
+### Setup 与集成元数据
+
+- `system_settings` 只保存非敏感类型化配置和修改人；Codex 精确版本仍只有 `CODEX_CLI_VERSION` 一个部署来源。
+- `integration_credentials` 只保存 `secret_ref`、`configured`、掩码和最近验证状态；实际 Secret 不进入 PostgreSQL。
+- `integration_scopes` 中未知群默认 `unapproved/disabled`，只有人工授权后进入 `allowed`；允许、排除和暂停状态是业务事实。
+- `integration_check_runs` 追加保存 Codex 验证/冒烟状态、版本、失败码、Correlation ID 和时间，不保存凭证或完整测试正文。
 
 
 ### 持久化约定

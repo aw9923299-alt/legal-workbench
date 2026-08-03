@@ -73,6 +73,8 @@ Runtime 前后使用独立短事务，不在数据库事务内等待 Codex。任
 - `application/evaluations.py`：版本化 Fixture、Fake/真实 Runner、逐维评分与确定性指标聚合；
 - `api/routes/evaluations.py`：默认 Fake 的幂等评估 API，API 不持有 Codex 认证；
 - `scripts/run_message_judgement_evaluation.py`：真实 Codex 仅在双门禁下运行的专用本地 Runner。
+- `application/setup.py`、`infrastructure/secrets.py`：脱敏 Setup 状态、原子本地 Secret、Codex Worker 检查编排；
+- `api/routes/setup.py`、`pages/SetupPage.tsx`：六个 Setup API 和九步初始化向导，飞书延后状态不会显示为成功。
 
 ## 配置门禁
 
@@ -91,6 +93,6 @@ Runtime 将唯一授权 ContextSnapshot 作为不可信 JSON 直接送入 stdin�
 
 ## 下一步
 
-1. 完成 `/setup`、飞书群聊授权范围和本地 Mac 运维恢复；
+1. 完成飞书群聊授权范围页面和本地 Mac 运维恢复；
 2. 真实飞书测试消息与官方长连接验收已按用户要求后置，后续有测试凭证时再执行，不得写成已通过；
 3. 在专用 Runner 内使用非生产凭证执行真实 Codex 冒烟、评估和故障注入。

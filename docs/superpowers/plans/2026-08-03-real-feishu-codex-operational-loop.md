@@ -738,7 +738,7 @@ git commit -m "feat: evaluate message judgement quality"
 - Consumes: Codex health from Task 1, system status, and existing Feishu connection metadata.
 - Does not start or validate a real Feishu connection in the current phase.
 
-- [ ] **Step 1: Write failing redaction and status tests**
+- [x] **Step 1: Write failing redaction and status tests**
 
 ```python
 async def test_setup_status_never_returns_secret(client, configured_secret):
@@ -750,23 +750,23 @@ async def test_setup_status_never_returns_secret(client, configured_secret):
 
 Cover missing credentials, version mismatch, unauthenticated Worker, runtime unreachable, ready, stable error codes, and Correlation ID.
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 Run: `.venv/bin/python -m pytest apps/backend/tests/test_setup_status.py -q`
 
-- [ ] **Step 3: Implement settings metadata and atomic local secrets**
+- [x] **Step 3: Implement settings metadata and atomic local secrets**
 
 Secret files use `0700/0600`, atomic replace, masked hints, and no log values. Codex secret access is available only in the Worker wiring.
 
-- [ ] **Step 4: Implement status and deferred Feishu responses**
+- [x] **Step 4: Implement status and deferred Feishu responses**
 
 Expose all required setup routes. Feishu validate/start/stop return `not_executed` with a stable `REAL_FEISHU_PHASE_DEFERRED` code during this user-deferred phase. Codex validate and smoke-test remain real when Worker authentication is available.
 
-- [ ] **Step 5: Implement nine-step Setup UI**
+- [x] **Step 5: Implement nine-step Setup UI**
 
 Display every step, exact state, explanation, and Correlation ID. Secret fields are write-only and clear after submission. The page never claims the deferred Feishu steps succeeded.
 
-- [ ] **Step 6: Run RED→GREEN and commit**
+- [x] **Step 6: Run RED→GREEN and commit**
 
 ```bash
 .venv/bin/python -m pytest apps/backend/tests/test_setup_status.py -q

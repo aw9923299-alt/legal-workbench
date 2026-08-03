@@ -23,6 +23,9 @@ import type {
   WorkItemDependency,
   WorkItemStatus,
   SystemHealth,
+  SetupStatus,
+  SetupActionResult,
+  CodexCheckRequested,
 } from '../types/api';
 
 export const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? '/api/v1';
@@ -412,6 +415,36 @@ export const legalApi = {
 
   getSystemHealth(): Promise<SystemHealth> {
     return request('/system/health');
+  },
+
+  getSetupStatus(): Promise<SetupStatus> {
+    return request('/setup/status');
+  },
+
+  validateFeishuSetup(input: {
+    appId?: string;
+    appSecret?: string;
+  }): Promise<SetupActionResult> {
+    return request('/setup/feishu/validate', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }, { write: true });
+  },
+
+  startFeishuSetup(): Promise<SetupActionResult> {
+    return request('/setup/feishu/start', { method: 'POST' }, { write: true });
+  },
+
+  stopFeishuSetup(): Promise<SetupActionResult> {
+    return request('/setup/feishu/stop', { method: 'POST' }, { write: true });
+  },
+
+  validateCodexSetup(mutation?: MutationContext): Promise<CodexCheckRequested> {
+    return request('/setup/codex/validate', { method: 'POST' }, { write: true, mutation });
+  },
+
+  smokeTestCodexSetup(mutation?: MutationContext): Promise<CodexCheckRequested> {
+    return request('/setup/codex/smoke-test', { method: 'POST' }, { write: true, mutation });
   },
 
   getFeishuStatus(): Promise<FeishuConnection> {

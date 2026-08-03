@@ -360,3 +360,40 @@ class EvaluationRunStatus(StrEnum):
     RUNNING = "running"
     COMPLETED = "completed"
     FAILED = "failed"
+
+
+class SetupState(StrEnum):
+    NOT_CONFIGURED = "not_configured"
+    INVALID_CREDENTIALS = "invalid_credentials"
+    PERMISSION_MISSING = "permission_missing"
+    CONNECTED = "connected"
+    DISCONNECTED = "disconnected"
+    CLI_MISSING = "cli_missing"
+    VERSION_MISMATCH = "version_mismatch"
+    UNAUTHENTICATED = "unauthenticated"
+    AUTHENTICATED = "authenticated"
+    RUNTIME_UNREACHABLE = "runtime_unreachable"
+    READY = "ready"
+    NOT_EXECUTED = "not_executed"
+    PENDING = "pending"
+
+
+class IntegrationCheckStatus(StrEnum):
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    NOT_EXECUTED = "not_executed"
+
+
+class IntegrationScopeStatus(StrEnum):
+    UNAPPROVED = "unapproved"
+    ALLOWED = "allowed"
+    EXCLUDED = "excluded"
+    PAUSED = "paused"
+
+
+class IntegrationSyncMode(StrEnum):
+    MENTIONS_ONLY = "mentions_only"
+    ALL_MESSAGES = "all_messages"
+    DISABLED = "disabled"
