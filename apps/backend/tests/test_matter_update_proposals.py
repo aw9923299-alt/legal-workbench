@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from datetime import UTC, datetime
+from datetime import datetime
 from types import TracebackType
 from uuid import UUID, uuid4
 
@@ -412,8 +412,8 @@ async def test_approved_deadline_creates_confirmed_deadline_and_updates_matter()
         )
     )
 
-    assert matter.target_deadline_at == datetime(
-        2026, 8, 8, 18, 0, tzinfo=datetime.now(UTC).astimezone().tzinfo
+    assert matter.target_deadline_at == datetime.fromisoformat(
+        "2026-08-08T18:00:00+08:00"
     )
     assert len(state.deadlines) == 1
     assert isinstance(state.deadlines[0], Deadline)
