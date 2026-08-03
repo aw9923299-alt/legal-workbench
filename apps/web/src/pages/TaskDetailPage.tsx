@@ -217,6 +217,9 @@ export default function TaskDetailPage({ matterId, onBack }: { matterId: string;
                 <Card title="事项字段" bordered={false}>
                   <Descriptions column={1} size="small" items={[
                     { key: 'owner', label: '负责人', children: matter.ownerId },
+                    { key: 'priority', label: '事项优先级', children: `${priorityLabels[matter.priority]} · ${matter.prioritySource === 'legal_confirmed' ? '法务确认' : matter.prioritySource}` },
+                    { key: 'deadline', label: '目标期限', children: matter.targetDeadlineAt ? new Date(matter.targetDeadlineAt).toLocaleString() : '待确认' },
+                    { key: 'next-action', label: '下一步行动', children: matter.nextAction || '待确认' },
                     { key: 'risk', label: '法律风险', children: riskLabels[matter.legalRisk] },
                     { key: 'impact', label: '业务影响', children: matter.businessImpact },
                     { key: 'secret', label: '保密等级', children: matter.confidentiality },

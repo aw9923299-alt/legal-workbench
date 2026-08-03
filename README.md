@@ -2,7 +2,7 @@
 
 运行在本地 Mac 上的法务智能工作系统。系统从经过授权的飞书消息中发现工作，由受控的 Codex Agent 完成消息研判、事项归并、任务规划、专业分析、回复草拟、日报和复盘；所有发送给其他人员的内容必须经过法务审核。
 
-> 当前已实现 `FeishuEvent → FeishuMessage → 附件正文提取 → ContextSnapshot → AgentRun → MessageCandidate → 人工创建/关联 Matter` 受控闭环，以及官方 SDK 长连接/Webhook 双入口、断线重连、消息版本、时间窗补偿、运行中心、系统状态和 SSE/轮询恢复。PDF/DOCX/TXT/Markdown 可受控解析，图片和扫描 PDF 明确显示正文不可用。真实飞书与真实 Codex 均需显式开启并提供可用凭证；通用知识库解析和专业 Agent 尚未实现。
+> 当前已实现 `FeishuEvent → FeishuMessage → 附件正文提取 → ContextSnapshot → AgentRun → MessageCandidate → 人工创建/关联 Matter 或提交 MatterUpdateProposal → 人工逐字段审核 → WorkItem` 受控闭环，以及官方 SDK 长连接/Webhook 双入口、断线重连、消息版本、时间窗补偿、运行中心、系统状态和 SSE/轮询恢复。PDF/DOCX/TXT/Markdown 可受控解析，图片和扫描 PDF 明确显示正文不可用。真实飞书与真实 Codex 均需显式开启并提供可用凭证；通用知识库解析和专业 Agent 尚未实现。
 
 ## 核心闭环
 

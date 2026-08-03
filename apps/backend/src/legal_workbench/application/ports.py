@@ -29,6 +29,7 @@ from legal_workbench.domain.entities import (
     IdempotencyRecord,
     IntegrationConnection,
     LegalMatter,
+    MatterUpdateProposal,
     MessageAttachment,
     MessageCandidate,
     OutboxEvent,
@@ -46,6 +47,7 @@ from legal_workbench.domain.enums import (
     CommunicationStatus,
     DeadlineStatus,
     FeishuMessageStatus,
+    MatterUpdateProposalStatus,
     ReviewPackageStatus,
 )
 
@@ -144,7 +146,22 @@ class LegalMatterRepository(Protocol):
     async def add(self, matter: LegalMatter) -> None: ...
     async def get(self, matter_id: UUID) -> LegalMatter | None: ...
     async def get_for_update(self, matter_id: UUID) -> LegalMatter | None: ...
+    async def save(self, matter: LegalMatter) -> None: ...
     async def list(self, *, owner_id: str | None, limit: int) -> Sequence[LegalMatter]: ...
+
+
+class MatterUpdateProposalRepository(Protocol):
+    async def add(self, proposal: MatterUpdateProposal) -> None: ...
+    async def get(self, proposal_id: UUID) -> MatterUpdateProposal | None: ...
+    async def get_for_update(self, proposal_id: UUID) -> MatterUpdateProposal | None: ...
+    async def save(self, proposal: MatterUpdateProposal) -> None: ...
+    async def list(
+        self,
+        *,
+        status: MatterUpdateProposalStatus | None,
+        matter_id: UUID | None,
+        limit: int,
+    ) -> Sequence[MatterUpdateProposal]: ...
 
 
 class WorkItemRepository(Protocol):
@@ -299,6 +316,7 @@ class UnitOfWork(Protocol):
     agent_run_sources: AgentRunSourceRepository
     draft_artifacts: DraftArtifactRepository
     matters: LegalMatterRepository
+    matter_update_proposals: MatterUpdateProposalRepository
     work_items: WorkItemRepository
     priority_confirmations: PriorityConfirmationRepository
     deadlines: DeadlineRepository

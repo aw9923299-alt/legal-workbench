@@ -35,6 +35,7 @@ export default function MessageDetailPage() {
   const [createOpen, setCreateOpen] = useState(false);
   const [linkAction, setLinkAction] = useState<'link_existing' | 'update_existing'>();
   const [matterId, setMatterId] = useState<string>();
+  const [updateReason, setUpdateReason] = useState('消息包含已有事项的新进展，提交法务审核。');
   const [form] = Form.useForm<HumanForm>();
   const detail = useQuery({ queryKey: ['inbox', 'detail', messageId], queryFn: () => legalApi.getMessage(messageId), enabled: Boolean(messageId), refetchInterval: realtime.pollingInterval });
   const analysis = useQuery({ queryKey: ['inbox', 'analysis', messageId], queryFn: () => legalApi.getMessageAnalysis(messageId), enabled: Boolean(messageId), refetchInterval: realtime.pollingInterval });
@@ -141,6 +142,46 @@ export default function MessageDetailPage() {
     },
     onSuccess: (result) => { message.success(`已创建事项 ${result.matterNumber}`); setCreateOpen(false); navigate(`/matters/${result.matterId}`); },
     onError: (error) => message.error(error instanceof Error ? error.message : '创建事项失败'),
+  });
+  const createProposal = useMutation({
+    mutationFn: async () => {
+      if (!candidate.data || !matterId) throw new Error('请选择要更新的 Matter');
+      const requestedFields = [
+        'title', 'category', 'priority', 'deadline', 'owner',
+        'currentStatus', 'nextAction', 'newWorkItems',
+      ];
+      const proposedChanges = Object.fromEntries(requestedFields.map((field) => [field, {
+        currentValue: null,
+        messageExtractedValue: null,
+        aiSuggestedValue: null,
+      }]));
+      const payload = {
+        candidateVersion: candidate.data.version,
+        matterId,
+        proposedChanges,
+        reason: updateReason,
+      };
+      const key = `matter-update-proposal:${candidate.data.id}:${matterId}`;
+      const context = getOrCreateMutationContext(key, payload);
+      try {
+        const response = await legalApi.createMatterUpdateProposal(
+          candidate.data.id,
+          payload,
+          context,
+        );
+        clearMutationContext(key);
+        return response;
+      } catch (error) {
+        if (isDefinitiveMutationFailure(error)) clearMutationContext(key);
+        throw error;
+      }
+    },
+    onSuccess: (response) => {
+      message.success('更新建议已提交，Matter 尚未修改');
+      setLinkAction(undefined);
+      navigate(`/matter-update-proposals/${response.proposalId}`);
+    },
+    onError: (error) => message.error(error instanceof Error ? error.message : '提交更新建议失败'),
   });
 
   const openCreate = () => {
@@ -264,9 +305,14 @@ export default function MessageDetailPage() {
         <Form.Item name="nextAction" label="下一步行动" rules={[{ required: true }]}><Input.TextArea rows={3} /></Form.Item>
       </Form>
     </Modal>
-    <Modal open={Boolean(linkAction)} title={linkAction === 'update_existing' ? '更新已有 Matter' : '关联已有 Matter'} okText="确认" confirmLoading={resolve.isPending} onCancel={() => setLinkAction(undefined)} onOk={() => linkAction && matterId && resolve.mutate({ action: linkAction, selectedMatter: matterId })} okButtonProps={{ disabled: !matterId }}>
-      <Alert type="info" showIcon message={linkAction === 'update_existing' ? '本操作登记 Candidate 为已有事项更新，不会静默改写事项字段。' : '本操作建立可审计关联。'} />
+    <Modal open={Boolean(linkAction)} title={linkAction === 'update_existing' ? '提交已有 Matter 更新建议' : '关联已有 Matter'} okText={linkAction === 'update_existing' ? '生成待审建议' : '确认关联'} confirmLoading={resolve.isPending || createProposal.isPending} onCancel={() => setLinkAction(undefined)} onOk={() => {
+      if (!linkAction || !matterId) return;
+      if (linkAction === 'update_existing') createProposal.mutate();
+      else resolve.mutate({ action: linkAction, selectedMatter: matterId });
+    }} okButtonProps={{ disabled: !matterId || (linkAction === 'update_existing' && !updateReason.trim()) }}>
+      <Alert type="info" showIcon message={linkAction === 'update_existing' ? '只生成待法务审核的更新建议；不会在此步骤修改 Matter。' : '本操作建立可审计关联。'} />
       <Select showSearch style={{ width: '100%', marginTop: 16 }} placeholder="选择 Matter" value={matterId} onChange={setMatterId} loading={matters.isLoading} options={matters.data?.map((matter) => ({ value: matter.id, label: `${matter.matterNumber} · ${matter.title}` }))} />
+      {linkAction === 'update_existing' && <Input.TextArea style={{ marginTop: 16 }} rows={3} value={updateReason} onChange={(event) => setUpdateReason(event.target.value)} placeholder="说明为什么需要更新事项" />}
     </Modal>
   </div>;
 }

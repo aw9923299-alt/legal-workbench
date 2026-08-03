@@ -5,6 +5,8 @@ import type {
   CandidateRevision,
   Deadline,
   LegalMatter,
+  MatterUpdateProposal,
+  MatterUpdateProposalField,
   MessageCandidate,
   MessageAnalysis,
   FeishuConnection,
@@ -290,6 +292,56 @@ export const legalApi = {
     idempotentReplay: boolean;
   }> {
     return request(`/inbox/candidates/${candidateId}/resolve`, {
+      method: 'POST', body: JSON.stringify(input),
+    }, { write: true, mutation });
+  },
+
+  createMatterUpdateProposal(candidateId: string, input: {
+    candidateVersion: number;
+    matterId: string;
+    proposedChanges: Record<string, {
+      currentValue: unknown;
+      messageExtractedValue: unknown;
+      aiSuggestedValue: unknown;
+    }>;
+    reason: string;
+  }, mutation?: MutationContext): Promise<{
+    proposalId: string;
+    candidateId: string;
+    matterId: string;
+    status: 'pending';
+    version: number;
+    idempotentReplay: boolean;
+  }> {
+    return request(`/inbox/candidates/${candidateId}/matter-update-proposals`, {
+      method: 'POST', body: JSON.stringify(input),
+    }, { write: true, mutation });
+  },
+
+  getMatterUpdateProposal(proposalId: string): Promise<MatterUpdateProposal> {
+    return request(`/matter-update-proposals/${proposalId}`);
+  },
+
+  reviewMatterUpdateProposal(proposalId: string, input: {
+    proposalVersion: number;
+    matterVersion: number;
+    decisions: Array<{
+      fieldName: MatterUpdateProposalField;
+      decision: 'approve' | 'reject';
+      finalValue: unknown;
+    }>;
+    rejectionReason?: string;
+  }, mutation?: MutationContext): Promise<{
+    proposalId: string;
+    matterId: string;
+    status: 'approved' | 'partially_approved' | 'rejected';
+    proposalVersion: number;
+    matterVersion: number;
+    workItemIds: string[];
+    deadlineId: string | null;
+    idempotentReplay: boolean;
+  }> {
+    return request(`/matter-update-proposals/${proposalId}/review`, {
       method: 'POST', body: JSON.stringify(input),
     }, { write: true, mutation });
   },

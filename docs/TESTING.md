@@ -68,6 +68,16 @@ python -m pytest apps/backend/tests
 docker compose config
 ```
 
+Matter 更新建议的真实 PostgreSQL 映射可单独验证：
+
+```bash
+RUN_POSTGRES_INTEGRATION_TESTS=1 \
+LEGAL_WORKBENCH_TEST_DATABASE_URL='postgresql+psycopg://.../legal_workbench_test' \
+python -m pytest apps/backend/tests/test_postgres_matter_update_proposals.py -q
+```
+
+该测试覆盖 Candidate 生成待审 Proposal、人工批准字段、新增 WorkItem、Deadline、审计和版本持久化；不调用真实飞书或真实 Codex。
+
 涉及数据库或Compose时还应执行：
 
 ```bash

@@ -133,9 +133,29 @@ GET    /api/v1/inbox/candidates/:id
 POST   /api/v1/inbox/candidates/:id/confirm-create
 GET    /api/v1/inbox/candidates/:id/revisions
 POST   /api/v1/inbox/candidates/:id/resolve
+POST   /api/v1/inbox/candidates/:id/matter-update-proposals
+GET    /api/v1/matter-update-proposals/:proposalId
+POST   /api/v1/matter-update-proposals/:proposalId/review
 ```
 
-`resolve` 统一承载 `link_existing/update_existing/information_only/ignore`，避免为同一业务动作创建同义接口；关联/更新要求 `matterId`，并只登记可审计关系，不静默改写 Matter 已确认字段。重新分析使用消息或 AgentRun retry API。
+`resolve` 只承载 `link_existing/information_only/ignore`。`update_existing` 必须改走 `matter-update-proposals`：创建时只登记 Candidate-Matter 更新关系和待审 Proposal，不改 Matter；审核接口同时校验 Proposal 版本与 `baseMatterVersion`，只应用法务逐字段批准的最终值。重新分析使用消息或 AgentRun retry API。
+
+更新建议使用固定字段集合：`title/category/priority/deadline/owner/currentStatus/nextAction/newWorkItems`。服务端从当前 Matter 和 Candidate 的受控分析结果生成“当前值/消息提取值/AI 建议值”，不信任浏览器提交的 Actor ID，也不允许浏览器把建议直接写入正式记录。
+
+```ts
+interface ReviewMatterUpdateProposalRequest {
+  proposalVersion: number;
+  matterVersion: number;
+  decisions: Array<{
+    fieldName: string;
+    decision: 'approve' | 'reject';
+    finalValue?: unknown;
+  }>;
+  rejectionReason?: string;
+}
+```
+
+Matter 已变化时返回 `409 ENTITY_VERSION_CONFLICT`，Proposal 保持 `pending`。新增 WorkItem、规范化 Deadline、Matter 更新、审计、Outbox 和幂等记录在同一 PostgreSQL 事务提交。
 
 创建Candidate、`confirm-create`和新增WorkItem必须已建立认证 Session，写操作还必须携带：
 

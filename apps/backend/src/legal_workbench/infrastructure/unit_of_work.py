@@ -23,6 +23,7 @@ from legal_workbench.infrastructure.repositories import (
     SqlAlchemyFeishuRepository,
     SqlAlchemyIdempotencyRepository,
     SqlAlchemyLegalMatterRepository,
+    SqlAlchemyMatterUpdateProposalRepository,
     SqlAlchemyMessageCandidateRepository,
     SqlAlchemyOutboxEventRepository,
     SqlAlchemyPriorityConfirmationRepository,
@@ -47,6 +48,9 @@ class SqlAlchemyUnitOfWork(UnitOfWork):
         self.agent_run_sources = SqlAlchemyAgentRunSourceRepository(self._session)
         self.draft_artifacts = SqlAlchemyDraftArtifactRepository(self._session)
         self.matters = SqlAlchemyLegalMatterRepository(self._session)
+        self.matter_update_proposals = SqlAlchemyMatterUpdateProposalRepository(
+            self._session
+        )
         self.work_items = SqlAlchemyWorkItemRepository(self._session)
         self.priority_confirmations = SqlAlchemyPriorityConfirmationRepository(self._session)
         self.deadlines = SqlAlchemyDeadlineRepository(self._session)

@@ -356,7 +356,7 @@ git commit -m "feat: cite attachment text in message analysis"
 - Extends: Candidate `update_existing` response with `proposal_id`.
 - Consumes: `LegalMatterRepository.get_for_update`, `WorkItemRepository.add_many`, audit, outbox, and idempotency repositories.
 
-- [ ] **Step 1: Write failing proposal approval tests**
+- [x] **Step 1: Write failing proposal approval tests**
 
 ```python
 async def test_approval_rejects_stale_matter_version(handler):
@@ -370,23 +370,23 @@ async def test_partial_approval_applies_only_selected_fields(handler):
     assert result.matter.owner_id == original_owner
 ```
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 Run: `.venv/bin/python -m pytest apps/backend/tests/test_matter_update_proposals.py -q`
 
-- [ ] **Step 3: Add migration and domain invariants**
+- [x] **Step 3: Add migration and domain invariants**
 
 Create `matter_update_proposals` with status check, candidate/matter foreign keys, `base_matter_version`, JSON proposed/final changes, reviewer metadata, and optimistic `version`. Add domain methods `approve`, `partially_approve`, `reject`, and `supersede`.
 
-- [ ] **Step 4: Create proposals from Candidate update action**
+- [x] **Step 4: Create proposals from Candidate update action**
 
 Map current Matter values, message-extracted values, and AI-suggested values into a fixed field schema. Candidate becomes `linked` only after the pending Proposal and Candidate-Matter link commit together.
 
-- [ ] **Step 5: Apply human decisions transactionally**
+- [x] **Step 5: Apply human decisions transactionally**
 
 Lock Proposal and Matter, compare both expected versions, apply approved scalar fields through Matter domain methods, create approved WorkItems, append audit, outbox, and idempotency rows, then commit once.
 
-- [ ] **Step 6: Add API contracts**
+- [x] **Step 6: Add API contracts**
 
 ```http
 POST /api/v1/inbox/candidates/:candidateId/matter-update-proposals
@@ -396,7 +396,7 @@ POST /api/v1/matter-update-proposals/:proposalId/review
 
 `review` accepts proposal version, matter version, per-field decisions, final values, and optional rejection reason.
 
-- [ ] **Step 7: Run RED→GREEN regression and commit**
+- [x] **Step 7: Run RED→GREEN regression and commit**
 
 ```bash
 .venv/bin/python -m pytest apps/backend/tests/test_matter_update_proposals.py apps/backend/tests/test_candidate_matter_work_item_slice.py -q

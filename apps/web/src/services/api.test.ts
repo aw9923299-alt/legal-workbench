@@ -51,4 +51,30 @@ describe('API reliability helpers', () => {
     expect(headers.get('Idempotency-Key')).toBe('idem-confirm-1');
     expect(headers.get('X-Correlation-ID')).toBe('corr-confirm-1');
   });
+
+  it('uses the dedicated human-review endpoint for matter updates', async () => {
+    const requests: Array<{ url: string; init?: RequestInit }> = [];
+    vi.stubGlobal('fetch', vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      requests.push({ url: String(url), init });
+      if (String(url).endsWith('/auth/session')) return new Response('{}', { status: 200 });
+      return new Response(JSON.stringify({
+        proposalId: 'proposal-1', candidateId: 'candidate-1', matterId: 'matter-1',
+        status: 'pending', version: 1, idempotentReplay: false,
+      }), { status: 201, headers: { 'Content-Type': 'application/json' } });
+    }));
+
+    await legalApi.createMatterUpdateProposal('candidate-1', {
+      candidateVersion: 1,
+      matterId: 'matter-1',
+      proposedChanges: {
+        title: { currentValue: null, messageExtractedValue: null, aiSuggestedValue: null },
+      },
+      reason: '消息包含事项更新',
+    }, { idempotencyKey: 'idem-proposal-1', correlationId: 'corr-proposal-1' });
+
+    const mutation = requests.find((value) => value.url.includes('/matter-update-proposals'));
+    expect(mutation?.url).toContain('/inbox/candidates/candidate-1/matter-update-proposals');
+    expect(new Headers(mutation?.init?.headers).get('Idempotency-Key')).toBe('idem-proposal-1');
+    expect(JSON.parse(String(mutation?.init?.body))).toMatchObject({ matterId: 'matter-1' });
+  });
 });

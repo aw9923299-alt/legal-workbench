@@ -34,6 +34,7 @@ from legal_workbench.domain.entities import (
     IdempotencyRecord,
     IntegrationConnection,
     LegalMatter,
+    MatterUpdateProposal,
     MessageCandidate,
     OutboxEvent,
     PriorityConfirmation,
@@ -54,6 +55,7 @@ from legal_workbench.domain.enums import (
     DocumentExtractionStatus,
     FeishuMessageStatus,
     MatterCategory,
+    MatterUpdateProposalStatus,
     ReviewDecision,
     ReviewPackageStatus,
 )
@@ -81,6 +83,7 @@ from legal_workbench.infrastructure.models import (
     IdempotencyRecordModel,
     IntegrationConnectionModel,
     LegalMatterModel,
+    MatterUpdateProposalModel,
     MessageCandidateModel,
     OutboxEventModel,
     PriorityConfirmationModel,
@@ -893,37 +896,44 @@ class SqlAlchemyDraftArtifactRepository:
 class SqlAlchemyLegalMatterRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
+        self._tracked: dict[UUID, LegalMatterModel] = {}
 
     async def add(self, matter: LegalMatter) -> None:
-        self._session.add(
-            LegalMatterModel(
-                id=matter.id,
-                matter_number=matter.matter_number,
-                title=matter.title,
-                primary_category=matter.primary_category,
-                secondary_categories=[item.value for item in matter.secondary_categories],
-                lifecycle_status=matter.lifecycle_status,
-                work_status=matter.work_status,
-                owner_id=matter.owner_id,
-                collaborator_ids=matter.collaborator_ids,
-                requester_ids=matter.requester_ids,
-                entity_ids=matter.entity_ids,
-                legal_risk=matter.legal_risk,
-                business_impact=matter.business_impact,
-                confidentiality=matter.confidentiality,
-                summary=matter.summary,
-                objective=matter.objective,
-                current_stage=matter.current_stage,
-                opened_at=matter.opened_at,
-                resolved_at=matter.resolved_at,
-                closed_at=matter.closed_at,
-                reopened_at=matter.reopened_at,
-                version=matter.version,
-            )
+        model = LegalMatterModel(
+            id=matter.id,
+            matter_number=matter.matter_number,
+            title=matter.title,
+            primary_category=matter.primary_category,
+            secondary_categories=[item.value for item in matter.secondary_categories],
+            lifecycle_status=matter.lifecycle_status,
+            work_status=matter.work_status,
+            owner_id=matter.owner_id,
+            collaborator_ids=matter.collaborator_ids,
+            requester_ids=matter.requester_ids,
+            entity_ids=matter.entity_ids,
+            legal_risk=matter.legal_risk,
+            business_impact=matter.business_impact,
+            priority=matter.priority,
+            priority_source=matter.priority_source,
+            target_deadline_at=matter.target_deadline_at,
+            next_action=matter.next_action,
+            confidentiality=matter.confidentiality,
+            summary=matter.summary,
+            objective=matter.objective,
+            current_stage=matter.current_stage,
+            opened_at=matter.opened_at,
+            resolved_at=matter.resolved_at,
+            closed_at=matter.closed_at,
+            reopened_at=matter.reopened_at,
+            version=matter.version,
         )
+        self._tracked[matter.id] = model
+        self._session.add(model)
 
     async def get(self, matter_id: UUID) -> LegalMatter | None:
         model = await self._session.get(LegalMatterModel, matter_id)
+        if model is not None:
+            self._tracked[matter_id] = model
         return None if model is None else self._to_domain(model)
 
     async def get_for_update(self, matter_id: UUID) -> LegalMatter | None:
@@ -931,7 +941,25 @@ class SqlAlchemyLegalMatterRepository:
             select(LegalMatterModel).where(LegalMatterModel.id == matter_id).with_for_update()
         )
         model = (await self._session.execute(statement)).scalar_one_or_none()
+        if model is not None:
+            self._tracked[matter_id] = model
         return None if model is None else self._to_domain(model)
+
+    async def save(self, matter: LegalMatter) -> None:
+        model = self._tracked.get(matter.id)
+        if model is None:
+            model = await self._session.get(LegalMatterModel, matter.id)
+        if model is None:
+            raise RuntimeError(f"Legal matter {matter.id} is not tracked")
+        model.title = matter.title
+        model.primary_category = matter.primary_category
+        model.owner_id = matter.owner_id
+        model.work_status = matter.work_status
+        model.priority = matter.priority
+        model.priority_source = matter.priority_source
+        model.target_deadline_at = matter.target_deadline_at
+        model.next_action = matter.next_action
+        model.version = matter.version
 
     async def list(self, *, owner_id: str | None, limit: int) -> Sequence[LegalMatter]:
         statement: Select[tuple[LegalMatterModel]] = select(LegalMatterModel)
@@ -957,6 +985,10 @@ class SqlAlchemyLegalMatterRepository:
             entity_ids=model.entity_ids,
             legal_risk=model.legal_risk,
             business_impact=model.business_impact,
+            priority=model.priority,
+            priority_source=model.priority_source,
+            target_deadline_at=model.target_deadline_at,
+            next_action=model.next_action,
             confidentiality=model.confidentiality,
             summary=model.summary,
             objective=model.objective,
@@ -966,6 +998,102 @@ class SqlAlchemyLegalMatterRepository:
             resolved_at=model.resolved_at,
             closed_at=model.closed_at,
             reopened_at=model.reopened_at,
+        )
+
+
+class SqlAlchemyMatterUpdateProposalRepository:
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+        self._tracked: dict[UUID, MatterUpdateProposalModel] = {}
+
+    async def add(self, proposal: MatterUpdateProposal) -> None:
+        model = MatterUpdateProposalModel(
+            id=proposal.id,
+            candidate_id=proposal.candidate_id,
+            matter_id=proposal.matter_id,
+            base_matter_version=proposal.base_matter_version,
+            proposed_changes=proposal.proposed_changes,
+            final_changes=proposal.final_changes,
+            field_decisions=proposal.field_decisions,
+            reason=proposal.reason,
+            status=proposal.status,
+            created_by=proposal.created_by,
+            reviewed_by=proposal.reviewed_by,
+            reviewed_at=proposal.reviewed_at,
+            rejection_reason=proposal.rejection_reason,
+            version=proposal.version,
+            created_at=proposal.created_at,
+        )
+        self._tracked[proposal.id] = model
+        self._session.add(model)
+
+    async def get(self, proposal_id: UUID) -> MatterUpdateProposal | None:
+        model = await self._session.get(MatterUpdateProposalModel, proposal_id)
+        if model is None:
+            return None
+        self._tracked[proposal_id] = model
+        return self._to_domain(model)
+
+    async def get_for_update(self, proposal_id: UUID) -> MatterUpdateProposal | None:
+        statement = (
+            select(MatterUpdateProposalModel)
+            .where(MatterUpdateProposalModel.id == proposal_id)
+            .with_for_update()
+        )
+        model = (await self._session.execute(statement)).scalar_one_or_none()
+        if model is None:
+            return None
+        self._tracked[proposal_id] = model
+        return self._to_domain(model)
+
+    async def save(self, proposal: MatterUpdateProposal) -> None:
+        model = self._tracked.get(proposal.id)
+        if model is None:
+            model = await self._session.get(MatterUpdateProposalModel, proposal.id)
+        if model is None:
+            raise RuntimeError(f"Matter update proposal {proposal.id} is not tracked")
+        model.status = proposal.status
+        model.final_changes = proposal.final_changes
+        model.field_decisions = proposal.field_decisions
+        model.reviewed_by = proposal.reviewed_by
+        model.reviewed_at = proposal.reviewed_at
+        model.rejection_reason = proposal.rejection_reason
+        model.version = proposal.version
+
+    async def list(
+        self,
+        *,
+        status: MatterUpdateProposalStatus | None,
+        matter_id: UUID | None,
+        limit: int,
+    ) -> Sequence[MatterUpdateProposal]:
+        statement: Select[tuple[MatterUpdateProposalModel]] = select(MatterUpdateProposalModel)
+        if status is not None:
+            statement = statement.where(MatterUpdateProposalModel.status == status)
+        if matter_id is not None:
+            statement = statement.where(MatterUpdateProposalModel.matter_id == matter_id)
+        statement = statement.order_by(MatterUpdateProposalModel.created_at.desc()).limit(limit)
+        models = (await self._session.execute(statement)).scalars().all()
+        return [self._to_domain(model) for model in models]
+
+    @staticmethod
+    def _to_domain(model: MatterUpdateProposalModel) -> MatterUpdateProposal:
+        return MatterUpdateProposal(
+            id=model.id,
+            candidate_id=model.candidate_id,
+            matter_id=model.matter_id,
+            base_matter_version=model.base_matter_version,
+            proposed_changes=model.proposed_changes,
+            final_changes=model.final_changes,
+            field_decisions=model.field_decisions,
+            reason=model.reason,
+            status=model.status,
+            created_by=model.created_by,
+            reviewed_by=model.reviewed_by,
+            reviewed_at=model.reviewed_at,
+            rejection_reason=model.rejection_reason,
+            created_at=model.created_at,
+            version=model.version,
         )
 
 

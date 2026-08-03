@@ -395,9 +395,18 @@ class ResolveCandidateHandler:
         self._uow_factory = uow_factory
 
     async def execute(self, command: ResolveCandidateCommand) -> CandidateResolvedResult:
+        if command.action == CandidateResolutionAction.UPDATE_EXISTING:
+            raise DomainValidationError(
+                "Updating an existing matter requires a human-reviewed update proposal.",
+                details={
+                    "endpoint": (
+                        f"/api/v1/inbox/candidates/{command.candidate_id}/"
+                        "matter-update-proposals"
+                    )
+                },
+            )
         requires_matter = command.action in {
             CandidateResolutionAction.LINK_EXISTING,
-            CandidateResolutionAction.UPDATE_EXISTING,
         }
         if requires_matter != (command.matter_id is not None):
             raise DomainValidationError(
@@ -443,15 +452,10 @@ class ResolveCandidateHandler:
             )
             await uow.candidates.save(candidate)
             if command.matter_id is not None:
-                relation = (
-                    CandidateMatterRelation.UPDATED
-                    if command.action == CandidateResolutionAction.UPDATE_EXISTING
-                    else CandidateMatterRelation.LINKED
-                )
                 await uow.candidates.link_to_matter(
                     candidate_id=candidate.id,
                     matter_id=command.matter_id,
-                    relation_type=relation,
+                    relation_type=CandidateMatterRelation.LINKED,
                     confirmed_by=command.actor_id,
                 )
             response_payload: dict[str, object] = {

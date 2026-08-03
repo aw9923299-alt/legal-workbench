@@ -106,6 +106,10 @@ legal-workbench/
 
 后续增量：迁移 `20260803_0008` 已增加附件文档版本、隔离正文提取、片段、总磁盘配额和人工正文授权；真实飞书测试消息、官方长连接/远端补偿仍按用户要求后置，加密 Webhook 尚未实现。
 
+## 阶段4.5：Candidate 到 Matter 更新建议（本轮已完成）
+
+迁移 `20260803_0009` 已增加 `matter_update_proposals` 及 Matter 人工确认优先级、目标期限和下一步行动。`update_existing` 不再通过通用 resolve 接口登记后结束，而是生成待审 Proposal；审核页稳定展示当前值、消息提取值、AI 建议值和法务最终值。批准/部分批准使用 Proposal + Matter 双版本校验，并将字段、Deadline、WorkItem、审计、Outbox 和幂等记录一次提交。PostgreSQL 集成测试已覆盖实际持久化；Matter 版本冲突时不会修改 Proposal 或 Matter。
+
 ## 阶段5：Codex Runtime与消息研判 Agent（本轮已完成）
 
 已实现：

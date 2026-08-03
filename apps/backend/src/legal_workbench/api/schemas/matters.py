@@ -31,6 +31,10 @@ class LegalMatterResponse(ApiModel):
     entity_ids: list[str]
     legal_risk: LegalRisk
     business_impact: BusinessImpact
+    priority: Priority
+    priority_source: PrioritySource
+    target_deadline_at: datetime | None
+    next_action: str | None
     confidentiality: Confidentiality
     summary: str | None
     objective: str | None

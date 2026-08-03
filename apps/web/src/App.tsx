@@ -23,6 +23,7 @@ import DashboardPage from './pages/DashboardPage';
 import InboxPage from './pages/InboxPage';
 import LibraryPage from './pages/LibraryPage';
 import MessageDetailPage from './pages/MessageDetailPage';
+import MatterUpdateProposalPage from './pages/MatterUpdateProposalPage';
 import ReviewCenterPage from './pages/ReviewCenterPage';
 import SecurityPage from './pages/SecurityPage';
 import SystemStatusPage from './pages/SystemStatusPage';
@@ -78,6 +79,7 @@ function RouteContent() {
     <Route path="/system" element={<SystemStatusPage />} />
     <Route path="/matters" element={<TaskCenterPage onOpenMatter={(id) => navigate(`/matters/${id}`)} />} />
     <Route path="/matters/:matterId" element={<MatterDetailRoute />} />
+    <Route path="/matter-update-proposals/:proposalId" element={<MatterUpdateProposalPage />} />
     <Route path="/reviews" element={<ReviewCenterPage />} />
     <Route path="/library" element={<LibraryPage />} />
     <Route path="/security" element={<SecurityPage />} />

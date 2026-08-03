@@ -18,6 +18,19 @@ class CandidateResolutionAction(StrEnum):
     IGNORE = "ignore"
 
 
+class MatterUpdateProposalStatus(StrEnum):
+    PENDING = "pending"
+    APPROVED = "approved"
+    PARTIALLY_APPROVED = "partially_approved"
+    REJECTED = "rejected"
+    SUPERSEDED = "superseded"
+
+
+class ProposalFieldDecisionType(StrEnum):
+    APPROVE = "approve"
+    REJECT = "reject"
+
+
 class LegalRelevance(StrEnum):
     RELEVANT = "relevant"
     POSSIBLY_RELEVANT = "possibly_relevant"

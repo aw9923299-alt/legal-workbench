@@ -325,6 +325,10 @@ export interface LegalMatter {
   entityIds: string[];
   legalRisk: LegalRisk;
   businessImpact: BusinessImpact;
+  priority: Priority;
+  prioritySource: PrioritySource;
+  targetDeadlineAt: string | null;
+  nextAction: string | null;
   confidentiality: 'internal' | 'confidential' | 'restricted';
   summary: string | null;
   objective: string | null;
@@ -334,6 +338,51 @@ export interface LegalMatter {
   resolvedAt: string | null;
   closedAt: string | null;
   reopenedAt: string | null;
+}
+
+export type MatterUpdateProposalStatus =
+  | 'pending'
+  | 'approved'
+  | 'partially_approved'
+  | 'rejected'
+  | 'superseded';
+
+export type MatterUpdateProposalField =
+  | 'title'
+  | 'category'
+  | 'priority'
+  | 'deadline'
+  | 'owner'
+  | 'currentStatus'
+  | 'nextAction'
+  | 'newWorkItems';
+
+export interface ProposedFieldValues {
+  currentValue: unknown;
+  messageExtractedValue: unknown;
+  aiSuggestedValue: unknown;
+}
+
+export interface MatterUpdateProposal {
+  id: string;
+  candidateId: string;
+  matterId: string;
+  baseMatterVersion: number;
+  proposedChanges: Partial<Record<MatterUpdateProposalField, ProposedFieldValues>>;
+  finalChanges: Partial<Record<MatterUpdateProposalField, unknown>>;
+  fieldDecisions: Array<{
+    fieldName: MatterUpdateProposalField;
+    decision: 'approve' | 'reject';
+    finalValue: unknown;
+  }>;
+  reason: string;
+  status: MatterUpdateProposalStatus;
+  createdBy: string;
+  reviewedBy: string | null;
+  reviewedAt: string | null;
+  rejectionReason: string | null;
+  createdAt: string;
+  version: number;
 }
 
 export interface WorkItem {

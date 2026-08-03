@@ -56,6 +56,7 @@ from legal_workbench.domain.enums import (
     LegalRisk,
     MatterCategory,
     MatterLifecycleStatus,
+    MatterUpdateProposalStatus,
     MatterWorkStatus,
     MessageRole,
     Priority,
@@ -273,6 +274,14 @@ class LegalMatterModel(UuidPrimaryKeyMixin, TimestampMixin, VersionedMixin, Base
     business_impact: Mapped[BusinessImpact] = mapped_column(
         enum_type(BusinessImpact, name="business_impact", length=20), nullable=False
     )
+    priority: Mapped[Priority] = mapped_column(
+        enum_type(Priority, name="matter_priority", length=16), nullable=False
+    )
+    priority_source: Mapped[PrioritySource] = mapped_column(
+        enum_type(PrioritySource, name="matter_priority_source", length=24), nullable=False
+    )
+    target_deadline_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    next_action: Mapped[str | None] = mapped_column(Text)
     confidentiality: Mapped[Confidentiality] = mapped_column(
         enum_type(Confidentiality, name="confidentiality", length=20), nullable=False
     )
@@ -294,6 +303,44 @@ class LegalMatterModel(UuidPrimaryKeyMixin, TimestampMixin, VersionedMixin, Base
     candidate_links: Mapped[list[CandidateMatterLinkModel]] = relationship(
         back_populates="matter", cascade="all, delete-orphan"
     )
+
+
+class MatterUpdateProposalModel(UuidPrimaryKeyMixin, TimestampMixin, VersionedMixin, Base):
+    __tablename__ = "matter_update_proposals"
+    __table_args__ = (
+        Index("ix_matter_update_proposals_status_created", "status", "created_at"),
+        Index("ix_matter_update_proposals_matter_status", "matter_id", "status"),
+    )
+
+    candidate_id: Mapped[UUID] = mapped_column(
+        ForeignKey("message_candidates.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    matter_id: Mapped[UUID] = mapped_column(
+        ForeignKey("legal_matters.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    base_matter_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    proposed_changes: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=JSON_EMPTY_OBJECT
+    )
+    final_changes: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=JSON_EMPTY_OBJECT
+    )
+    field_decisions: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB, nullable=False, default=list, server_default=JSON_EMPTY_LIST
+    )
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[MatterUpdateProposalStatus] = mapped_column(
+        enum_type(
+            MatterUpdateProposalStatus,
+            name="matter_update_proposal_status",
+            length=24,
+        ),
+        nullable=False,
+    )
+    created_by: Mapped[str] = mapped_column(String(160), nullable=False)
+    reviewed_by: Mapped[str | None] = mapped_column(String(160))
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    rejection_reason: Mapped[str | None] = mapped_column(Text)
 
 
 class WorkItemModel(UuidPrimaryKeyMixin, TimestampMixin, VersionedMixin, Base):

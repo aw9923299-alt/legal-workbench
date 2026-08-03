@@ -193,6 +193,10 @@ interface LegalMatter {
   entityIds: string[];
   legalRisk: 'critical' | 'high' | 'medium' | 'low' | 'pending';
   businessImpact: 'company' | 'department' | 'project' | 'general';
+  priority: 'urgent' | 'high' | 'medium' | 'low';
+  prioritySource: 'system' | 'agent_suggested' | 'legal_confirmed';
+  targetDeadlineAt?: string;
+  nextAction?: string;
   confidentiality: 'internal' | 'confidential' | 'restricted';
   summary?: string;
   objective?: string;
@@ -206,6 +210,8 @@ interface LegalMatter {
 ```
 
 `workStatus` 是事项整体工作态势，不替代 `WorkItem` 状态。
+
+迁移 `20260803_0009` 增加 Matter 的人工确认优先级、目标期限和下一步行动，并新增 `matter_update_proposals`。Proposal 保存创建时的 `base_matter_version`、固定结构的建议值、逐字段决定和法务最终值；状态为 `pending/approved/partially_approved/rejected/superseded`。任何批准都必须在同一事务中锁定 Proposal 和 Matter 并核对两个版本，迟到审核不能覆盖新 Matter 版本。
 
 ## 2.6 MatterSourceLink
 
@@ -700,6 +706,7 @@ document_versions
 document_extractions
 document_segments
 storage_quota_reservations
+matter_update_proposals
 agent_run_status_events
 candidate_revisions
 ```
