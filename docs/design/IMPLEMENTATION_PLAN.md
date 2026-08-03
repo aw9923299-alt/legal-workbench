@@ -110,6 +110,10 @@ legal-workbench/
 
 迁移 `20260803_0009` 已增加 `matter_update_proposals` 及 Matter 人工确认优先级、目标期限和下一步行动。`update_existing` 不再通过通用 resolve 接口登记后结束，而是生成待审 Proposal；审核页稳定展示当前值、消息提取值、AI 建议值和法务最终值。批准/部分批准使用 Proposal + Matter 双版本校验，并将字段、Deadline、WorkItem、审计、Outbox 和幂等记录一次提交。PostgreSQL 集成测试已覆盖实际持久化；Matter 版本冲突时不会修改 Proposal 或 Matter。
 
+## 阶段4.6：WorkItem 全生命周期（本轮已完成）
+
+迁移 `20260803_0010` 增加 `paused` 状态、暂停/取消原因和依赖解决人。`start/pause/wait/block/resume/complete/cancel/reopen/change_owner/change_deadline/change_next_action/add_dependency/resolve_dependency` 全部由领域层校验，API 写操作要求认证、幂等键、Correlation ID 和 `If-Match`。等待/恢复/完成严格检查开放依赖，成功写入在同一 PostgreSQL 事务内保存版本、审计、Outbox 和幂等结果。事项详情页已提供对应人工操作，不允许前端直接写状态字符串。
+
 ## 阶段5：Codex Runtime与消息研判 Agent（本轮已完成）
 
 已实现：

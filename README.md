@@ -160,6 +160,7 @@ npm run build
 - Candidate确认创建Matter和初始WorkItem的事务闭环；
 - 前端接入Candidate、Matter、WorkItem、优先级、期限、依赖和审核接口；
 - PriorityConfirmation、Deadline和WorkItemDependency模型；
+- WorkItem 完整生命周期、依赖解决、领域状态机、乐观锁、审计和幂等操作页；
 - ReviewPackage、ReviewRecord、Communication及所有外发人工审核门禁；
 - Outbox并发领取、指数退避、重试、死信和重新入队；
 - Outbox Handler 显式注册，未知事件会失败、重试并最终死信；
@@ -181,8 +182,7 @@ npm run build
 
 ## 当前开发顺序
 
-1. 完成 MatterUpdateProposal 的人工审批与乐观锁；
-2. 补齐 WorkItem 生命周期和真实数据今日工作台；
-3. 完成 `/setup`、Mac 常驻、自检、备份、诊断和恢复闭环；
-4. 在 Worker 认证可用时执行真实 Codex 安全冒烟；
-5. 真实飞书测试消息和官方长连接验收按用户要求后置，恢复时单独执行且人工确认个人未读状态。
+1. 完成真实数据今日工作台和 AI 质量评估；
+2. 完成 `/setup`、Mac 常驻、自检、备份、诊断和恢复闭环；
+3. 在 Worker 认证可用时执行真实 Codex 安全冒烟；
+4. 真实飞书测试消息和官方长连接验收按用户要求后置，恢复时单独执行且人工确认个人未读状态。

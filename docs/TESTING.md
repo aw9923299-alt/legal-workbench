@@ -78,6 +78,17 @@ python -m pytest apps/backend/tests/test_postgres_matter_update_proposals.py -q
 
 该测试覆盖 Candidate 生成待审 Proposal、人工批准字段、新增 WorkItem、Deadline、审计和版本持久化；不调用真实飞书或真实 Codex。
 
+WorkItem 状态机与 PostgreSQL 事务可单独验证：
+
+```bash
+python -m pytest apps/backend/tests/test_work_item_lifecycle.py -q
+RUN_POSTGRES_INTEGRATION_TESTS=1 \
+LEGAL_WORKBENCH_TEST_DATABASE_URL='postgresql+psycopg://.../legal_workbench_test' \
+python -m pytest apps/backend/tests/test_postgres_work_item_lifecycle.py -q
+```
+
+集成测试执行开始、建依赖、等待、解决依赖、恢复和完成，检查 WorkItem/Dependency 版本、审计、Outbox 与幂等回放。
+
 涉及数据库或Compose时还应执行：
 
 ```bash

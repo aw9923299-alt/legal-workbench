@@ -430,7 +430,7 @@ git commit -m "feat: complete candidate matter update workflow"
 - Produces: dependency `resolve/waive` repository operations.
 - Consumes: existing Deadline and Dependency repositories.
 
-- [ ] **Step 1: Write a transition-table test before production code**
+- [x] **Step 1: Write a transition-table test before production code**
 
 ```python
 @pytest.mark.parametrize(
@@ -450,15 +450,15 @@ def test_allowed_transitions(initial, action, expected):
 
 Add separate failing tests for wait without dependency, complete with open dependency, missing pause/block/reopen reasons, version conflicts, owner/deadline/action changes, and dependency resolution.
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 Run: `.venv/bin/python -m pytest apps/backend/tests/test_work_item_lifecycle.py -q`
 
-- [ ] **Step 3: Add `paused` migration and domain methods**
+- [x] **Step 3: Add `paused` migration and domain methods**
 
 Update the database check constraint and enum mapping. Put all transition rules in `WorkItem`; clear or set waiting/block fields atomically and increment version exactly once per action.
 
-- [ ] **Step 4: Implement one application handler for audited actions**
+- [x] **Step 4: Implement one application handler for audited actions**
 
 ```python
 class WorkItemLifecycleHandler:
@@ -510,11 +510,11 @@ class WorkItemLifecycleHandler:
             return result
 ```
 
-- [ ] **Step 5: Add action and field-change endpoints**
+- [x] **Step 5: Add action and field-change endpoints**
 
 Implement start, pause, wait, block, resume, complete, cancel, reopen, owner, deadline, next-action, add dependency, and resolve dependency. Require `If-Match` for every update.
 
-- [ ] **Step 6: Run RED→GREEN regression and commit**
+- [x] **Step 6: Run RED→GREEN regression and commit**
 
 ```bash
 .venv/bin/python -m pytest apps/backend/tests/test_work_item_lifecycle.py apps/backend/tests/test_candidate_matter_work_item_slice.py -q

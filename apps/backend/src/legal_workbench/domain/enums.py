@@ -109,11 +109,26 @@ class Confidentiality(StrEnum):
 class WorkItemStatus(StrEnum):
     TODO = "todo"
     IN_PROGRESS = "in_progress"
+    PAUSED = "paused"
     WAITING = "waiting"
     BLOCKED = "blocked"
     PENDING_REVIEW = "pending_review"
     DONE = "done"
     CANCELLED = "cancelled"
+
+
+class WorkItemAction(StrEnum):
+    START = "start"
+    PAUSE = "pause"
+    WAIT = "wait"
+    BLOCK = "block"
+    RESUME = "resume"
+    COMPLETE = "complete"
+    CANCEL = "cancel"
+    REOPEN = "reopen"
+    CHANGE_OWNER = "change_owner"
+    CHANGE_DEADLINE = "change_deadline"
+    CHANGE_NEXT_ACTION = "change_next_action"
 
 
 class Priority(StrEnum):

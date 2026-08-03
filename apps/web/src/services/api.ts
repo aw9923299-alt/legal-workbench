@@ -20,6 +20,7 @@ import type {
   ReviewRecord,
   WorkItem,
   WorkItemDependency,
+  WorkItemStatus,
   SystemHealth,
 } from '../types/api';
 
@@ -472,6 +473,36 @@ export const legalApi = {
     return request(`/work-items/${workItemId}`);
   },
 
+  applyWorkItemAction(workItemId: string, action: 'start' | 'pause' | 'wait' | 'block' | 'resume' | 'complete' | 'cancel' | 'reopen', version: number, input: {
+    reason?: string;
+    waitingPartyId?: string;
+    blockerOwnerId?: string;
+  }, mutation?: MutationContext): Promise<{ workItemId: string; status: WorkItemStatus; version: number; idempotentReplay: boolean }> {
+    return request(`/work-items/${workItemId}/${action}`, {
+      method: 'POST',
+      headers: { 'If-Match': String(version) },
+      body: JSON.stringify(input),
+    }, { write: true, mutation });
+  },
+
+  changeWorkItemOwner(workItemId: string, version: number, input: { ownerId: string; reason?: string }, mutation?: MutationContext): Promise<{ workItemId: string; status: WorkItemStatus; version: number; idempotentReplay: boolean }> {
+    return request(`/work-items/${workItemId}/owner`, {
+      method: 'PATCH', headers: { 'If-Match': String(version) }, body: JSON.stringify(input),
+    }, { write: true, mutation });
+  },
+
+  changeWorkItemDeadline(workItemId: string, version: number, input: { deadline: string; reason?: string }, mutation?: MutationContext): Promise<{ workItemId: string; status: WorkItemStatus; version: number; idempotentReplay: boolean }> {
+    return request(`/work-items/${workItemId}/deadline`, {
+      method: 'PATCH', headers: { 'If-Match': String(version) }, body: JSON.stringify(input),
+    }, { write: true, mutation });
+  },
+
+  changeWorkItemNextAction(workItemId: string, version: number, input: { nextAction: string; reason?: string }, mutation?: MutationContext): Promise<{ workItemId: string; status: WorkItemStatus; version: number; idempotentReplay: boolean }> {
+    return request(`/work-items/${workItemId}/next-action`, {
+      method: 'PATCH', headers: { 'If-Match': String(version) }, body: JSON.stringify(input),
+    }, { write: true, mutation });
+  },
+
   confirmPriority(workItemId: string, input: {
     workItemVersion: number;
     confirmedPriority: Priority;
@@ -509,15 +540,28 @@ export const legalApi = {
   },
 
   createDependency(workItemId: string, input: {
+    workItemVersion: number;
     dependencyType: string;
     dependsOnWorkItemId?: string;
     externalPartyId?: string;
     description?: string;
-  }): Promise<{ dependencyId: string }> {
+  }, mutation?: MutationContext): Promise<{ dependencyId: string; workItemVersion: number }> {
+    const { workItemVersion, ...body } = input;
     return request(`/work-items/${workItemId}/dependencies`, {
       method: 'POST',
-      body: JSON.stringify(input),
-    }, { write: true });
+      headers: { 'If-Match': String(workItemVersion) },
+      body: JSON.stringify(body),
+    }, { write: true, mutation });
+  },
+
+  resolveDependency(workItemId: string, dependencyId: string, workItemVersion: number, dependencyVersion: number, reason?: string, mutation?: MutationContext): Promise<{
+    workItemId: string; dependencyId: string; workItemVersion: number; dependencyVersion: number; status: string; idempotentReplay: boolean;
+  }> {
+    return request(`/work-items/${workItemId}/dependencies/${dependencyId}/resolve`, {
+      method: 'POST',
+      headers: { 'If-Match': String(workItemVersion) },
+      body: JSON.stringify({ dependencyVersion, reason }),
+    }, { write: true, mutation });
   },
 
   listDependencies(workItemId: string): Promise<WorkItemDependency[]> {

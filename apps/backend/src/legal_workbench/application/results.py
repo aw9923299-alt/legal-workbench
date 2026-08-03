@@ -52,6 +52,7 @@ class DeadlineCreatedResult:
 @dataclass(frozen=True, slots=True)
 class DependencyCreatedResult:
     dependency_id: UUID
+    work_item_version: int
     idempotent_replay: bool = False
 
 

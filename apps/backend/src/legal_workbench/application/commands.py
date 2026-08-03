@@ -145,6 +145,7 @@ class CreateDeadlineCommand:
 @dataclass(frozen=True, slots=True)
 class CreateDependencyCommand:
     work_item_id: UUID
+    work_item_version: int
     actor_id: str
     correlation_id: str
     idempotency_key: str

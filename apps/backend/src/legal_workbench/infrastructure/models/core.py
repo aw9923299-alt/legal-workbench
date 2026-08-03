@@ -381,6 +381,7 @@ class WorkItemModel(UuidPrimaryKeyMixin, TimestampMixin, VersionedMixin, Base):
     waiting_party_id: Mapped[str | None] = mapped_column(String(160))
     waiting_reason: Mapped[str | None] = mapped_column(Text)
     waiting_since: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    paused_reason: Mapped[str | None] = mapped_column(Text)
     is_blocked: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default=FALSE_DEFAULT
     )
@@ -389,6 +390,8 @@ class WorkItemModel(UuidPrimaryKeyMixin, TimestampMixin, VersionedMixin, Base):
     planned_start_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     planned_complete_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    cancel_reason: Mapped[str | None] = mapped_column(Text)
     priority_confirmed_by: Mapped[str | None] = mapped_column(String(160))
     priority_confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     sequence_order: Mapped[int] = mapped_column(
@@ -593,6 +596,7 @@ class WorkItemDependencyModel(UuidPrimaryKeyMixin, TimestampMixin, VersionedMixi
     external_party_id: Mapped[str | None] = mapped_column(String(160))
     description: Mapped[str | None] = mapped_column(Text)
     satisfied_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    satisfied_by: Mapped[str | None] = mapped_column(String(160))
     waived_by: Mapped[str | None] = mapped_column(String(160))
     waived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 

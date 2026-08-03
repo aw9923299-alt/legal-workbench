@@ -248,6 +248,7 @@ interface WorkItem {
   status:
     | 'todo'
     | 'in_progress'
+    | 'paused'
     | 'waiting'
     | 'blocked'
     | 'pending_review'
@@ -265,12 +266,15 @@ interface WorkItem {
   waitingPartyId?: string;
   waitingReason?: string;
   waitingSince?: string;
+  pausedReason?: string;
   isBlocked: boolean;
   blockerReason?: string;
   blockerOwnerId?: string;
   plannedStartAt?: string;
   plannedCompleteAt?: string;
   completedAt?: string;
+  cancelledAt?: string;
+  cancelReason?: string;
   version: number;
 }
 ```
@@ -622,12 +626,14 @@ open/resolved → cancelled
 
 ```text
 todo → in_progress → pending_review → done
-        ├→ waiting ───────────┤
-        └→ blocked ───────────┤
-任何未完成状态 → cancelled
+        ├→ paused ─────┐
+        ├→ waiting ────┼→ in_progress
+        └→ blocked ────┘
+任何非终态 → cancelled
+done/cancelled → todo（reopen，必须填写原因）
 ```
 
-进入 `waiting` 必须存在开放 `Dependency`；进入 `pending_review` 必须存在待审 `ReviewPackage`。
+进入 `waiting` 必须存在开放 `Dependency`；恢复 waiting 前必须先解决全部开放依赖；完成前不得存在开放依赖。暂停、等待、阻塞、取消和重新打开均记录原因，阻塞还必须记录责任人。负责人、计划完成时间和下一步行动的变更与状态迁移一样经过领域服务、版本检查、审计和 Outbox。
 
 ## 4.4 AgentRun
 
@@ -660,7 +666,7 @@ pending_send → sending → sent
 
 1. 没有 `MessageCandidate` 确认记录，不创建来源为 AI 识别的正式事项。
 2. 人工确认字段不能被 Codex 直接覆盖，只能产生新提案。
-3. `WorkItem.status = waiting` 时必须存在开放依赖和下一次处理时间。
+3. `WorkItem.status = waiting` 时必须存在开放依赖；存在开放依赖时不得恢复或完成。
 4. `AgentRun` 必须绑定不可变 `ContextSnapshot`。
 5. `DraftArtifact` 不能直接成为 `Communication`。
 6. `Communication` 必须绑定已批准的 `ReviewRecord`，且内容哈希一致。

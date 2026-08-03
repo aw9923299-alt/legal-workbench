@@ -1134,12 +1134,27 @@ class SqlAlchemyWorkItemRepository:
         if model is None:
             raise RuntimeError(f"Work item {work_item.id} is not tracked")
         model.priority = work_item.priority
+        model.status = work_item.status
+        model.owner_id = work_item.owner_id
         model.priority_source = work_item.priority_source
         model.priority_reasons = work_item.priority_reasons
         model.override_reason = work_item.override_reason
         model.planned_complete_at = work_item.planned_complete_at
+        model.next_action = work_item.next_action
+        model.waiting_party_id = work_item.waiting_party_id
+        model.waiting_reason = work_item.waiting_reason
+        model.waiting_since = work_item.waiting_since
+        model.paused_reason = work_item.paused_reason
+        model.is_blocked = work_item.is_blocked
+        model.blocker_reason = work_item.blocker_reason
+        model.blocker_owner_id = work_item.blocker_owner_id
+        model.planned_start_at = work_item.planned_start_at
+        model.completed_at = work_item.completed_at
+        model.cancelled_at = work_item.cancelled_at
+        model.cancel_reason = work_item.cancel_reason
         model.priority_confirmed_by = work_item.priority_confirmed_by
         model.priority_confirmed_at = work_item.priority_confirmed_at
+        model.version = work_item.version
 
     async def list_by_matter(self, matter_id: UUID) -> Sequence[WorkItem]:
         statement = (
@@ -1169,12 +1184,15 @@ class SqlAlchemyWorkItemRepository:
             waiting_party_id=work_item.waiting_party_id,
             waiting_reason=work_item.waiting_reason,
             waiting_since=work_item.waiting_since,
+            paused_reason=work_item.paused_reason,
             is_blocked=work_item.is_blocked,
             blocker_reason=work_item.blocker_reason,
             blocker_owner_id=work_item.blocker_owner_id,
             planned_start_at=work_item.planned_start_at,
             planned_complete_at=work_item.planned_complete_at,
             completed_at=work_item.completed_at,
+            cancelled_at=work_item.cancelled_at,
+            cancel_reason=work_item.cancel_reason,
             priority_confirmed_by=work_item.priority_confirmed_by,
             priority_confirmed_at=work_item.priority_confirmed_at,
             sequence_order=work_item.sequence_order,
@@ -1200,12 +1218,15 @@ class SqlAlchemyWorkItemRepository:
             waiting_party_id=model.waiting_party_id,
             waiting_reason=model.waiting_reason,
             waiting_since=model.waiting_since,
+            paused_reason=model.paused_reason,
             is_blocked=model.is_blocked,
             blocker_reason=model.blocker_reason,
             blocker_owner_id=model.blocker_owner_id,
             planned_start_at=model.planned_start_at,
             planned_complete_at=model.planned_complete_at,
             completed_at=model.completed_at,
+            cancelled_at=model.cancelled_at,
+            cancel_reason=model.cancel_reason,
             priority_confirmed_by=model.priority_confirmed_by,
             priority_confirmed_at=model.priority_confirmed_at,
             sequence_order=model.sequence_order,
@@ -1332,23 +1353,50 @@ class SqlAlchemyDeadlineRepository:
 class SqlAlchemyDependencyRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
+        self._tracked: dict[UUID, WorkItemDependencyModel] = {}
 
     async def add(self, dependency: WorkItemDependency) -> None:
-        self._session.add(
-            WorkItemDependencyModel(
-                id=dependency.id,
-                work_item_id=dependency.work_item_id,
-                depends_on_work_item_id=dependency.depends_on_work_item_id,
-                dependency_type=dependency.dependency_type,
-                status=dependency.status,
-                external_party_id=dependency.external_party_id,
-                description=dependency.description,
-                satisfied_at=dependency.satisfied_at,
-                waived_by=dependency.waived_by,
-                waived_at=dependency.waived_at,
-                version=dependency.version,
-            )
+        model = WorkItemDependencyModel(
+            id=dependency.id,
+            work_item_id=dependency.work_item_id,
+            depends_on_work_item_id=dependency.depends_on_work_item_id,
+            dependency_type=dependency.dependency_type,
+            status=dependency.status,
+            external_party_id=dependency.external_party_id,
+            description=dependency.description,
+            satisfied_at=dependency.satisfied_at,
+            satisfied_by=dependency.satisfied_by,
+            waived_by=dependency.waived_by,
+            waived_at=dependency.waived_at,
+            version=dependency.version,
         )
+        self._tracked[dependency.id] = model
+        self._session.add(model)
+
+    async def get_for_update(self, dependency_id: UUID) -> WorkItemDependency | None:
+        statement = (
+            select(WorkItemDependencyModel)
+            .where(WorkItemDependencyModel.id == dependency_id)
+            .with_for_update()
+        )
+        model = (await self._session.execute(statement)).scalar_one_or_none()
+        if model is None:
+            return None
+        self._tracked[dependency_id] = model
+        return self._to_domain(model)
+
+    async def save(self, dependency: WorkItemDependency) -> None:
+        model = self._tracked.get(dependency.id)
+        if model is None:
+            model = await self._session.get(WorkItemDependencyModel, dependency.id)
+        if model is None:
+            raise RuntimeError(f"Work item dependency {dependency.id} is not tracked")
+        model.status = dependency.status
+        model.satisfied_at = dependency.satisfied_at
+        model.satisfied_by = dependency.satisfied_by
+        model.waived_by = dependency.waived_by
+        model.waived_at = dependency.waived_at
+        model.version = dependency.version
 
     async def list_by_work_item(self, work_item_id: UUID) -> Sequence[WorkItemDependency]:
         statement = (
@@ -1357,22 +1405,24 @@ class SqlAlchemyDependencyRepository:
             .order_by(WorkItemDependencyModel.created_at)
         )
         models = (await self._session.execute(statement)).scalars().all()
-        return [
-            WorkItemDependency(
-                id=model.id,
-                work_item_id=model.work_item_id,
-                depends_on_work_item_id=model.depends_on_work_item_id,
-                dependency_type=model.dependency_type,
-                status=model.status,
-                external_party_id=model.external_party_id,
-                description=model.description,
-                satisfied_at=model.satisfied_at,
-                waived_by=model.waived_by,
-                waived_at=model.waived_at,
-                version=model.version,
-            )
-            for model in models
-        ]
+        return [self._to_domain(model) for model in models]
+
+    @staticmethod
+    def _to_domain(model: WorkItemDependencyModel) -> WorkItemDependency:
+        return WorkItemDependency(
+            id=model.id,
+            work_item_id=model.work_item_id,
+            depends_on_work_item_id=model.depends_on_work_item_id,
+            dependency_type=model.dependency_type,
+            status=model.status,
+            external_party_id=model.external_party_id,
+            description=model.description,
+            satisfied_at=model.satisfied_at,
+            satisfied_by=model.satisfied_by,
+            waived_by=model.waived_by,
+            waived_at=model.waived_at,
+            version=model.version,
+        )
 
 
 class SqlAlchemyReviewPackageRepository:
@@ -2245,9 +2295,7 @@ class SqlAlchemyDocumentRepository:
         self._tracked_extractions[extraction.id] = model
         self._session.add(model)
 
-    async def find_latest_extraction(
-        self, document_version_id: UUID
-    ) -> DocumentExtraction | None:
+    async def find_latest_extraction(self, document_version_id: UUID) -> DocumentExtraction | None:
         statement = (
             select(DocumentExtractionModel)
             .where(DocumentExtractionModel.document_version_id == document_version_id)

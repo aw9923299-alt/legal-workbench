@@ -36,6 +36,7 @@ Runtime 前后使用独立短事务，不在数据库事务内等待 Codex。任
 | AgentRun 状态历史、租约与 PostgreSQL 恢复 | 已实现，Celery Beat 定时扫描 |
 | Candidate 分析修订历史 | 已实现，旧修订不覆盖 |
 | MatterUpdateProposal 人工审核 | 已实现；Proposal/Matter 双版本锁、逐字段最终值、WorkItem/Deadline 同事务落库 |
+| WorkItem 全生命周期 | 已实现；13 类领域动作、WorkItem/Dependency 双版本、审计/Outbox/幂等同事务 |
 | PDF/DOCX/TXT/Markdown 附件正文 | 已实现受控解析与引用；图片/扫描 PDF 无 OCR，明确正文不可用 |
 | HttpOnly 本地会话与 Actor 来源审计 | 已实现；生产会话签发器尚未实现 |
 | 飞书连接状态、消息版本、附件元数据/受控下载 | 已实现；下载不授权给 Codex |
@@ -60,6 +61,7 @@ Runtime 前后使用独立短事务，不在数据库事务内等待 Codex。任
 - `integrations/feishu_sdk.py`：官方 SDK 原始事件、长连接和优雅退出；
 - `application/feishu_operations.py`：持久化连接状态、补偿和受控附件下载。
 - `application/matter_updates.py`：Candidate 更新建议、双版本审核和人工最终值事务落库；
+- `application/work_item_lifecycle.py`：WorkItem 状态、字段和依赖解决的统一领域编排；
 - `api/routes/matter_update_proposals.py`：更新建议读取与审核 API；
 - `apps/web/src/pages/MatterUpdateProposalPage.tsx`：当前值/消息提取值/AI建议值/法务最终值四列审核页。
 
@@ -80,8 +82,7 @@ Runtime 将唯一授权 ContextSnapshot 作为不可信 JSON 直接送入 stdin�
 
 ## 下一步
 
-1. 按本轮顺序继续补齐 WorkItem 全生命周期状态机与 API；
-2. 完成今日工作台确定性队列、评测和本地 Mac 运维恢复；
-3. 完成 `/setup` 和飞书群聊授权范围页面；
-4. 真实飞书测试消息与官方长连接验收已按用户要求后置，后续有测试凭证时再执行，不得写成已通过；
-5. 在专用容器内使用非生产凭证执行真实 Codex 冒烟和故障注入。
+1. 完成今日工作台确定性队列、评测和本地 Mac 运维恢复；
+2. 完成 `/setup` 和飞书群聊授权范围页面；
+3. 真实飞书测试消息与官方长连接验收已按用户要求后置，后续有测试凭证时再执行，不得写成已通过；
+4. 在专用容器内使用非生产凭证执行真实 Codex 冒烟和故障注入。

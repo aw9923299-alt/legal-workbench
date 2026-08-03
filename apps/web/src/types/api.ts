@@ -23,6 +23,7 @@ export type PrioritySource = 'system' | 'agent_suggested' | 'legal_confirmed';
 export type WorkItemStatus =
   | 'todo'
   | 'in_progress'
+  | 'paused'
   | 'waiting'
   | 'blocked'
   | 'pending_review'
@@ -402,12 +403,15 @@ export interface WorkItem {
   waitingPartyId: string | null;
   waitingReason: string | null;
   waitingSince: string | null;
+  pausedReason: string | null;
   isBlocked: boolean;
   blockerReason: string | null;
   blockerOwnerId: string | null;
   plannedStartAt: string | null;
   plannedCompleteAt: string | null;
   completedAt: string | null;
+  cancelledAt: string | null;
+  cancelReason: string | null;
   priorityConfirmedBy: string | null;
   priorityConfirmedAt: string | null;
   sequenceOrder: number;
@@ -457,6 +461,7 @@ export interface WorkItemDependency {
   externalPartyId: string | null;
   description: string | null;
   satisfiedAt: string | null;
+  satisfiedBy: string | null;
   waivedBy: string | null;
   waivedAt: string | null;
   version: number;

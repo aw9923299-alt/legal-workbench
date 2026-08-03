@@ -205,28 +205,36 @@ GET    /api/v1/matters/:matterId/artifacts
 
 ```http
 POST   /api/v1/matters/:matterId/work-items
-PATCH  /api/v1/work-items/:workItemId
 POST   /api/v1/work-items/:workItemId/start
+POST   /api/v1/work-items/:workItemId/pause
 POST   /api/v1/work-items/:workItemId/wait
 POST   /api/v1/work-items/:workItemId/block
-POST   /api/v1/work-items/:workItemId/submit-review
+POST   /api/v1/work-items/:workItemId/resume
 POST   /api/v1/work-items/:workItemId/complete
 POST   /api/v1/work-items/:workItemId/cancel
+POST   /api/v1/work-items/:workItemId/reopen
+PATCH  /api/v1/work-items/:workItemId/owner
+PATCH  /api/v1/work-items/:workItemId/deadline
+PATCH  /api/v1/work-items/:workItemId/next-action
+POST   /api/v1/work-items/:workItemId/dependencies
+POST   /api/v1/work-items/:workItemId/dependencies/:dependencyId/resolve
 ```
 
 新增WorkItem同样必须通过 Session 认证并携带`Idempotency-Key`。系统对Matter行加锁，保证并发新增时`sequenceOrder`稳定，并将业务写入、审计、Outbox和幂等记录在同一事务提交。
 
-等待请求：
+上述 WorkItem 状态、字段和依赖写接口还必须携带 `If-Match: <work-item-version>`；解决依赖的请求体另带 `dependencyVersion`。缺少 `If-Match` 返回 `428`，版本冲突返回 `409`。API 不直接写状态字符串，统一调用领域状态机；每个成功动作只增加一次 WorkItem 版本并追加审计、Outbox 和幂等结果。
+
+状态请求：
 
 ```ts
-interface StartWaitingRequest {
-  dependencyType: 'material' | 'response' | 'decision' | 'approval' | 'external_event';
-  waitingForId?: string;
-  description: string;
-  expectedAt?: string;
-  nextReminderAt?: string;
+interface WorkItemActionRequest {
+  reason?: string;
+  waitingPartyId?: string;
+  blockerOwnerId?: string;
 }
 ```
+
+调用 `wait` 前先通过 `dependencies` 创建开放依赖；`pause/wait/block/cancel/reopen` 必须填写原因，`block` 还必须填写 `blockerOwnerId`。
 
 ## 7. 优先级确认接口
 

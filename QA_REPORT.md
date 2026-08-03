@@ -53,7 +53,7 @@ FeishuEvent → FeishuMessage → 附件下载/正文提取
 
 ## 数据库与运行时验证
 
-- PostgreSQL 18 独立测试数据库上执行最新迁移往返，当前版本为 `20260803_0008 (head)`；
+- PostgreSQL 18 独立测试数据库上执行最新迁移往返，当前版本为 `20260803_0010 (head)`；
 - 在 `20260801_0003` 插入两个历史重复 ContextSnapshot 和一个历史 Candidate 外部 Agent UUID 后执行升级/降级，快照没有被合并删除，历史 UUID 可完整恢复；
 - PostgreSQL 集成测试验证 `FeishuMessage → ContextSnapshot → AgentRun → MessageCandidate`，结果为 `2 passed, 62 deselected`；
 - Worker 镜像按唯一 `CODEX_CLI_VERSION=0.146.0` 构建成功，与当前宿主 `codex-cli 0.146.0` 精确一致；
@@ -96,6 +96,23 @@ FeishuEvent → FeishuMessage → 附件下载/正文提取
 - **已通过自动化验证**：开启 PostgreSQL 集成后后端 `132 passed`；Ruff、mypy、Compose 配置、Worker 镜像重建、前端 typecheck/build 和 6 个测试文件共 11 个测试全部通过；镜像内 `pypdf`/`python-docx` 可导入且 Codex 仍为 `0.146.0`，Vite 仍只有已知大 chunk 警告；
 - **未执行**：真实飞书测试消息和官方长连接继续按用户指示后置；隔离 Worker 未配置 Codex 认证，附件事实的真实 Codex 模型输出未执行，不以 Fake Runtime 或 Schema 测试冒充真实推理。
 
+## 阶段六增量结果：Candidate 到 Matter 更新建议
+
+- **已实现**：迁移 `20260803_0009` 增加 `matter_update_proposals`；Candidate 的 `update_existing` 必须创建待人工审核 Proposal，通用 resolve 接口不能把更新直接写入 Matter；
+- **已实现**：后端从受控 Matter/Candidate 数据生成当前值、消息提取值和 AI 建议值，浏览器只选择字段；审核页逐字段填写法务最终值；
+- **已实现**：Proposal 与 Matter 双版本乐观锁；批准/部分批准把 Matter 字段、新 WorkItem、规范化 Deadline、审计、Outbox 和幂等记录在同一事务提交，冲突时不静默覆盖；
+- **已通过真实 PostgreSQL 验证**：实际创建 Proposal、人工批准标题/优先级/期限/WorkItem 并读取持久化结果，Matter 版本从 1 增至 2。
+
+## 阶段七增量结果：WorkItem 全生命周期
+
+- **已实现**：迁移 `20260803_0010` 增加 `paused`、暂停/取消原因和依赖解决人；全新数据库升级及 `0010 → 0009 → 0010` 往返通过；
+- **已实现**：`start/pause/wait/block/resume/complete/cancel/reopen/change_owner/change_deadline/change_next_action/add_dependency/resolve_dependency` 全部进入领域层，禁止 API 直接改状态字符串；
+- **已实现**：等待必须存在开放依赖，恢复等待项和完成前必须先解决依赖；状态切换原子清除不再生效的暂停/等待/阻塞字段；
+- **已实现**：每次写操作校验 `If-Match`，WorkItem 与 Dependency 各自版本递增；业务记录、审计、Outbox 和幂等回放同事务提交；
+- **已实现**：事项详情页提供全部合法状态、负责人、计划完成时间、下一步行动、建依赖和解决依赖操作，终态操作受限；
+- **已通过真实 PostgreSQL 验证**：执行 `开始 → 建依赖 → 等待 → 解决依赖 → 恢复 → 完成`，最终 WorkItem 版本 7、Dependency 版本 2，并验证 6 条审计、6 条 Outbox 和完成动作唯一幂等记录；
+- **已通过自动化验证**：默认后端 `160 passed, 7 skipped`，开启 PostgreSQL 集成后 `167 passed`；Ruff、mypy、前端 typecheck、6 个测试文件共 13 个测试和生产构建通过。Vite 仍只有已知大 chunk 警告。
+
 ## 最终验证命令
 
 提交前以本节记录的最终结果为准。宿主 `.venv` 为 Python 3.14.6，生产镜像按项目基线使用 Python 3.12.13：
@@ -107,12 +124,12 @@ cd apps/backend
 ../../.venv/bin/ruff check .
 ../../.venv/bin/mypy --config-file pyproject.toml src
 ../../.venv/bin/pytest --disable-warnings
-# 128 passed, 4 skipped（默认不启用 PostgreSQL 集成）
+# 160 passed, 7 skipped（默认不启用 PostgreSQL 集成）
 
 RUN_POSTGRES_INTEGRATION_TESTS=1 \
 LEGAL_WORKBENCH_TEST_DATABASE_URL="${LOCAL_TEST_DATABASE_URL}" \
 ../../.venv/bin/pytest --disable-warnings
-# 132 passed
+# 167 passed
 
 ../../.venv/bin/python ../../scripts/smoke_test_codex_triage.py \
   --database-url postgresql+psycopg://legal_workbench:change-me-local-only@127.0.0.1:5432/legal_workbench_stage3_019fbdd2 \
@@ -124,7 +141,7 @@ npm install
 npm run typecheck
 npm run test
 npm run build
-# 6 test files / 11 tests passed；构建成功
+# 6 test files / 13 tests passed；构建成功
 cd ../..
 docker compose config --quiet
 docker compose build
@@ -139,7 +156,7 @@ LEGAL_WORKBENCH_DATABASE_URL=postgresql+psycopg://legal_workbench:change-me-loca
   ../../.venv/bin/alembic -c alembic.ini downgrade -1
 LEGAL_WORKBENCH_DATABASE_URL=postgresql+psycopg://legal_workbench:change-me-local-only@127.0.0.1:5432/legal_workbench_stage3_019fbdd2 \
   ../../.venv/bin/alembic -c alembic.ini upgrade head
-# 20260803_0008 (head)
+# 20260803_0010 (head)
 
 cd ../..
 docker compose run --rm --no-deps --entrypoint codex worker --version
@@ -148,7 +165,7 @@ docker compose run --rm --no-deps --entrypoint id worker codex-agent
 # uid=10001(codex-agent) gid=10001(codex-agent) groups=10001(codex-agent)
 ```
 
-结果：截至附件阶段，`git diff --check`、Ruff、mypy、132 个含 PostgreSQL 集成的后端测试、0008 迁移往返、前端 typecheck/test/build、Compose 静态配置和 Worker 镜像重建均通过；镜像内文档解析依赖可导入，Codex 版本仍为 `0.146.0`。前一阶段的 Fake Runtime 冒烟和故障恢复证据继续有效。Vite 构建产生单个 `1,441.68 kB`（gzip `453.84 kB`）chunk 警告，不影响构建成功。
+结果：截至 WorkItem 生命周期阶段，`git diff --check`、Ruff、mypy、167 个含 PostgreSQL 集成的后端测试、0010 迁移往返、前端 typecheck/test/build 和 Compose 静态配置均通过；附件阶段的 Worker 镜像与解析依赖验证、Fake Runtime 冒烟和故障恢复证据继续有效。Vite 构建产生单个约 `1,454 kB`（gzip约 `457 kB`）chunk 警告，不影响构建成功。
 
 `npm audit` 返回 `2 high`：两项均源自 React Router 的 RSC Action CSRF 公告 `GHSA-qwww-vcr4-c8h2`。当前 Registry 最新 `react-router-dom` 为 `7.18.2`，公告要求 `>=8.3.0`，暂无可安装修复版本；本项目是纯 Vite SPA，不启用 RSC/Server Actions，但该上游告警仍明确保留，未通过降级或强制安装掩盖。
 
@@ -179,5 +196,5 @@ docker compose run --rm --no-deps --entrypoint id worker codex-agent
 - Agent 可控 Web/浏览器/MCP 工具已关闭，但模型传输仍需要服务端出网；当前 Compose 尚未配置目的地址 allowlist 或代理级 egress 限制；
 - 飞书长连接、Verification Token Webhook 和配置群聊时间窗补偿代码已实现并通过模拟/数据库验证；真实凭证联调和加密 Webhook 尚未完成；
 - 生产认证的外部登录/会话签发器尚未实现；本轮只建立可扩展的后端会话边界；
-- Candidate 的“更新已有 Matter”当前只登记可审计关联与人工决定，不静默覆盖已有 Matter 字段；字段级更新应在后续单独定义并通过版本冲突测试；
+- Candidate 的“更新已有 Matter”已进入逐字段人工 Proposal 审核；尚未实现批量 Proposal 队列和更细的字段权限策略；
 - SSE 当前基于 PostgreSQL 快照差异，不提供跨重启事件游标；前端路由包仍需做按页分包。

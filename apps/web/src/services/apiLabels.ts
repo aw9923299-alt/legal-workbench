@@ -36,6 +36,7 @@ export const candidateStatusLabels: Record<string, string> = {
 export const workStatusLabels: Record<string, string> = {
   todo: '待开始',
   in_progress: '处理中',
+  paused: '已暂停',
   waiting: '等待中',
   blocked: '阻塞',
   pending_review: '待审核',
