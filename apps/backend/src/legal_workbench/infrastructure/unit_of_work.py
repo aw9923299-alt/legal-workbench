@@ -9,6 +9,7 @@ from legal_workbench.application.ports import UnitOfWork
 from legal_workbench.infrastructure.database import get_session_factory
 from legal_workbench.infrastructure.repositories import (
     SqlAlchemyAgentDefinitionRepository,
+    SqlAlchemyAgentRunAttemptRepository,
     SqlAlchemyAgentRunRepository,
     SqlAlchemyAgentRunSourceRepository,
     SqlAlchemyAuditEventRepository,
@@ -40,6 +41,7 @@ class SqlAlchemyUnitOfWork(UnitOfWork):
         self.candidates = SqlAlchemyMessageCandidateRepository(self._session)
         self.agent_definitions = SqlAlchemyAgentDefinitionRepository(self._session)
         self.agent_runs = SqlAlchemyAgentRunRepository(self._session)
+        self.agent_run_attempts = SqlAlchemyAgentRunAttemptRepository(self._session)
         self.agent_run_sources = SqlAlchemyAgentRunSourceRepository(self._session)
         self.draft_artifacts = SqlAlchemyDraftArtifactRepository(self._session)
         self.matters = SqlAlchemyLegalMatterRepository(self._session)

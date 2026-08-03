@@ -18,8 +18,20 @@ from legal_workbench.agents.runtime import (
     AgentExecutionContext,
     AgentRuntimeError,
 )
+from legal_workbench.config import Settings
 from legal_workbench.domain.entities import AgentRun, ContextSnapshot
 from legal_workbench.domain.enums import AgentRunStatus
+
+
+def test_codex_cli_version_has_one_environment_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CODEX_CLI_VERSION", "9.9.9-test")
+    monkeypatch.setenv("LEGAL_WORKBENCH_CODEX_EXPECTED_VERSION", "wrong-old-source")
+
+    settings = Settings(_env_file=None)
+
+    assert settings.codex_expected_version == "9.9.9-test"
 
 
 def valid_output() -> dict[str, object]:

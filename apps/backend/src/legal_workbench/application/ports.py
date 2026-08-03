@@ -7,8 +7,10 @@ from typing import Protocol
 from uuid import UUID
 
 from legal_workbench.domain.entities import (
+    AgentAttemptLease,
     AgentDefinition,
     AgentRun,
+    AgentRunAttempt,
     AgentRunSource,
     AgentRunStatusChange,
     AuditEvent,
@@ -33,6 +35,7 @@ from legal_workbench.domain.entities import (
     WorkItemDependency,
 )
 from legal_workbench.domain.enums import (
+    AgentAttemptStatus,
     AgentRunStatus,
     CandidateMatterRelation,
     CandidateStatus,
@@ -95,6 +98,37 @@ class AgentRunRepository(Protocol):
         older_than: datetime,
         limit: int,
     ) -> Sequence[AgentRun]: ...
+
+
+class AgentRunAttemptRepository(Protocol):
+    async def add(self, attempt: AgentRunAttempt) -> None: ...
+    async def heartbeat(
+        self,
+        lease: AgentAttemptLease,
+        *,
+        heartbeat_at: datetime,
+        lease_expires_at: datetime,
+    ) -> None: ...
+    async def complete(
+        self, lease: AgentAttemptLease, *, finished_at: datetime
+    ) -> None: ...
+    async def fail(
+        self,
+        lease: AgentAttemptLease,
+        *,
+        status: AgentAttemptStatus,
+        failure_code: str,
+        failure_message: str,
+        finished_at: datetime,
+    ) -> None: ...
+    async def expire_current(
+        self,
+        *,
+        run_id: UUID,
+        attempt_number: int,
+        finished_at: datetime,
+    ) -> bool: ...
+    async def list_by_run(self, run_id: UUID) -> Sequence[AgentRunAttempt]: ...
 
 
 class AgentRunSourceRepository(Protocol):
@@ -231,6 +265,7 @@ class UnitOfWork(Protocol):
     candidates: MessageCandidateRepository
     agent_definitions: AgentDefinitionRepository
     agent_runs: AgentRunRepository
+    agent_run_attempts: AgentRunAttemptRepository
     agent_run_sources: AgentRunSourceRepository
     draft_artifacts: DraftArtifactRepository
     matters: LegalMatterRepository

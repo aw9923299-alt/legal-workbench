@@ -181,6 +181,15 @@ class AgentRunStatus(StrEnum):
     DEAD_LETTER = "dead_letter"
 
 
+class AgentAttemptStatus(StrEnum):
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    TIMED_OUT = "timed_out"
+    CANCELLED = "cancelled"
+    EXPIRED = "expired"
+
+
 class MessageAnalysisFailureCode(StrEnum):
     FEISHU_MESSAGE_NOT_FOUND = "FEISHU_MESSAGE_NOT_FOUND"
     FEISHU_MESSAGE_NOT_AUTHORIZED = "FEISHU_MESSAGE_NOT_AUTHORIZED"

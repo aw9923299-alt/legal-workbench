@@ -29,6 +29,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from legal_workbench.domain.enums import (
+    AgentAttemptStatus,
     AgentDefinitionStatus,
     AgentRunSourceType,
     AgentRunStatus,
@@ -932,6 +933,43 @@ class AgentRunModel(UuidPrimaryKeyMixin, TimestampMixin, VersionedMixin, Base):
     lease_expires_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), index=True
     )
+
+
+class AgentRunAttemptModel(UuidPrimaryKeyMixin, Base):
+    __tablename__ = "agent_run_attempts"
+    __table_args__ = (
+        CheckConstraint("attempt_number > 0", name="attempt_number"),
+        UniqueConstraint(
+            "agent_run_id", "attempt_number", name="uq_agent_run_attempts_number"
+        ),
+        UniqueConstraint("lease_token", name="uq_agent_run_attempts_lease_token"),
+        Index(
+            "ix_agent_run_attempts_status_expiry",
+            "status",
+            "lease_expires_at",
+        ),
+    )
+
+    agent_run_id: Mapped[UUID] = mapped_column(
+        ForeignKey("agent_runs.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    attempt_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    lease_token: Mapped[UUID] = mapped_column(nullable=False)
+    worker_id: Mapped[str] = mapped_column(String(160), nullable=False)
+    status: Mapped[AgentAttemptStatus] = mapped_column(
+        enum_type(AgentAttemptStatus, name="agent_attempt_status", length=20),
+        nullable=False,
+    )
+    lease_expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    heartbeat_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    failure_code: Mapped[str | None] = mapped_column(String(80))
+    failure_message: Mapped[str | None] = mapped_column(Text)
 
 
 class AgentRunStatusEventModel(UuidPrimaryKeyMixin, Base):

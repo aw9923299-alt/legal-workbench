@@ -7,6 +7,7 @@ from typing import ClassVar
 from uuid import UUID, uuid4
 
 from legal_workbench.domain.enums import (
+    AgentAttemptStatus,
     AgentDefinitionStatus,
     AgentRunSourceType,
     AgentRunStatus,
@@ -46,6 +47,7 @@ from legal_workbench.domain.errors import (
     DomainValidationError,
     EntityVersionConflictError,
     InvalidStateTransitionError,
+    StaleAgentAttemptError,
 )
 
 
@@ -817,6 +819,147 @@ class AgentDefinition:
                 "Only an active AgentDefinition can execute.",
                 details={"agentKey": self.key, "status": self.status.value},
             )
+
+
+@dataclass(frozen=True, slots=True)
+class AgentAttemptLease:
+    run_id: UUID
+    attempt_number: int
+    lease_token: UUID
+
+
+@dataclass(slots=True)
+class AgentRunAttempt:
+    id: UUID
+    run_id: UUID
+    attempt_number: int
+    lease_token: UUID
+    worker_id: str
+    status: AgentAttemptStatus
+    lease_expires_at: datetime
+    started_at: datetime
+    heartbeat_at: datetime
+    finished_at: datetime | None = None
+    failure_code: str | None = None
+    failure_message: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.attempt_number < 1:
+            raise DomainValidationError("Agent attempt number must be positive.")
+        if not self.worker_id.strip():
+            raise DomainValidationError("Agent attempt worker ID is required.")
+        require_aware(self.lease_expires_at, field_name="Agent attempt lease expiry")
+        require_aware(self.started_at, field_name="Agent attempt start time")
+        require_aware(self.heartbeat_at, field_name="Agent attempt heartbeat")
+        if self.finished_at is not None:
+            require_aware(self.finished_at, field_name="Agent attempt finish time")
+
+    @classmethod
+    def start(
+        cls,
+        *,
+        run_id: UUID,
+        attempt_number: int,
+        lease_token: UUID,
+        worker_id: str,
+        lease_expires_at: datetime,
+        now: datetime | None = None,
+    ) -> AgentRunAttempt:
+        started_at = now or utc_now()
+        return cls(
+            id=uuid4(),
+            run_id=run_id,
+            attempt_number=attempt_number,
+            lease_token=lease_token,
+            worker_id=worker_id,
+            status=AgentAttemptStatus.RUNNING,
+            lease_expires_at=lease_expires_at,
+            started_at=started_at,
+            heartbeat_at=started_at,
+        )
+
+    @property
+    def lease(self) -> AgentAttemptLease:
+        return AgentAttemptLease(
+            run_id=self.run_id,
+            attempt_number=self.attempt_number,
+            lease_token=self.lease_token,
+        )
+
+    def ensure_current(self, lease: AgentAttemptLease) -> None:
+        if self.status != AgentAttemptStatus.RUNNING or lease != self.lease:
+            raise StaleAgentAttemptError(
+                "The Agent Attempt lease is stale and cannot update this run.",
+                details={
+                    "runId": str(lease.run_id),
+                    "attemptNumber": lease.attempt_number,
+                },
+            )
+
+    def complete(self, lease: AgentAttemptLease, *, now: datetime | None = None) -> None:
+        self.ensure_current(lease)
+        finished_at = now or utc_now()
+        require_aware(finished_at, field_name="Agent attempt completion time")
+        self.status = AgentAttemptStatus.COMPLETED
+        self.finished_at = finished_at
+        self.lease_expires_at = finished_at
+
+    def heartbeat(
+        self,
+        lease: AgentAttemptLease,
+        *,
+        heartbeat_at: datetime,
+        lease_expires_at: datetime,
+    ) -> None:
+        self.ensure_current(lease)
+        require_aware(heartbeat_at, field_name="Agent attempt heartbeat")
+        require_aware(lease_expires_at, field_name="Agent attempt lease expiry")
+        if lease_expires_at <= heartbeat_at:
+            raise DomainValidationError(
+                "Agent attempt lease expiry must follow its heartbeat."
+            )
+        self.heartbeat_at = heartbeat_at
+        self.lease_expires_at = lease_expires_at
+
+    def fail(
+        self,
+        lease: AgentAttemptLease,
+        *,
+        status: AgentAttemptStatus,
+        failure_code: str,
+        failure_message: str,
+        now: datetime | None = None,
+    ) -> None:
+        self.ensure_current(lease)
+        if status not in {
+            AgentAttemptStatus.FAILED,
+            AgentAttemptStatus.TIMED_OUT,
+            AgentAttemptStatus.CANCELLED,
+        }:
+            raise DomainValidationError(
+                "Agent attempt failure requires a failure terminal status."
+            )
+        finished_at = now or utc_now()
+        require_aware(finished_at, field_name="Agent attempt failure time")
+        self.status = status
+        self.finished_at = finished_at
+        self.lease_expires_at = finished_at
+        self.failure_code = failure_code
+        self.failure_message = failure_message
+
+    def expire(self, *, now: datetime | None = None) -> None:
+        if self.status != AgentAttemptStatus.RUNNING:
+            raise StaleAgentAttemptError(
+                "Only a running Agent Attempt can expire.",
+                details={"runId": str(self.run_id), "attemptNumber": self.attempt_number},
+            )
+        finished_at = now or utc_now()
+        require_aware(finished_at, field_name="Agent attempt expiry time")
+        self.status = AgentAttemptStatus.EXPIRED
+        self.finished_at = finished_at
+        self.lease_expires_at = finished_at
+        self.failure_code = "AGENT_LEASE_EXPIRED"
+        self.failure_message = "Agent worker heartbeat lease expired."
 
 
 @dataclass(slots=True)

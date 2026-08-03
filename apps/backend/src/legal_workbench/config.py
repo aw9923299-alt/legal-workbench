@@ -28,6 +28,7 @@ class Settings(BaseSettings):
         env_prefix="LEGAL_WORKBENCH_",
         case_sensitive=False,
         extra="ignore",
+        populate_by_name=True,
     )
 
     app_name: str = "法务工作台 API"
@@ -60,7 +61,10 @@ class Settings(BaseSettings):
     knowledge_root: str = "/data/knowledge"
     codex_runs_root: str = "/data/codex-runs"
     codex_command: str = "codex"
-    codex_expected_version: str = "0.145.0-alpha.9"
+    codex_cli_version: str = Field(
+        default="0.146.0",
+        validation_alias="CODEX_CLI_VERSION",
+    )
     codex_run_timeout_seconds: int = 900
     codex_sandbox_uid: int | None = None
     codex_sandbox_gid: int | None = None
@@ -95,6 +99,11 @@ class Settings(BaseSettings):
     analysis_recovery_interval_seconds: int = 30
     analysis_recovery_stale_seconds: int = 120
     analysis_recovery_batch_size: int = 100
+
+    @property
+    def codex_expected_version(self) -> str:
+        """Compatibility name for the single CODEX_CLI_VERSION setting."""
+        return self.codex_cli_version
 
     @field_validator("codex_sandbox_uid", "codex_sandbox_gid", mode="before")
     @classmethod

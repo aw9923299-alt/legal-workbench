@@ -1,6 +1,6 @@
 # QA Report
 
-更新日期：2026-08-01
+更新日期：2026-08-03
 
 ## 本轮范围
 
@@ -49,14 +49,14 @@ FeishuEvent → FeishuMessage → FeishuMessageReceived Outbox
 - **已实现**：PostgreSQL 恢复服务扫描无活动 Run 的排队消息、陈旧 queued Run 和过期 preparing/running 租约，通过 Outbox 重派，耗尽后进入 `dead_letter`；
 - **已通过模拟验证**：11 类消息 Fake Runtime 冒烟全部成功；闲聊、仅供知悉和 Prompt 注入不创建 Candidate，其他合法请求均完成严格校验；
 - **已通过真实 PostgreSQL 验证**：迁移 `20260801_0005 → 0006 → 0005 → 0006` 成功；集成测试验证状态历史与 Candidate revision 均落库；
-- **尚未真实集成验证**：宿主 CLI `0.146.0-alpha.9.2` 与配置 `0.145.0-alpha.9` 不匹配；即使按宿主版本检查，隔离环境仍为 `missing_runtime_api_key`。未发起真实模型推理请求。
+- **阶段二当时尚未真实集成验证**：当时宿主 CLI `0.146.0-alpha.9.2` 与配置 `0.145.0-alpha.9` 不匹配；该历史差异已由阶段四消除，但隔离 Worker 仍没有 Codex 认证，未发起真实模型推理请求。
 
 ## 数据库与运行时验证
 
-- PostgreSQL 18 临时数据库上执行 `alembic upgrade head → downgrade -1 → upgrade head`，当前版本为 `20260801_0006 (head)`；
+- PostgreSQL 18 独立测试数据库上执行 `alembic upgrade head → downgrade 20260801_0006 → upgrade head`，当前版本为 `20260803_0007 (head)`；
 - 在 `20260801_0003` 插入两个历史重复 ContextSnapshot 和一个历史 Candidate 外部 Agent UUID 后执行升级/降级，快照没有被合并删除，历史 UUID 可完整恢复；
 - PostgreSQL 集成测试验证 `FeishuMessage → ContextSnapshot → AgentRun → MessageCandidate`，结果为 `2 passed, 62 deselected`；
-- Worker 镜像构建成功，包含固定版本 `codex-cli 0.145.0-alpha.9`；
+- Worker 镜像按唯一 `CODEX_CLI_VERSION=0.146.0` 构建成功，与当前宿主 `codex-cli 0.146.0` 精确一致；
 - 镜像内已创建专用 `codex-agent` UID/GID 10001；
 - Runtime 的完整 `--strict-config`、只读 sandbox、工具禁用和输出 Schema 参数通过当前 CLI 无联网参数解析检查；
 - 普通单元测试使用 `FakeAgentRuntime`，不调用真实 Codex。
@@ -73,6 +73,16 @@ FeishuEvent → FeishuMessage → FeishuMessageReceived Outbox
 - **已通过自动化验证**：前端测试覆盖收件箱状态映射、消息详情、事实与推断视觉分离、Agent 状态刷新、SSE 退避/轮询、幂等键复用、结构化错误和 Candidate 人工动作请求头；
 - **部分实现**：SSE 当前使用数据库健康快照差异检测，不是 PostgreSQL LISTEN/NOTIFY；列表为上限分页而非游标分页；前端生产包仍有大 chunk 警告；
 - **尚未真实集成验证**：因缺飞书凭证和隔离 Codex 认证，真实消息→真实模型→人工确认的现场演示未执行；Fake Runtime + PostgreSQL 闭环是本轮可重复验证基线。
+
+## 阶段四增量结果：Codex 版本统一与 Attempt fencing
+
+- **已实现**：部署只读取 `CODEX_CLI_VERSION`；Dockerfile 不再保留第二个默认版本，Compose 将同一值传给镜像构建和后端运行环境；2026-08-03 实测宿主与新构建 Worker 镜像均为 `codex-cli 0.146.0`；
+- **已实现**：新增 `agent_run_attempts` 和迁移 `20260803_0007`，每个 Attempt 持久化 `attempt_number`、不可预测 `lease_token`、Worker、租约、心跳、终态和失败码，历史行不原地复用；
+- **已实现**：心跳、成功和失败提交都必须同时匹配 `run_id + attempt_number + lease_token + running`；Candidate 创建只在同一事务内条件完成当前 Attempt 后发生；
+- **已实现**：PostgreSQL 恢复先把过期 Attempt 标记为 `expired`，再通过 Outbox 重派；迟到 Worker 的成功结果返回 `STALE_AGENT_ATTEMPT`，不能覆盖新 Attempt 或创建 Candidate；
+- **已通过自动化验证**：Attempt 领域、消息分析、租约恢复、Codex Runtime、SQLAlchemy 模型和真实 PostgreSQL fencing 共 38 个针对性测试通过；开启 PostgreSQL 集成后全量后端 104 个测试通过；Ruff 和 mypy 通过；
+- **已通过真实 PostgreSQL 验证**：独立测试库从空库升级到 `20260803_0007`，执行 `0007 → 0006 → 0007` 成功；真实条件更新验证旧 token 被拒绝而新 Attempt 保持 `running`；
+- **未执行**：按本轮用户指示，真实飞书测试消息和官方长连接验收后置；Worker 未提供 Codex 认证，未执行真实推理，不声称真实 Codex 冒烟通过。
 
 ## 最终验证命令
 
@@ -117,11 +127,11 @@ LEGAL_WORKBENCH_DATABASE_URL=postgresql+psycopg://legal_workbench:change-me-loca
   ../../.venv/bin/alembic -c alembic.ini downgrade -1
 LEGAL_WORKBENCH_DATABASE_URL=postgresql+psycopg://legal_workbench:change-me-local-only@127.0.0.1:5432/legal_workbench_stage3_019fbdd2 \
   ../../.venv/bin/alembic -c alembic.ini upgrade head
-# 20260801_0006 (head)
+# 20260803_0007 (head)
 
 cd ../..
 docker compose run --rm --no-deps --entrypoint codex worker --version
-# codex-cli 0.145.0-alpha.9
+# codex-cli 0.146.0
 docker compose run --rm --no-deps --entrypoint id worker codex-agent
 # uid=10001(codex-agent) gid=10001(codex-agent) groups=10001(codex-agent)
 ```

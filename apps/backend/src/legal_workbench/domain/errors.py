@@ -28,3 +28,7 @@ class InvalidStateTransitionError(DomainError):
 
 class IdempotencyConflictError(DomainError):
     code = "IDEMPOTENCY_CONFLICT"
+
+
+class StaleAgentAttemptError(DomainError):
+    code = "STALE_AGENT_ATTEMPT"

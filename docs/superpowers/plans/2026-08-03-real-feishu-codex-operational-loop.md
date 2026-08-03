@@ -93,7 +93,7 @@ Expected: collection or assertion failure because `AgentRunAttempt` and `AgentAt
 
 - [ ] **Step 3: Add migration and domain types**
 
-Create `agent_run_attempts` with a unique `(run_id, attempt_number)`, unique `lease_token`, indexed `lease_expires_at`, lifecycle timestamps, failure code, and append-only historical rows. Set `CODEX_CLI_VERSION=0.146.0-alpha.9.2` in `.env.example`; pass it as the Docker build arg and runtime environment; remove the Dockerfile version default.
+Create `agent_run_attempts` with a unique `(run_id, attempt_number)`, unique `lease_token`, indexed `lease_expires_at`, lifecycle timestamps, failure code, and append-only historical rows. Set `CODEX_CLI_VERSION=0.146.0` in `.env.example`, matching the 2026-08-03 host verification; pass it as the Docker build arg and runtime environment; remove the Dockerfile version default.
 
 ```python
 @dataclass(slots=True, frozen=True)

@@ -1,5 +1,6 @@
 from legal_workbench.infrastructure.models.core import (
     AgentDefinitionModel,
+    AgentRunAttemptModel,
     AgentRunModel,
     AgentRunSourceModel,
     AgentRunStatusEventModel,
@@ -29,6 +30,7 @@ from legal_workbench.infrastructure.models.core import (
 
 __all__ = [
     "AgentDefinitionModel",
+    "AgentRunAttemptModel",
     "AgentRunModel",
     "AgentRunSourceModel",
     "AgentRunStatusEventModel",

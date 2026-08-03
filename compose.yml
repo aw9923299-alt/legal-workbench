@@ -1,5 +1,11 @@
 name: legal-workbench
 
+x-backend-build: &backend-build
+  context: .
+  dockerfile: infra/docker/backend.Dockerfile
+  args:
+    CODEX_CLI_VERSION: ${CODEX_CLI_VERSION:?Set CODEX_CLI_VERSION in .env}
+
 services:
   postgres:
     image: pgvector/pgvector:0.8.5-pg18-bookworm
@@ -42,15 +48,14 @@ services:
       retries: 10
 
   api:
-    build:
-      context: .
-      dockerfile: infra/docker/backend.Dockerfile
+    build: *backend-build
     restart: unless-stopped
     env_file:
       - .env
     environment:
       LEGAL_WORKBENCH_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-legal_workbench}:${POSTGRES_PASSWORD:-change-me-local-only}@postgres:5432/${POSTGRES_DB:-legal_workbench}
       LEGAL_WORKBENCH_REDIS_URL: redis://redis:6379/0
+      CODEX_CLI_VERSION: ${CODEX_CLI_VERSION:?Set CODEX_CLI_VERSION in .env}
     command:
       - /bin/sh
       - -c
@@ -77,15 +82,14 @@ services:
       retries: 10
 
   worker:
-    build:
-      context: .
-      dockerfile: infra/docker/backend.Dockerfile
+    build: *backend-build
     restart: unless-stopped
     env_file:
       - .env
     environment:
       LEGAL_WORKBENCH_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-legal_workbench}:${POSTGRES_PASSWORD:-change-me-local-only}@postgres:5432/${POSTGRES_DB:-legal_workbench}
       LEGAL_WORKBENCH_REDIS_URL: redis://redis:6379/0
+      CODEX_CLI_VERSION: ${CODEX_CLI_VERSION:?Set CODEX_CLI_VERSION in .env}
       LEGAL_WORKBENCH_CODEX_SANDBOX_UID: "10001"
       LEGAL_WORKBENCH_CODEX_SANDBOX_GID: "10001"
     command:
@@ -103,15 +107,14 @@ services:
         condition: service_healthy
 
   scheduler:
-    build:
-      context: .
-      dockerfile: infra/docker/backend.Dockerfile
+    build: *backend-build
     restart: unless-stopped
     env_file:
       - .env
     environment:
       LEGAL_WORKBENCH_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-legal_workbench}:${POSTGRES_PASSWORD:-change-me-local-only}@postgres:5432/${POSTGRES_DB:-legal_workbench}
       LEGAL_WORKBENCH_REDIS_URL: redis://redis:6379/0
+      CODEX_CLI_VERSION: ${CODEX_CLI_VERSION:?Set CODEX_CLI_VERSION in .env}
     command:
       - celery
       - -A
@@ -136,9 +139,7 @@ services:
         condition: service_healthy
 
   feishu-connector:
-    build:
-      context: .
-      dockerfile: infra/docker/backend.Dockerfile
+    build: *backend-build
     profiles: ["integrations"]
     restart: unless-stopped
     env_file:
@@ -146,6 +147,7 @@ services:
     environment:
       LEGAL_WORKBENCH_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-legal_workbench}:${POSTGRES_PASSWORD:-change-me-local-only}@postgres:5432/${POSTGRES_DB:-legal_workbench}
       LEGAL_WORKBENCH_REDIS_URL: redis://redis:6379/0
+      CODEX_CLI_VERSION: ${CODEX_CLI_VERSION:?Set CODEX_CLI_VERSION in .env}
     command: ["python", "-m", "legal_workbench.integrations.feishu_connector"]
     volumes:
       - ./data/feishu-attachments:/data/feishu-attachments
@@ -154,9 +156,7 @@ services:
         condition: service_healthy
 
   file-indexer:
-    build:
-      context: .
-      dockerfile: infra/docker/backend.Dockerfile
+    build: *backend-build
     profiles: ["integrations"]
     restart: "no"
     env_file:
@@ -164,6 +164,7 @@ services:
     environment:
       LEGAL_WORKBENCH_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-legal_workbench}:${POSTGRES_PASSWORD:-change-me-local-only}@postgres:5432/${POSTGRES_DB:-legal_workbench}
       LEGAL_WORKBENCH_REDIS_URL: redis://redis:6379/0
+      CODEX_CLI_VERSION: ${CODEX_CLI_VERSION:?Set CODEX_CLI_VERSION in .env}
     command: ["python", "-m", "legal_workbench.integrations.file_indexer"]
     volumes:
       - ./data/knowledge:/data/knowledge:ro

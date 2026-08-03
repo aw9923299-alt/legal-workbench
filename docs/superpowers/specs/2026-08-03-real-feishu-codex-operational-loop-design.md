@@ -224,7 +224,7 @@ POST /api/v1/settings/feishu-scopes/:scopeId/reconcile
 
 ### 6.1 单一版本来源
 
-新增唯一 `CODEX_CLI_VERSION=0.146.0-alpha.9.2`。Compose 将该值同时传入 Worker 镜像构建参数和运行环境；Settings、健康检查、文档和冒烟脚本读取同一值。Dockerfile 不维护第二个版本默认值。
+新增唯一 `CODEX_CLI_VERSION=0.146.0`，与 2026-08-03 实测宿主 `codex-cli 0.146.0` 一致。Compose 将该值同时传入 Worker 镜像构建参数和运行环境；Settings、健康检查、文档和冒烟脚本读取同一值。Dockerfile 不维护第二个版本默认值。
 
 仓库提供宿主 CLI 的 `--check` 与显式 `--install` 脚本，两者都读取同一变量。启动自检同时核对宿主和 Worker 镜像版本；两者任一不一致即显示 `version_mismatch`。正式 Runtime 仍只在 Worker 执行，宿主登录态不会被自动复制进容器。
 

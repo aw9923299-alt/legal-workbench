@@ -9,10 +9,13 @@ from uuid import UUID, uuid4
 
 from sqlalchemy import Select, exists, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql.elements import ColumnElement
 
 from legal_workbench.domain.entities import (
+    AgentAttemptLease,
     AgentDefinition,
     AgentRun,
+    AgentRunAttempt,
     AgentRunSource,
     AgentRunStatusChange,
     AuditEvent,
@@ -37,6 +40,7 @@ from legal_workbench.domain.entities import (
     WorkItemDependency,
 )
 from legal_workbench.domain.enums import (
+    AgentAttemptStatus,
     AgentDefinitionStatus,
     AgentRunStatus,
     AttachmentDownloadStatus,
@@ -49,8 +53,10 @@ from legal_workbench.domain.enums import (
     ReviewDecision,
     ReviewPackageStatus,
 )
+from legal_workbench.domain.errors import StaleAgentAttemptError
 from legal_workbench.infrastructure.models import (
     AgentDefinitionModel,
+    AgentRunAttemptModel,
     AgentRunModel,
     AgentRunSourceModel,
     AgentRunStatusEventModel,
@@ -645,6 +651,168 @@ class SqlAlchemyAgentRunRepository:
             created_at=model.created_at,
             updated_at=model.updated_at,
             version=model.version,
+        )
+
+
+class SqlAlchemyAgentRunAttemptRepository:
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def add(self, attempt: AgentRunAttempt) -> None:
+        self._session.add(
+            AgentRunAttemptModel(
+                id=attempt.id,
+                agent_run_id=attempt.run_id,
+                attempt_number=attempt.attempt_number,
+                lease_token=attempt.lease_token,
+                worker_id=attempt.worker_id,
+                status=attempt.status,
+                lease_expires_at=attempt.lease_expires_at,
+                started_at=attempt.started_at,
+                heartbeat_at=attempt.heartbeat_at,
+                finished_at=attempt.finished_at,
+                failure_code=attempt.failure_code,
+                failure_message=attempt.failure_message,
+            )
+        )
+
+    async def heartbeat(
+        self,
+        lease: AgentAttemptLease,
+        *,
+        heartbeat_at: datetime,
+        lease_expires_at: datetime,
+    ) -> None:
+        statement = (
+            update(AgentRunAttemptModel)
+            .where(*self._active_lease_predicates(lease))
+            .values(
+                heartbeat_at=heartbeat_at,
+                lease_expires_at=lease_expires_at,
+            )
+            .returning(AgentRunAttemptModel.id)
+        )
+        if (await self._session.execute(statement)).scalar_one_or_none() is None:
+            self._raise_stale(lease)
+
+    async def complete(
+        self, lease: AgentAttemptLease, *, finished_at: datetime
+    ) -> None:
+        statement = (
+            update(AgentRunAttemptModel)
+            .where(*self._active_lease_predicates(lease))
+            .values(
+                status=AgentAttemptStatus.COMPLETED,
+                finished_at=finished_at,
+                lease_expires_at=finished_at,
+                failure_code=None,
+                failure_message=None,
+            )
+            .returning(AgentRunAttemptModel.id)
+        )
+        if (await self._session.execute(statement)).scalar_one_or_none() is None:
+            self._raise_stale(lease)
+
+    async def fail(
+        self,
+        lease: AgentAttemptLease,
+        *,
+        status: AgentAttemptStatus,
+        failure_code: str,
+        failure_message: str,
+        finished_at: datetime,
+    ) -> None:
+        if status not in {
+            AgentAttemptStatus.FAILED,
+            AgentAttemptStatus.TIMED_OUT,
+            AgentAttemptStatus.CANCELLED,
+        }:
+            raise ValueError("Attempt failure status must be terminal.")
+        statement = (
+            update(AgentRunAttemptModel)
+            .where(*self._active_lease_predicates(lease))
+            .values(
+                status=status,
+                finished_at=finished_at,
+                lease_expires_at=finished_at,
+                failure_code=failure_code,
+                failure_message=failure_message,
+            )
+            .returning(AgentRunAttemptModel.id)
+        )
+        if (await self._session.execute(statement)).scalar_one_or_none() is None:
+            self._raise_stale(lease)
+
+    async def expire_current(
+        self,
+        *,
+        run_id: UUID,
+        attempt_number: int,
+        finished_at: datetime,
+    ) -> bool:
+        statement = (
+            update(AgentRunAttemptModel)
+            .where(
+                AgentRunAttemptModel.agent_run_id == run_id,
+                AgentRunAttemptModel.attempt_number == attempt_number,
+                AgentRunAttemptModel.status == AgentAttemptStatus.RUNNING,
+            )
+            .values(
+                status=AgentAttemptStatus.EXPIRED,
+                finished_at=finished_at,
+                lease_expires_at=finished_at,
+                failure_code="AGENT_LEASE_EXPIRED",
+                failure_message="Agent worker heartbeat lease expired.",
+            )
+            .returning(AgentRunAttemptModel.id)
+        )
+        return (await self._session.execute(statement)).scalar_one_or_none() is not None
+
+    async def list_by_run(self, run_id: UUID) -> Sequence[AgentRunAttempt]:
+        statement = (
+            select(AgentRunAttemptModel)
+            .where(AgentRunAttemptModel.agent_run_id == run_id)
+            .order_by(AgentRunAttemptModel.attempt_number)
+        )
+        models = (await self._session.execute(statement)).scalars().all()
+        return [self._to_domain(model) for model in models]
+
+    @staticmethod
+    def _active_lease_predicates(
+        lease: AgentAttemptLease,
+    ) -> tuple[ColumnElement[bool], ...]:
+        return (
+            AgentRunAttemptModel.agent_run_id == lease.run_id,
+            AgentRunAttemptModel.attempt_number == lease.attempt_number,
+            AgentRunAttemptModel.lease_token == lease.lease_token,
+            AgentRunAttemptModel.status == AgentAttemptStatus.RUNNING,
+        )
+
+    @staticmethod
+    def _raise_stale(lease: AgentAttemptLease) -> None:
+        raise StaleAgentAttemptError(
+            "The Agent Attempt lease is stale and cannot update this run.",
+            details={
+                "runId": str(lease.run_id),
+                "attemptNumber": lease.attempt_number,
+            },
+        )
+
+    @staticmethod
+    def _to_domain(model: AgentRunAttemptModel) -> AgentRunAttempt:
+        return AgentRunAttempt(
+            id=model.id,
+            run_id=model.agent_run_id,
+            attempt_number=model.attempt_number,
+            lease_token=model.lease_token,
+            worker_id=model.worker_id,
+            status=model.status,
+            lease_expires_at=model.lease_expires_at,
+            started_at=model.started_at,
+            heartbeat_at=model.heartbeat_at,
+            finished_at=model.finished_at,
+            failure_code=model.failure_code,
+            failure_message=model.failure_message,
         )
 
 

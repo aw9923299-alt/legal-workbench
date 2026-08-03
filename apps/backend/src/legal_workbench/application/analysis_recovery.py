@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
+from legal_workbench.application.agent_attempts import AgentAttemptService
 from legal_workbench.application.ports import UnitOfWork, UnitOfWorkFactory
 from legal_workbench.domain.entities import AuditEvent, OutboxEvent
 from legal_workbench.domain.enums import AgentRunStatus, FeishuMessageStatus
@@ -88,6 +89,14 @@ class AnalysisRecoveryService:
                 )
                 if recovered_message is None:
                     continue
+                attempt_expired = await AgentAttemptService(
+                    uow.agent_run_attempts,
+                    lease_seconds=self._stale_after_seconds,
+                    now=self._now,
+                ).expire_current(
+                    run_id=run.id,
+                    attempt_number=run.attempt_number,
+                )
                 run.failure_code = "AGENT_LEASE_EXPIRED"
                 run.failure_message = "Agent worker heartbeat lease expired."
                 run.lease_expires_at = None
@@ -136,6 +145,7 @@ class AnalysisRecoveryService:
                             "messageId": str(recovered_message.id),
                             "failureCode": run.failure_code,
                             "attemptNumber": run.attempt_number,
+                            "attemptExpired": attempt_expired,
                             "action": recovery_action,
                         },
                         correlation_id=run.correlation_id,
