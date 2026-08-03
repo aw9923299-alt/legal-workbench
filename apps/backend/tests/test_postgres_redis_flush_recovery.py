@@ -17,9 +17,43 @@ class RedisDatabaseInspector(Protocol):
     async def dbsize(self) -> int: ...
 
 
+class RedisAtomicFlush(Protocol):
+    async def eval(
+        self,
+        script: str,
+        numkeys: int,
+        *keys_and_args: object,
+    ) -> object: ...
+
+
 async def _require_empty_test_database(redis: RedisDatabaseInspector) -> None:
     if await redis.dbsize() != 0:
         raise RuntimeError("Dedicated Redis DB 15 is not empty; refusing to flush")
+
+
+async def _flush_if_only_test_marker(
+    redis: RedisAtomicFlush,
+    *,
+    marker: str,
+    expected_value: str,
+) -> None:
+    result = await redis.eval(
+        """
+        if redis.call('DBSIZE') == 1
+           and redis.call('GET', KEYS[1]) == ARGV[1] then
+          redis.call('FLUSHDB')
+          return 1
+        end
+        return 0
+        """,
+        1,
+        marker,
+        expected_value,
+    )
+    if result != 1:
+        raise RuntimeError(
+            "Dedicated Redis DB 15 changed concurrently; refusing to flush"
+        )
 
 
 @pytest.mark.asyncio
@@ -95,16 +129,17 @@ async def test_isolated_redis_flush_recovers_durable_postgres_work() -> None:
     try:
         assert await redis.ping() is True
         await _require_empty_test_database(redis)
-        await redis.set(marker, "temporary-delivery")
-        if await redis.dbsize() != 1 or await redis.get(marker) != "temporary-delivery":
-            await redis.delete(marker)
-            raise RuntimeError("Dedicated Redis DB 15 changed concurrently; refusing to flush")
         async with uow_factory() as uow:
             await uow.feishu.add_event(event)
             await uow.feishu.add_message(message)
             await uow.commit()
 
-        await redis.flushdb()
+        await redis.set(marker, "temporary-delivery")
+        await _flush_if_only_test_marker(
+            redis,
+            marker=marker,
+            expected_value="temporary-delivery",
+        )
         assert await redis.get(marker) is None
 
         result = await AnalysisRecoveryService(
@@ -125,3 +160,39 @@ async def test_isolated_redis_flush_recovers_durable_postgres_work() -> None:
         await redis.delete(marker)
         await redis.aclose()
         await engine.dispose()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_atomic_redis_flush_preserves_competing_keys() -> None:
+    if os.getenv("RUN_POSTGRES_INTEGRATION_TESTS") != "1":
+        pytest.skip("PostgreSQL integration tests are disabled")
+    if os.getenv("RUN_REDIS_INTEGRATION_TESTS") != "1":
+        pytest.skip("Destructive isolated Redis integration tests are disabled")
+
+    from redis.asyncio import Redis
+
+    redis_url = _validated_redis_test_url(
+        os.environ["LEGAL_WORKBENCH_TEST_REDIS_URL"]
+    )
+    redis = Redis.from_url(redis_url, decode_responses=True)
+    marker = f"legal-workbench:test-delivery:{uuid4().hex}"
+    competing_key = f"legal-workbench:test-competition:{uuid4().hex}"
+    try:
+        assert await redis.ping() is True
+        await _require_empty_test_database(redis)
+        await redis.set(marker, "temporary-delivery")
+        await redis.set(competing_key, "must-survive")
+
+        with pytest.raises(RuntimeError, match="changed concurrently"):
+            await _flush_if_only_test_marker(
+                redis,
+                marker=marker,
+                expected_value="temporary-delivery",
+            )
+
+        assert await redis.get(marker) == "temporary-delivery"
+        assert await redis.get(competing_key) == "must-survive"
+    finally:
+        await redis.delete(marker, competing_key)
+        await redis.aclose()

@@ -161,7 +161,7 @@ LEGAL_WORKBENCH_TEST_REDIS_URL='redis://127.0.0.1:6379/15' \
   --runtime fake --allow-database-write --allow-redis-flush
 ```
 
-运维测试验证备份排他锁、原子写与 `PGDMP` 格式头、失败清理、诊断脱敏和 no-follow、安全停止顺序及失败关闭、唤醒资源门禁、PostgreSQL 恢复、隔离 Redis DB 清空后的持久任务恢复、Codex 运行目录保留和系统状态元数据。Redis 测试只接受无凭证 loopback DB 15，并要求清空前数据库为空、写入后仅存在本测试 marker；只有显式 `RUN_REDIS_INTEGRATION_TESTS=1` 和 `--allow-redis-flush` 才执行。组合 Fake 冒烟运行真实 PostgreSQL/Redis 组件测试和 11 类消息研判，但输出固定标明 `verificationScope=component_integration`、`hostOperationalAcceptance=false`、`singleObjectEndToEnd=false`、`realInferenceExecuted=false`，并逐项列出未在该脚本执行的宿主备份、诊断和唤醒步骤，不能称为一条真实对象端到端或真实飞书/Codex 联调。
+运维测试验证备份排他锁、原子写与 `PGDMP` 格式头、失败清理、诊断脱敏和 no-follow、安全停止顺序及失败关闭、唤醒资源门禁、PostgreSQL 恢复、隔离 Redis DB 清空后的持久任务恢复、Codex 运行目录保留和系统状态元数据。Redis 测试只接受无凭证 loopback DB 15，并要求清空前数据库为空；单个 Lua/EVAL 原子确认仅有匹配 marker 后才执行 `FLUSHDB`，竞争键会整段拒绝。直接执行 pytest 时必须显式设置 `RUN_REDIS_INTEGRATION_TESTS=1`；组合烟测 CLI 还必须传入 `--allow-redis-flush`。组合 Fake 冒烟运行真实 PostgreSQL/Redis 组件测试和 11 类消息研判，但输出固定标明 `verificationScope=component_integration`、`hostOperationalAcceptance=false`、`singleObjectEndToEnd=false`、`realInferenceExecuted=false`，并逐项列出未在该脚本执行的宿主备份、诊断和唤醒步骤，不能称为一条真实对象端到端或真实飞书/Codex 联调。
 
 真实 Runtime 还必须额外传入 `--allow-real-runtime`，通过精确版本和隔离认证预检，并至少产生一次通过 Schema 的有效模型结果后，CLI 才会输出 `realInferenceExecuted=true`。当前真实飞书测试消息和官方长连接仍为 `not_executed / REAL_FEISHU_PHASE_DEFERRED`。
 

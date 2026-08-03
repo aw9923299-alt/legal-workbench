@@ -185,13 +185,13 @@ cd <repository-root>
   apps/backend/src scripts/legal_workbench_ops.py \
   scripts/smoke_test_codex_triage.py scripts/smoke_test_downstream_loop.py
 .venv/bin/python -m pytest apps/backend/tests --disable-warnings
-# 227 passed, 13 skipped（默认不启用 PostgreSQL/Redis 集成）
+# 227 passed, 14 skipped（默认不启用 PostgreSQL/Redis 集成）
 
 export LEGAL_WORKBENCH_TEST_DATABASE_URL="${LOCAL_TEST_DATABASE_URL}"
 export LEGAL_WORKBENCH_TEST_REDIS_URL="redis://127.0.0.1:6379/15"
 RUN_POSTGRES_INTEGRATION_TESTS=1 RUN_REDIS_INTEGRATION_TESTS=1 \
   .venv/bin/python -m pytest apps/backend/tests --disable-warnings
-# 240 passed
+# 241 passed
 
 .venv/bin/python scripts/smoke_test_codex_triage.py \
   --runtime fake --allow-database-write
@@ -233,13 +233,13 @@ docker compose run --rm --no-deps --entrypoint id worker codex-agent
 # uid=10001(codex-agent) gid=10001(codex-agent) groups=10001(codex-agent)
 ```
 
-结果：截至 Mac 常驻运维阶段，`git diff --check`、Ruff、mypy、227 个默认后端测试（另 13 个 PostgreSQL/Redis 测试跳过）、240 个含 PostgreSQL 和隔离 Redis 清空恢复的后端测试、0012 迁移往返、前端 typecheck/13 文件 31 测试/build、Compose 静态配置、镜像构建、launchd plist 校验、真实主机备份/诊断/唤醒自检均通过。Vite 构建产生单个约 `1,477 kB`（gzip约 `462 kB`）chunk 警告，不影响构建成功。
+结果：截至 Mac 常驻运维阶段，`git diff --check`、Ruff、mypy、227 个默认后端测试（另 14 个 PostgreSQL/Redis 测试跳过）、241 个含 PostgreSQL 和隔离 Redis 清空恢复的后端测试、0012 迁移往返、前端 typecheck/13 文件 31 测试/build、Compose 静态配置、镜像构建、launchd plist 校验、真实主机备份/诊断/唤醒自检均通过。Vite 构建产生单个约 `1,477 kB`（gzip约 `462 kB`）chunk 警告，不影响构建成功。
 
 `npm audit` 返回 `2 high`：两项均源自 React Router 的 RSC Action CSRF 公告 `GHSA-qwww-vcr4-c8h2`。当前 Registry 最新 `react-router-dom` 为 `7.18.2`，公告要求 `>=8.3.0`，暂无可安装修复版本；本项目是纯 Vite SPA，不启用 RSC/Server Actions，但该上游告警仍明确保留，未通过降级或强制安装掩盖。
 
 ## 故障注入与恢复
 
-- **已通过隔离集成验证**：专用 loopback Redis DB 15 在确认空库后写入唯一临时投递标记并执行 `FLUSHDB`，标记消失但 PostgreSQL queued 消息仍存在；恢复服务重新生成持久 Outbox 事件。测试拒绝远端、带凭证、DB 0/1/14 和非空 DB 15，未清空当前业务 Broker；CI 另提供独立 Redis Service 执行同一清空恢复用例；
+- **已通过隔离集成验证**：专用 loopback Redis DB 15 在确认空库后写入唯一临时投递标记，并用单个 Lua/EVAL 原子校验 `DBSIZE=1`、marker 值匹配后执行 `FLUSHDB`；标记消失但 PostgreSQL queued 消息仍存在，恢复服务重新生成持久 Outbox 事件。测试拒绝远端、带凭证、DB 0/1/14、非空 DB 15；模拟竞争键时原子脚本拒绝清空且两个键均保留，未触碰当前业务 Broker；
 - **已通过模拟验证**：停止/恢复 Worker，系统状态由降级恢复正常；停止/恢复 API，HTTP 由不可达恢复 200；
 - **已通过模拟验证**：终止无网络隔离容器中的实际 `codex exec` 进程，退出码为 137；AgentRun 租约超时、重派与死信路径由自动化测试覆盖。因缺真实认证，这不是一次真实模型运行中的故障；
 - **已通过模拟验证**：飞书连接器在 `ENABLE_REAL_FEISHU=false` 时持久化为 `disabled`，人工重连返回 HTTP 409 `INVALID_STATE_TRANSITION`；长连接断线按 `1/2/4/8/16/30` 秒退避测试通过；
