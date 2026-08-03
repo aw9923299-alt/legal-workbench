@@ -2616,6 +2616,7 @@ class SqlAlchemySetupRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
         self._tracked_checks: dict[UUID, IntegrationCheckRunModel] = {}
+        self._tracked_scopes: dict[UUID, IntegrationScopeModel] = {}
 
     async def get_setting(self, key: str) -> SystemSetting | None:
         model = await self._session.scalar(
@@ -2705,6 +2706,76 @@ class SqlAlchemySetupRepository:
             .all()
         )
         return [self._scope_to_domain(model) for model in models]
+
+    async def find_scope(
+        self, *, provider: str, external_scope_id: str
+    ) -> IntegrationScope | None:
+        model = await self._session.scalar(
+            select(IntegrationScopeModel).where(
+                IntegrationScopeModel.provider == provider,
+                IntegrationScopeModel.external_scope_id == external_scope_id,
+            )
+        )
+        return None if model is None else self._scope_to_domain(model)
+
+    async def get_scope(self, scope_id: UUID) -> IntegrationScope | None:
+        model = await self._session.get(IntegrationScopeModel, scope_id)
+        if model is None:
+            return None
+        self._tracked_scopes[scope_id] = model
+        return self._scope_to_domain(model)
+
+    async def get_scope_for_update(self, scope_id: UUID) -> IntegrationScope | None:
+        model = await self._session.scalar(
+            select(IntegrationScopeModel)
+            .where(IntegrationScopeModel.id == scope_id)
+            .with_for_update()
+        )
+        if model is None:
+            return None
+        self._tracked_scopes[scope_id] = model
+        return self._scope_to_domain(model)
+
+    async def add_scope(self, value: IntegrationScope) -> None:
+        model = IntegrationScopeModel(
+            id=value.id,
+            provider=value.provider,
+            external_scope_id=value.external_scope_id,
+            display_name=value.display_name,
+            status=value.status,
+            sync_mode=value.sync_mode,
+            last_message_at=value.last_message_at,
+            last_error_code=value.last_error_code,
+            last_error_message=value.last_error_message,
+            last_compensated_at=value.last_compensated_at,
+            last_compensation_status=value.last_compensation_status,
+            approved_by=value.approved_by,
+            approved_at=value.approved_at,
+            version=value.version,
+            created_at=value.created_at,
+            updated_at=value.updated_at,
+        )
+        self._tracked_scopes[value.id] = model
+        self._session.add(model)
+
+    async def save_scope(self, value: IntegrationScope) -> None:
+        model = self._tracked_scopes.get(value.id)
+        if model is None:
+            model = await self._session.get(IntegrationScopeModel, value.id)
+        if model is None:
+            raise RuntimeError(f"Integration scope {value.id} is not tracked")
+        model.display_name = value.display_name
+        model.status = value.status
+        model.sync_mode = value.sync_mode
+        model.last_message_at = value.last_message_at
+        model.last_error_code = value.last_error_code
+        model.last_error_message = value.last_error_message
+        model.last_compensated_at = value.last_compensated_at
+        model.last_compensation_status = value.last_compensation_status
+        model.approved_by = value.approved_by
+        model.approved_at = value.approved_at
+        model.updated_at = value.updated_at
+        model.version = value.version
 
     async def add_check(self, value: IntegrationCheckRun) -> None:
         model = IntegrationCheckRunModel(

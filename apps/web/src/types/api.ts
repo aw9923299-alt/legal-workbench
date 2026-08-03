@@ -416,6 +416,37 @@ export interface CodexCheckRequested {
   idempotentReplay: boolean;
 }
 
+export type FeishuScopeStatus = 'unapproved' | 'allowed' | 'excluded' | 'paused';
+export type FeishuScopeSyncMode = 'mentions_only' | 'all_messages' | 'disabled';
+
+export interface FeishuScope {
+  id: string;
+  provider: 'feishu';
+  externalScopeId: string;
+  displayName: string | null;
+  status: FeishuScopeStatus;
+  syncMode: FeishuScopeSyncMode;
+  lastMessageAt: string | null;
+  lastErrorCode: string | null;
+  lastErrorMessage: string | null;
+  lastCompensatedAt: string | null;
+  lastCompensationStatus: string | null;
+  approvedBy: string | null;
+  approvedAt: string | null;
+  version: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface DeferredFeishuCompensation {
+  scope: FeishuScope;
+  state: 'not_executed';
+  errorCode: string;
+  message: string;
+  correlationId: string;
+  idempotentReplay: boolean;
+}
+
 export interface FeishuConnection {
   integrationType: string;
   connectionMode: string;

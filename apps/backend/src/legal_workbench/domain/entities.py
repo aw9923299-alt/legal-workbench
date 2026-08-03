@@ -2072,6 +2072,61 @@ class IntegrationScope:
     created_at: datetime = field(default_factory=utc_now)
     updated_at: datetime = field(default_factory=utc_now)
 
+    def __post_init__(self) -> None:
+        if not self.provider.strip() or not self.external_scope_id.strip():
+            raise DomainValidationError("Integration scope identity is required.")
+
+    def allow(
+        self,
+        *,
+        sync_mode: IntegrationSyncMode,
+        actor_id: str,
+        now: datetime | None = None,
+    ) -> None:
+        if sync_mode == IntegrationSyncMode.DISABLED:
+            raise DomainValidationError("An allowed scope requires an active sync mode.")
+        changed_at = now or utc_now()
+        self.status = IntegrationScopeStatus.ALLOWED
+        self.sync_mode = sync_mode
+        self.approved_by = actor_id
+        self.approved_at = changed_at
+        self.updated_at = changed_at
+        self.version += 1
+
+    def exclude(self, *, now: datetime | None = None) -> None:
+        changed_at = now or utc_now()
+        self.status = IntegrationScopeStatus.EXCLUDED
+        self.sync_mode = IntegrationSyncMode.DISABLED
+        self.updated_at = changed_at
+        self.version += 1
+
+    def pause(self, *, now: datetime | None = None) -> None:
+        if self.status != IntegrationScopeStatus.ALLOWED:
+            raise InvalidStateTransitionError("Only an allowed scope can be paused.")
+        changed_at = now or utc_now()
+        self.status = IntegrationScopeStatus.PAUSED
+        self.sync_mode = IntegrationSyncMode.DISABLED
+        self.updated_at = changed_at
+        self.version += 1
+
+    def resume(
+        self,
+        *,
+        sync_mode: IntegrationSyncMode,
+        actor_id: str,
+        now: datetime | None = None,
+    ) -> None:
+        if self.status != IntegrationScopeStatus.PAUSED:
+            raise InvalidStateTransitionError("Only a paused scope can be resumed.")
+        self.allow(sync_mode=sync_mode, actor_id=actor_id, now=now)
+
+    def record_deferred_compensation(self, *, now: datetime | None = None) -> None:
+        changed_at = now or utc_now()
+        self.last_compensated_at = changed_at
+        self.last_compensation_status = "not_executed"
+        self.updated_at = changed_at
+        self.version += 1
+
 
 @dataclass(slots=True)
 class IntegrationCheckRun:

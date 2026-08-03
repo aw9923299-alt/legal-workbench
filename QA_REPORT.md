@@ -153,6 +153,14 @@ FeishuEvent → FeishuMessage → 附件下载/正文提取
 - **已通过自动化验证**：默认后端 `187 passed, 10 skipped`，开启 PostgreSQL 集成后 `197 passed`；Setup 后端 11 个单元/API 测试和 1 个 PostgreSQL 测试通过，前端 Setup 3 个测试、typecheck 和生产构建通过；Ruff 与 mypy 通过。Vite 仍只有已知大 chunk 警告；
 - **未执行**：当前 Worker 未提供 Codex 认证，真实 Codex Setup 冒烟只完成安全排队与实现，没有运行成功结果，不声称真实推理通过。
 
+## 阶段十二增量结果：飞书群聊授权范围
+
+- **已实现**：`GET/POST/PATCH /api/v1/settings/feishu-scopes` 和补偿记录接口；未知群只能以 `unapproved/disabled` 登记，允许 @机器人、允许指定群全部消息、排除、暂停和恢复全部由领域状态机执行；
+- **已实现**：每次决定校验 `If-Match`、认证 Actor、幂等键与 Correlation ID，并把范围版本和追加审计写入同一 PostgreSQL 事务；旧版本返回 409，不能覆盖新人工决定；
+- **已实现**：`/settings/feishu-scopes` 展示已知群、最近消息、最近同步错误、最近补偿、状态与版本，支持人工登记和全部范围操作；加载、空、失败、重试与精确错误证据均可见；
+- **真实 PostgreSQL 已验证**：登记、允许全部消息、旧版本拒绝、延后补偿、范围版本和 3 条审计记录均实际持久化；
+- **明确未执行**：补偿按钮只保存 `not_executed / REAL_FEISHU_PHASE_DEFERRED`，未调用飞书远端；真实测试消息和官方长连接继续按用户要求后置。
+
 ## 最终验证命令
 
 提交前以本节记录的最终结果为准。宿主 `.venv` 为 Python 3.14.6，生产镜像按项目基线使用 Python 3.12.13：
@@ -164,12 +172,12 @@ cd apps/backend
 ../../.venv/bin/ruff check .
 ../../.venv/bin/mypy --config-file pyproject.toml src
 ../../.venv/bin/pytest --disable-warnings
-# 187 passed, 10 skipped（默认不启用 PostgreSQL 集成）
+# 192 passed, 11 skipped（默认不启用 PostgreSQL 集成）
 
 RUN_POSTGRES_INTEGRATION_TESTS=1 \
 LEGAL_WORKBENCH_TEST_DATABASE_URL="${LOCAL_TEST_DATABASE_URL}" \
 ../../.venv/bin/pytest --disable-warnings
-# 197 passed
+# 203 passed
 
 ../../.venv/bin/python ../../scripts/smoke_test_codex_triage.py \
   --database-url postgresql+psycopg://legal_workbench:change-me-local-only@127.0.0.1:5432/legal_workbench_stage3_019fbdd2 \
@@ -186,7 +194,7 @@ npm install
 npm run typecheck
 npm run test
 npm run build
-# 11 test files / 27 tests passed；构建成功
+# 12 test files / 29 tests passed；构建成功
 cd ../..
 docker compose config --quiet
 docker compose build
@@ -210,7 +218,7 @@ docker compose run --rm --no-deps --entrypoint id worker codex-agent
 # uid=10001(codex-agent) gid=10001(codex-agent) groups=10001(codex-agent)
 ```
 
-结果：截至首次配置向导阶段，`git diff --check`、Ruff、mypy、197 个含 PostgreSQL 集成的后端测试、0012 迁移往返、前端 typecheck/11 文件 27 测试/build 和 Compose 静态配置均通过；附件阶段的 Worker 镜像与解析依赖验证、Fake Runtime 冒烟和故障恢复证据继续有效。Vite 构建产生单个约 `1,469 kB`（gzip约 `459 kB`）chunk 警告，不影响构建成功。
+结果：截至飞书群聊授权范围阶段，`git diff --check`、Ruff、mypy、203 个含 PostgreSQL 集成的后端测试、0012 迁移往返、前端 typecheck/12 文件 29 测试/build 和 Compose 静态配置均通过；附件阶段的 Worker 镜像与解析依赖验证、Fake Runtime 冒烟和故障恢复证据继续有效。Vite 构建产生单个约 `1,476 kB`（gzip约 `461 kB`）chunk 警告，不影响构建成功。
 
 `npm audit` 返回 `2 high`：两项均源自 React Router 的 RSC Action CSRF 公告 `GHSA-qwww-vcr4-c8h2`。当前 Registry 最新 `react-router-dom` 为 `7.18.2`，公告要求 `>=8.3.0`，暂无可安装修复版本；本项目是纯 Vite SPA，不启用 RSC/Server Actions，但该上游告警仍明确保留，未通过降级或强制安装掩盖。
 

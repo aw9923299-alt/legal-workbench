@@ -439,6 +439,17 @@ POST /api/v1/setup/codex/smoke-test
 
 状态只返回 `configured`、掩码、稳定状态/错误码、可读说明和 Correlation ID，不返回 Secret。Codex 两个写接口返回 `202` 与 `checkRunId`，请求经事务 Outbox 交给只在 Worker 中可用的认证环境；外部运行期间不持有数据库事务。按当前用户确认，三个飞书写接口均不验证、不保存新 Secret、不启动连接，只返回 `not_executed / REAL_FEISHU_PHASE_DEFERRED`。
 
+## 12.3 飞书群聊范围接口
+
+```http
+GET   /api/v1/settings/feishu-scopes
+POST  /api/v1/settings/feishu-scopes
+PATCH /api/v1/settings/feishu-scopes/:scopeId
+POST  /api/v1/settings/feishu-scopes/:scopeId/compensate
+```
+
+新登记群聊固定为 `unapproved/disabled`。`PATCH` 支持 `allow/exclude/pause/resume`，写请求必须携带认证 Session、`Idempotency-Key`、Correlation ID 和当前版本 `If-Match`；旧版本返回 `409 ENTITY_VERSION_CONFLICT`，不得覆盖更新的人工决定。`allow/resume` 必须显式选择 `mentions_only` 或 `all_messages`。当前真实飞书阶段延后，补偿接口只写入 `last_compensation_status=not_executed` 与审计记录，返回 `REAL_FEISHU_PHASE_DEFERRED`，不调用飞书远端接口。
+
 ## 13. 日报和复盘接口
 
 ```http

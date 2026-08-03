@@ -134,6 +134,18 @@ npm run test --workspace @legal-workbench/web -- --run SetupPage
 
 检查项包括：响应不回显 Secret、App ID 仅返回掩码、Secret 文件目录/文件分别为 `0700/0600`、原子替换不遗留临时文件、Codex 请求通过 PostgreSQL Outbox 交给 Worker、所有飞书真实操作返回 `not_executed / REAL_FEISHU_PHASE_DEFERRED`。当前阶段不得把该结果写成真实飞书连接通过。
 
+## 飞书群聊授权范围
+
+```bash
+.venv/bin/python -m pytest apps/backend/tests/test_feishu_scopes.py -q
+RUN_POSTGRES_INTEGRATION_TESTS=1 \
+LEGAL_WORKBENCH_TEST_DATABASE_URL='postgresql+psycopg://.../legal_workbench_test' \
+.venv/bin/python -m pytest apps/backend/tests/test_postgres_feishu_scopes.py -q
+npm run test --workspace @legal-workbench/web -- --run FeishuScopesPage
+```
+
+覆盖未知群默认 `unapproved/disabled`、允许/排除/暂停/恢复、旧版本冲突、审计与 PostgreSQL 持久化。补偿测试只验证 `not_executed / REAL_FEISHU_PHASE_DEFERRED` 的记录，不代表远端补偿或长连接已执行。
+
 默认 API 和 CLI 均使用合成非敏感 Fixture 与 Fake Runtime；CLI 输出必须显示 `realInferenceExecuted=false`。Fake 的满分只证明 Fixture、Schema、评分、持久化和聚合管线可重复，不代表真实模型质量。真实运行还必须同时设置服务端 `LEGAL_WORKBENCH_ENABLE_REAL_CODEX=true` 和 CLI `--allow-real-runtime`，且只在持有认证的专用 Runner 执行。API 进程不实例化 Codex Runtime。评估只记录结果和反馈，不自动训练或改 Prompt。
 
 涉及数据库或Compose时还应执行：

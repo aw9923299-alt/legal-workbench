@@ -26,6 +26,7 @@ Runtime 前后使用独立短事务，不在数据库事务内等待 Codex。任
 | 能力 | 状态 |
 |---|---|
 | React 收件箱/消息详情/Agent运行中心/系统状态/Candidate动作 | 已实现，核心闭环数据均连接 FastAPI |
+| 飞书群聊授权范围 | 已实现；未知群默认未批准/禁用，允许/排除/暂停/恢复使用版本锁、幂等和审计；远端补偿延后 |
 | SSE + 断线轮询回退 | 已实现，五类运行事件触发 Query 刷新 |
 | Python FastAPI + SQLAlchemy + PostgreSQL | 已实现 |
 | Outbox 领取、重试、死信、显式 Handler 注册 | 已实现；人工重入队带 Actor/幂等/审计 |
@@ -75,6 +76,8 @@ Runtime 前后使用独立短事务，不在数据库事务内等待 Codex。任
 - `scripts/run_message_judgement_evaluation.py`：真实 Codex 仅在双门禁下运行的专用本地 Runner。
 - `application/setup.py`、`infrastructure/secrets.py`：脱敏 Setup 状态、原子本地 Secret、Codex Worker 检查编排；
 - `api/routes/setup.py`、`pages/SetupPage.tsx`：六个 Setup API 和九步初始化向导，飞书延后状态不会显示为成功。
+- `application/feishu_scopes.py`、`api/routes/feishu_scopes.py`：群聊授权状态机、版本/幂等/审计和延后补偿记录；
+- `apps/web/src/pages/FeishuScopesPage.tsx`：群聊范围登记、允许、排除、暂停、恢复和精确错误证据。
 
 ## 配置门禁
 
@@ -93,6 +96,6 @@ Runtime 将唯一授权 ContextSnapshot 作为不可信 JSON 直接送入 stdin�
 
 ## 下一步
 
-1. 完成飞书群聊授权范围页面和本地 Mac 运维恢复；
+1. 完成本地 Mac 常驻、自检、备份、诊断和恢复；
 2. 真实飞书测试消息与官方长连接验收已按用户要求后置，后续有测试凭证时再执行，不得写成已通过；
 3. 在专用 Runner 内使用非生产凭证执行真实 Codex 冒烟、评估和故障注入。

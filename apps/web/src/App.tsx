@@ -27,6 +27,7 @@ import MatterUpdateProposalPage from './pages/MatterUpdateProposalPage';
 import ReviewCenterPage from './pages/ReviewCenterPage';
 import SecurityPage from './pages/SecurityPage';
 import SetupPage from './pages/SetupPage';
+import FeishuScopesPage from './pages/FeishuScopesPage';
 import SystemStatusPage from './pages/SystemStatusPage';
 import TaskCenterPage from './pages/TaskCenterPage';
 import TaskDetailPage from './pages/TaskDetailPage';
@@ -45,6 +46,7 @@ const navItems = [
   { key: '/agent-runs', icon: <RobotOutlined />, label: 'Agent 运行中心' },
   { key: '/security', icon: <SafetyCertificateOutlined />, label: '数据与权限' },
   { key: '/setup', icon: <SettingOutlined />, label: '首次配置' },
+  { key: '/settings/feishu-scopes', icon: <SafetyCertificateOutlined />, label: '飞书群聊范围' },
   { key: '/system', icon: <SettingOutlined />, label: '系统状态' },
 ];
 
@@ -80,6 +82,7 @@ function RouteContent() {
     <Route path="/agent-runs/:runId" element={<AgentRunDetailPage />} />
     <Route path="/system" element={<SystemStatusPage />} />
     <Route path="/setup" element={<SetupPage />} />
+    <Route path="/settings/feishu-scopes" element={<FeishuScopesPage />} />
     <Route path="/matters" element={<TaskCenterPage onOpenMatter={(id) => navigate(`/matters/${id}`)} />} />
     <Route path="/matters/:matterId" element={<MatterDetailRoute />} />
     <Route path="/matter-update-proposals/:proposalId" element={<MatterUpdateProposalPage />} />

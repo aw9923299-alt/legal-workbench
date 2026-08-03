@@ -146,6 +146,10 @@ Matter 更新页把当前值、消息提取值、AI 建议值和法务最终值�
 
 迁移 `20260803_0012` 新增 `system_settings`、`integration_credentials`、`integration_scopes` 和 `integration_check_runs`。`/setup` 九步页面显示基础服务、飞书凭证/权限/范围/连接、Codex 版本/认证、测试消息和完成状态，并从后端恢复。Secret 只允许本地私有目录原子保存，API/数据库只返回配置标记和掩码。Codex 检查经 Outbox 进入隔离 Worker；真实飞书验证、测试消息和官方长连接按用户要求保留 `not_executed`，不声称通过。
 
+## 阶段5.3：飞书群聊授权范围（本轮已完成）
+
+`/settings/feishu-scopes` 从 PostgreSQL 展示已知群、最近消息、最近错误、最近补偿及当前版本。未知群只允许登记为 `unapproved/disabled`；允许 @机器人、允许指定群全部消息、排除、暂停和恢复均进入领域状态机，使用 `If-Match`、幂等键、Actor 和追加审计。手工补偿在真实飞书阶段延后时只保存 `not_executed / REAL_FEISHU_PHASE_DEFERRED`，不会发起远端请求或展示为同步成功。单元/API、React 和真实 PostgreSQL 集成测试覆盖版本冲突及审计持久化。
+
 ## 阶段6：知识库
 
 实现：

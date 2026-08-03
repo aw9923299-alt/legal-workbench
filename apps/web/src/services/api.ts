@@ -26,6 +26,9 @@ import type {
   SetupStatus,
   SetupActionResult,
   CodexCheckRequested,
+  DeferredFeishuCompensation,
+  FeishuScope,
+  FeishuScopeSyncMode,
 } from '../types/api';
 
 export const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? '/api/v1';
@@ -445,6 +448,45 @@ export const legalApi = {
 
   smokeTestCodexSetup(mutation?: MutationContext): Promise<CodexCheckRequested> {
     return request('/setup/codex/smoke-test', { method: 'POST' }, { write: true, mutation });
+  },
+
+  listFeishuScopes(): Promise<FeishuScope[]> {
+    return request('/settings/feishu-scopes');
+  },
+
+  registerFeishuScope(input: {
+    chatId: string;
+    displayName?: string;
+  }, mutation?: MutationContext): Promise<FeishuScope> {
+    return request('/settings/feishu-scopes', {
+      method: 'POST', body: JSON.stringify(input),
+    }, { write: true, mutation });
+  },
+
+  changeFeishuScope(
+    scopeId: string,
+    version: number,
+    input: {
+      action: 'allow' | 'exclude' | 'pause' | 'resume';
+      syncMode?: FeishuScopeSyncMode;
+    },
+    mutation?: MutationContext,
+  ): Promise<FeishuScope> {
+    return request(`/settings/feishu-scopes/${scopeId}`, {
+      method: 'PATCH',
+      headers: { 'If-Match': String(version) },
+      body: JSON.stringify(input),
+    }, { write: true, mutation });
+  },
+
+  compensateFeishuScope(
+    scopeId: string,
+    version: number,
+    mutation?: MutationContext,
+  ): Promise<DeferredFeishuCompensation> {
+    return request(`/settings/feishu-scopes/${scopeId}/compensate`, {
+      method: 'POST', headers: { 'If-Match': String(version) },
+    }, { write: true, mutation });
   },
 
   getFeishuStatus(): Promise<FeishuConnection> {
