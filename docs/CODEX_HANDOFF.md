@@ -38,6 +38,7 @@ Runtime 前后使用独立短事务，不在数据库事务内等待 Codex。任
 | MatterUpdateProposal 人工审核 | 已实现；Proposal/Matter 双版本锁、逐字段最终值、WorkItem/Deadline 同事务落库；409 刷新保留法务草稿 |
 | WorkItem 全生命周期 | 已实现；13 类领域动作、WorkItem/Dependency 双版本、审计/Outbox/幂等同事务；页面按状态展示合法操作并刷新相关队列 |
 | 今日工作台 | 已实现；八类 PostgreSQL/健康队列、确定性排序、真实链接和完整查询状态，运行时 Mock 已删除 |
+| AI 质量评估 | 已实现；11 类合成 Fixture、EvaluationCase/Run/Result、13 项指标、幂等 API 与专用 CLI Runner |
 | PDF/DOCX/TXT/Markdown 附件正文 | 已实现受控解析与引用；图片/扫描 PDF 无 OCR，明确正文不可用 |
 | HttpOnly 本地会话与 Actor 来源审计 | 已实现；生产会话签发器尚未实现 |
 | 飞书连接状态、消息版本、附件元数据/受控下载 | 已实现；下载不授权给 Codex |
@@ -69,6 +70,9 @@ Runtime 前后使用独立短事务，不在数据库事务内等待 Codex。任
 - `application/dashboard.py`：八类队列契约和确定性排序；
 - `infrastructure/dashboard.py`：PostgreSQL 事实与健康状态投影；
 - `apps/web/src/pages/DashboardPage.tsx`：真实今日工作台、异常提示和对象跳转。
+- `application/evaluations.py`：版本化 Fixture、Fake/真实 Runner、逐维评分与确定性指标聚合；
+- `api/routes/evaluations.py`：默认 Fake 的幂等评估 API，API 不持有 Codex 认证；
+- `scripts/run_message_judgement_evaluation.py`：真实 Codex 仅在双门禁下运行的专用本地 Runner。
 
 ## 配置门禁
 
@@ -87,7 +91,6 @@ Runtime 将唯一授权 ContextSnapshot 作为不可信 JSON 直接送入 stdin�
 
 ## 下一步
 
-1. 完成 AI 质量评测和反馈记录；
-2. 完成 `/setup`、飞书群聊授权范围和本地 Mac 运维恢复；
-3. 真实飞书测试消息与官方长连接验收已按用户要求后置，后续有测试凭证时再执行，不得写成已通过；
-4. 在专用容器内使用非生产凭证执行真实 Codex 冒烟和故障注入。
+1. 完成 `/setup`、飞书群聊授权范围和本地 Mac 运维恢复；
+2. 真实飞书测试消息与官方长连接验收已按用户要求后置，后续有测试凭证时再执行，不得写成已通过；
+3. 在专用 Runner 内使用非生产凭证执行真实 Codex 冒烟、评估和故障注入。

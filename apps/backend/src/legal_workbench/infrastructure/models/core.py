@@ -48,6 +48,8 @@ from legal_workbench.domain.enums import (
     DependencyType,
     DocumentExtractionStatus,
     DraftArtifactStatus,
+    EvaluationRunStatus,
+    EvaluationRuntimeType,
     FeishuEventStatus,
     FeishuMessageStatus,
     IntegrationConnectionMode,
@@ -1275,3 +1277,107 @@ class OutboxDeadLetterModel(UuidPrimaryKeyMixin, Base):
     )
     requeued_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     requeued_event_id: Mapped[UUID | None] = mapped_column()
+
+
+class EvaluationCaseModel(UuidPrimaryKeyMixin, Base):
+    __tablename__ = "evaluation_cases"
+    __table_args__ = (
+        UniqueConstraint(
+            "suite_key",
+            "case_key",
+            "case_version",
+            name="uq_evaluation_cases_identity",
+        ),
+        CheckConstraint("case_version > 0", name="evaluation_case_version_positive"),
+        CheckConstraint(
+            "data_classification = 'synthetic_non_sensitive'",
+            name="evaluation_case_synthetic_only",
+        ),
+        Index("ix_evaluation_cases_suite", "suite_key", "case_key"),
+    )
+
+    suite_key: Mapped[str] = mapped_column(String(120), nullable=False)
+    case_key: Mapped[str] = mapped_column(String(120), nullable=False)
+    case_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    agent_key: Mapped[str] = mapped_column(String(80), nullable=False)
+    input_payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    expected_output: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    data_classification: Mapped[str] = mapped_column(String(40), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class EvaluationRunModel(UuidPrimaryKeyMixin, Base):
+    __tablename__ = "evaluation_runs"
+    __table_args__ = (
+        CheckConstraint("suite_version > 0", name="evaluation_suite_version_positive"),
+        Index("ix_evaluation_runs_suite_created", "suite_key", "created_at"),
+        Index("ix_evaluation_runs_status_created", "status", "created_at"),
+    )
+
+    suite_key: Mapped[str] = mapped_column(String(120), nullable=False)
+    suite_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    runtime_type: Mapped[EvaluationRuntimeType] = mapped_column(
+        enum_type(EvaluationRuntimeType, name="evaluation_runtime_type", length=16),
+        nullable=False,
+    )
+    agent_key: Mapped[str] = mapped_column(String(80), nullable=False)
+    agent_definition_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    status: Mapped[EvaluationRunStatus] = mapped_column(
+        enum_type(EvaluationRunStatus, name="evaluation_run_status", length=20), nullable=False
+    )
+    requested_by: Mapped[str] = mapped_column(String(160), nullable=False)
+    correlation_id: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    allow_real_runtime: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=FALSE_DEFAULT
+    )
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    metrics: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=JSON_EMPTY_OBJECT
+    )
+    failure_code: Mapped[str | None] = mapped_column(String(80))
+    failure_message: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class EvaluationResultModel(UuidPrimaryKeyMixin, Base):
+    __tablename__ = "evaluation_results"
+    __table_args__ = (
+        UniqueConstraint(
+            "evaluation_run_id",
+            "evaluation_case_id",
+            name="uq_evaluation_results_run_case",
+        ),
+        CheckConstraint("duration_ms >= 0", name="evaluation_result_duration_nonnegative"),
+        CheckConstraint("retry_count >= 0", name="evaluation_result_retry_nonnegative"),
+        Index("ix_evaluation_results_run", "evaluation_run_id", "created_at"),
+    )
+
+    evaluation_run_id: Mapped[UUID] = mapped_column(
+        ForeignKey("evaluation_runs.id", ondelete="CASCADE"), nullable=False
+    )
+    evaluation_case_id: Mapped[UUID] = mapped_column(
+        ForeignKey("evaluation_cases.id", ondelete="RESTRICT"), nullable=False
+    )
+    result_payload: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=JSON_EMPTY_OBJECT
+    )
+    scores: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=JSON_EMPTY_OBJECT
+    )
+    expected_relevant: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    candidate_created: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    schema_first_pass: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    duration_ms: Mapped[int] = mapped_column(Integer, nullable=False)
+    retry_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    failure_code: Mapped[str | None] = mapped_column(String(80))
+    runtime_version: Mapped[str | None] = mapped_column(String(80))
+    runtime_execution_id: Mapped[UUID | None] = mapped_column()
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )

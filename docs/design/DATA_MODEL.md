@@ -582,6 +582,10 @@ interface RuleCandidate {
 }
 ```
 
+## 2.19 EvaluationCase / EvaluationRun / EvaluationResult
+
+`EvaluationCase` 以 `(suiteKey, caseKey, caseVersion)` 唯一，同一版本的内容哈希不允许变化，且当前只接受 `synthetic_non_sensitive` Fixture。`EvaluationRun` 固定保存 Runtime 类型、Agent key/版本、请求人、Correlation ID、开始/结束时间、终态和聚合指标；`EvaluationResult` 每个 Run/Case 只允许一行，保存严格输出、逐维分数、候选创建标志、Schema 首次通过、耗时、重试、Runtime 版本和失败码。评估表不修改 Prompt、AgentDefinition、Candidate、Matter 或 WorkItem。
+
 ## 3. 值来源模型
 
 推荐对重要字段使用来源元数据：
@@ -715,6 +719,9 @@ storage_quota_reservations
 matter_update_proposals
 agent_run_status_events
 candidate_revisions
+evaluation_cases
+evaluation_runs
+evaluation_results
 ```
 
 使用 `version` 字段进行乐观锁；异步事件采用事务 Outbox，避免数据库提交成功但队列消息丢失。

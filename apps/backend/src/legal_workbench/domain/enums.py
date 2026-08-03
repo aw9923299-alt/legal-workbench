@@ -349,3 +349,14 @@ class DocumentExtractionStatus(StrEnum):
     SUCCEEDED = "succeeded"
     BODY_UNAVAILABLE = "body_unavailable"
     FAILED = "failed"
+
+
+class EvaluationRuntimeType(StrEnum):
+    FAKE = "fake"
+    REAL = "real"
+
+
+class EvaluationRunStatus(StrEnum):
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"

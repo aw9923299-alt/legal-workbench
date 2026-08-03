@@ -109,6 +109,21 @@ npm run test --workspace @legal-workbench/web -- --run \
 
 组件测试覆盖四类值的视觉边界、逐字段部分批准、全部状态下的合法 WorkItem 操作，以及后端返回 409 时刷新当前 Matter 但保留法务决定和最终值草稿。后端仍是状态迁移和版本校验的唯一权威。
 
+消息研判质量评估可单独验证：
+
+```bash
+.venv/bin/python -m pytest \
+  apps/backend/tests/test_evaluations.py \
+  apps/backend/tests/test_postgres_evaluations.py -q
+
+.venv/bin/python scripts/run_message_judgement_evaluation.py \
+  --database-url postgresql+psycopg://.../legal_workbench_evaluation_test \
+  --runtime fake \
+  --allow-database-write
+```
+
+默认 API 和 CLI 均使用合成非敏感 Fixture 与 Fake Runtime；CLI 输出必须显示 `realInferenceExecuted=false`。Fake 的满分只证明 Fixture、Schema、评分、持久化和聚合管线可重复，不代表真实模型质量。真实运行还必须同时设置服务端 `LEGAL_WORKBENCH_ENABLE_REAL_CODEX=true` 和 CLI `--allow-real-runtime`，且只在持有认证的专用 Runner 执行。API 进程不实例化 Codex Runtime。评估只记录结果和反馈，不自动训练或改 Prompt。
+
 涉及数据库或Compose时还应执行：
 
 ```bash

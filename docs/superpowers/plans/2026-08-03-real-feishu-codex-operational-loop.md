@@ -678,7 +678,7 @@ git commit -m "feat: operate matter updates and work items"
 - Produces: `EvaluationCase`, `EvaluationRun`, `EvaluationResult`, and deterministic metric aggregation.
 - Consumes: Fake or explicitly real Agent Runtime and immutable test fixtures.
 
-- [ ] **Step 1: Write failing metric tests**
+- [x] **Step 1: Write failing metric tests**
 
 ```python
 def test_evaluation_metrics_count_irrelevant_candidate_as_false_positive():
@@ -688,19 +688,19 @@ def test_evaluation_metrics_count_irrelevant_candidate_as_false_positive():
 
 Cover legal relevance, category, deadline, role, facts, inference false positives, missing information, Schema first-pass, latency, failures, and retries.
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 Run: `.venv/bin/python -m pytest apps/backend/tests/test_evaluations.py -q`
 
-- [ ] **Step 3: Add migration and evaluation service**
+- [x] **Step 3: Add migration and evaluation service**
 
 Persist immutable case version, runtime type, AgentDefinition version, result payload, per-dimension scores, timing, failure, and retry counts. Fixtures contain invented non-sensitive Chinese messages only.
 
-- [ ] **Step 4: Add explicit evaluation API and CLI path**
+- [x] **Step 4: Add explicit evaluation API and CLI path**
 
 `POST /api/v1/evaluations/runs` defaults to Fake Runtime; real Runtime requires an explicit `allowRealRuntime=true` plus server feature gate. Evaluation never changes prompts or AgentDefinition status.
 
-- [ ] **Step 5: Run RED→GREEN and commit**
+- [x] **Step 5: Run RED→GREEN and commit**
 
 ```bash
 .venv/bin/python -m pytest apps/backend/tests/test_evaluations.py -q

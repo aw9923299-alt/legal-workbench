@@ -53,7 +53,7 @@ FeishuEvent → FeishuMessage → 附件下载/正文提取
 
 ## 数据库与运行时验证
 
-- PostgreSQL 18 独立测试数据库上执行最新迁移往返，当前版本为 `20260803_0010 (head)`；
+- PostgreSQL 18 独立测试数据库上执行最新迁移往返，当前版本为 `20260803_0011 (head)`；
 - 在 `20260801_0003` 插入两个历史重复 ContextSnapshot 和一个历史 Candidate 外部 Agent UUID 后执行升级/降级，快照没有被合并删除，历史 UUID 可完整恢复；
 - PostgreSQL 集成测试验证 `FeishuMessage → ContextSnapshot → AgentRun → MessageCandidate`，结果为 `2 passed, 62 deselected`；
 - Worker 镜像按唯一 `CODEX_CLI_VERSION=0.146.0` 构建成功，与当前宿主 `codex-cli 0.146.0` 精确一致；
@@ -133,6 +133,16 @@ FeishuEvent → FeishuMessage → 附件下载/正文提取
 - **已通过自动化验证**：前端 `10` 个测试文件、`24` 个测试全部通过，覆盖四类值分离、部分批准、加载/失败/Correlation ID/重试、全部 WorkItem 状态操作映射、权限禁用和 409 草稿保留；TypeScript 检查和生产构建通过，Vite 仍只有已知大 chunk 警告；
 - **未执行**：真实飞书测试消息和官方长连接继续按用户指示后置；本阶段不改变其验收状态。
 
+## 阶段十增量结果：消息研判质量评估
+
+- **已实现**：迁移 `20260803_0011` 新增不可变版本化 `evaluation_cases`、`evaluation_runs`、`evaluation_results`；同一 Suite/Case/Version 内容变化会返回稳定冲突，不覆盖历史；
+- **已实现**：11 类合成非敏感中文 Fixture 覆盖合同、劳动、知产、闲聊、仅供知悉、事项更新、明确期限、模糊期限、Prompt 注入、超长消息和附件，不含真实聊天、合同或个人数据；
+- **已实现**：聚合法务相关性、分类、期限、消息角色、事实、事实引用、推断误报、缺失信息、无关消息误建 Candidate、Schema 首次通过、平均耗时、失败率和重试率；每个结果保留 AgentDefinition/Runtime 版本、输出、逐维分数和失败码；
+- **已实现**：`POST /api/v1/evaluations/runs` 默认 Fake，认证 Actor、幂等键、Correlation ID 和审计均已接入；相同请求键不重复执行。真实运行必须同时满足 `allowRealRuntime=true` 和服务端真实 Codex 门禁；API 不实例化 Codex Runtime，真实认证只提供给专用 CLI Runner；
+- **已通过真实 PostgreSQL 验证**：独立 `legal_workbench_evaluation_test` 从空库升级到 `20260803_0011 (head)`，执行 `0011 → 0010 → 0011` 成功；实际持久化 11 个 Case/Result、1 个 Run、2 条审计及全部聚合指标；
+- **已通过自动化验证**：默认后端 `176 passed, 9 skipped`，开启 PostgreSQL 集成后 `185 passed`；Ruff 和 mypy 通过。Fake CLI 结果 11/11、`failureRate=0`、`realInferenceExecuted=false`；该满分只验证评估管线，不作为真实模型质量结论；
+- **未执行**：隔离 Runner 未配置 Codex 认证，真实 Codex 评估未执行；真实飞书测试消息与官方长连接仍按用户指示后置。
+
 ## 最终验证命令
 
 提交前以本节记录的最终结果为准。宿主 `.venv` 为 Python 3.14.6，生产镜像按项目基线使用 Python 3.12.13：
@@ -144,17 +154,22 @@ cd apps/backend
 ../../.venv/bin/ruff check .
 ../../.venv/bin/mypy --config-file pyproject.toml src
 ../../.venv/bin/pytest --disable-warnings
-# 166 passed, 8 skipped（默认不启用 PostgreSQL 集成）
+# 176 passed, 9 skipped（默认不启用 PostgreSQL 集成）
 
 RUN_POSTGRES_INTEGRATION_TESTS=1 \
 LEGAL_WORKBENCH_TEST_DATABASE_URL="${LOCAL_TEST_DATABASE_URL}" \
 ../../.venv/bin/pytest --disable-warnings
-# 174 passed
+# 185 passed
 
 ../../.venv/bin/python ../../scripts/smoke_test_codex_triage.py \
   --database-url postgresql+psycopg://legal_workbench:change-me-local-only@127.0.0.1:5432/legal_workbench_stage3_019fbdd2 \
   --runtime fake --allow-database-write
 # 11/11 success；realInferenceExecuted=false
+
+../../.venv/bin/python ../../scripts/run_message_judgement_evaluation.py \
+  --database-url postgresql+psycopg://legal_workbench:change-me-local-only@127.0.0.1:5432/legal_workbench_evaluation_test \
+  --runtime fake --allow-database-write
+# 11/11 success；13 项聚合指标已落库；realInferenceExecuted=false
 
 cd ../web
 npm install
@@ -176,7 +191,7 @@ LEGAL_WORKBENCH_DATABASE_URL=postgresql+psycopg://legal_workbench:change-me-loca
   ../../.venv/bin/alembic -c alembic.ini downgrade -1
 LEGAL_WORKBENCH_DATABASE_URL=postgresql+psycopg://legal_workbench:change-me-local-only@127.0.0.1:5432/legal_workbench_stage3_019fbdd2 \
   ../../.venv/bin/alembic -c alembic.ini upgrade head
-# 20260803_0010 (head)
+# 20260803_0011 (head)
 
 cd ../..
 docker compose run --rm --no-deps --entrypoint codex worker --version
@@ -185,7 +200,7 @@ docker compose run --rm --no-deps --entrypoint id worker codex-agent
 # uid=10001(codex-agent) gid=10001(codex-agent) groups=10001(codex-agent)
 ```
 
-结果：截至人工审核与 WorkItem 操作界面阶段，`git diff --check`、Ruff、mypy、174 个含 PostgreSQL 集成的后端测试、0010 迁移往返、前端 typecheck/10 文件 24 测试/build 和 Compose 静态配置均通过；附件阶段的 Worker 镜像与解析依赖验证、Fake Runtime 冒烟和故障恢复证据继续有效。Vite 构建产生单个约 `1,437 kB`（gzip约 `452 kB`）chunk 警告，不影响构建成功。
+结果：截至消息研判质量评估阶段，`git diff --check`、Ruff、mypy、185 个含 PostgreSQL 集成的后端测试、0011 迁移往返、前端 typecheck/10 文件 24 测试/build 和 Compose 静态配置均通过；附件阶段的 Worker 镜像与解析依赖验证、Fake Runtime 冒烟和故障恢复证据继续有效。Vite 构建产生单个约 `1,437 kB`（gzip约 `452 kB`）chunk 警告，不影响构建成功。
 
 `npm audit` 返回 `2 high`：两项均源自 React Router 的 RSC Action CSRF 公告 `GHSA-qwww-vcr4-c8h2`。当前 Registry 最新 `react-router-dom` 为 `7.18.2`，公告要求 `>=8.3.0`，暂无可安装修复版本；本项目是纯 Vite SPA，不启用 RSC/Server Actions，但该上游告警仍明确保留，未通过降级或强制安装掩盖。
 

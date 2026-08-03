@@ -78,6 +78,9 @@ class Settings(BaseSettings):
     enable_real_feishu: bool = False
     enable_real_codex: bool = False
     enable_external_send: bool = False
+    evaluation_fixture_path: str = (
+        "apps/backend/tests/fixtures/evaluations/message_judgement_v1.json"
+    )
 
     local_actor_id: str = "local-legal-user"
     session_secret: str = "development-only-change-me"

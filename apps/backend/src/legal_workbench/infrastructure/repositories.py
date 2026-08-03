@@ -27,6 +27,9 @@ from legal_workbench.domain.entities import (
     DocumentSegment,
     DocumentVersion,
     DraftArtifact,
+    EvaluationCase,
+    EvaluationResult,
+    EvaluationRun,
     FeishuAttachment,
     FeishuMessage,
     FeishuMessageVersion,
@@ -76,6 +79,9 @@ from legal_workbench.infrastructure.models import (
     DocumentSegmentModel,
     DocumentVersionModel,
     DraftArtifactModel,
+    EvaluationCaseModel,
+    EvaluationResultModel,
+    EvaluationRunModel,
     FeishuAttachmentModel,
     FeishuEventModel,
     FeishuMessageModel,
@@ -2426,6 +2432,176 @@ class SqlAlchemyDocumentRepository:
             error_code=model.error_code,
             started_at=model.started_at,
             finished_at=model.finished_at,
+            created_at=model.created_at,
+        )
+
+
+class SqlAlchemyEvaluationRepository:
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+        self._tracked_runs: dict[UUID, EvaluationRunModel] = {}
+
+    async def get_case(
+        self, *, suite_key: str, case_key: str, case_version: int
+    ) -> EvaluationCase | None:
+        statement = select(EvaluationCaseModel).where(
+            EvaluationCaseModel.suite_key == suite_key,
+            EvaluationCaseModel.case_key == case_key,
+            EvaluationCaseModel.case_version == case_version,
+        )
+        model = (await self._session.execute(statement)).scalar_one_or_none()
+        return None if model is None else self._case_to_domain(model)
+
+    async def add_case(self, case: EvaluationCase) -> None:
+        self._session.add(
+            EvaluationCaseModel(
+                id=case.id,
+                suite_key=case.suite_key,
+                case_key=case.case_key,
+                case_version=case.case_version,
+                agent_key=case.agent_key,
+                input_payload=case.input_payload,
+                expected_output=case.expected_output,
+                content_hash=case.content_hash,
+                data_classification=case.data_classification,
+                created_at=case.created_at,
+            )
+        )
+
+    async def add_run(self, run: EvaluationRun) -> None:
+        model = EvaluationRunModel(
+            id=run.id,
+            suite_key=run.suite_key,
+            suite_version=run.suite_version,
+            runtime_type=run.runtime_type,
+            agent_key=run.agent_key,
+            agent_definition_version=run.agent_definition_version,
+            status=run.status,
+            requested_by=run.requested_by,
+            correlation_id=run.correlation_id,
+            allow_real_runtime=run.allow_real_runtime,
+            started_at=run.started_at,
+            finished_at=run.finished_at,
+            metrics=run.metrics,
+            failure_code=run.failure_code,
+            failure_message=run.failure_message,
+            created_at=run.created_at,
+        )
+        self._tracked_runs[run.id] = model
+        self._session.add(model)
+
+    async def get_run(self, run_id: UUID) -> EvaluationRun | None:
+        model = await self._session.get(EvaluationRunModel, run_id)
+        if model is None:
+            return None
+        self._tracked_runs[run_id] = model
+        return self._run_to_domain(model)
+
+    async def get_run_for_update(self, run_id: UUID) -> EvaluationRun | None:
+        statement = (
+            select(EvaluationRunModel)
+            .where(EvaluationRunModel.id == run_id)
+            .with_for_update()
+        )
+        model = (await self._session.execute(statement)).scalar_one_or_none()
+        if model is None:
+            return None
+        self._tracked_runs[run_id] = model
+        return self._run_to_domain(model)
+
+    async def save_run(self, run: EvaluationRun) -> None:
+        model = self._tracked_runs.get(run.id)
+        if model is None:
+            model = await self._session.get(EvaluationRunModel, run.id)
+        if model is None:
+            raise RuntimeError(f"Evaluation run {run.id} is not tracked")
+        model.status = run.status
+        model.finished_at = run.finished_at
+        model.metrics = run.metrics
+        model.failure_code = run.failure_code
+        model.failure_message = run.failure_message
+
+    async def add_result(self, result: EvaluationResult) -> None:
+        self._session.add(
+            EvaluationResultModel(
+                id=result.id,
+                evaluation_run_id=result.evaluation_run_id,
+                evaluation_case_id=result.evaluation_case_id,
+                result_payload=result.result_payload,
+                scores=result.scores,
+                expected_relevant=result.expected_relevant,
+                candidate_created=result.candidate_created,
+                schema_first_pass=result.schema_first_pass,
+                duration_ms=result.duration_ms,
+                retry_count=result.retry_count,
+                failure_code=result.failure_code,
+                runtime_version=result.runtime_version,
+                runtime_execution_id=result.runtime_execution_id,
+                created_at=result.created_at,
+            )
+        )
+
+    async def list_results(self, run_id: UUID) -> Sequence[EvaluationResult]:
+        statement = (
+            select(EvaluationResultModel)
+            .where(EvaluationResultModel.evaluation_run_id == run_id)
+            .order_by(EvaluationResultModel.created_at, EvaluationResultModel.id)
+        )
+        models = (await self._session.execute(statement)).scalars().all()
+        return [self._result_to_domain(model) for model in models]
+
+    @staticmethod
+    def _case_to_domain(model: EvaluationCaseModel) -> EvaluationCase:
+        return EvaluationCase(
+            id=model.id,
+            suite_key=model.suite_key,
+            case_key=model.case_key,
+            case_version=model.case_version,
+            agent_key=model.agent_key,
+            input_payload=model.input_payload,
+            expected_output=model.expected_output,
+            content_hash=model.content_hash,
+            data_classification=model.data_classification,
+            created_at=model.created_at,
+        )
+
+    @staticmethod
+    def _run_to_domain(model: EvaluationRunModel) -> EvaluationRun:
+        return EvaluationRun(
+            id=model.id,
+            suite_key=model.suite_key,
+            suite_version=model.suite_version,
+            runtime_type=model.runtime_type,
+            agent_key=model.agent_key,
+            agent_definition_version=model.agent_definition_version,
+            status=model.status,
+            requested_by=model.requested_by,
+            correlation_id=model.correlation_id,
+            started_at=model.started_at,
+            allow_real_runtime=model.allow_real_runtime,
+            finished_at=model.finished_at,
+            metrics=model.metrics,
+            failure_code=model.failure_code,
+            failure_message=model.failure_message,
+            created_at=model.created_at,
+        )
+
+    @staticmethod
+    def _result_to_domain(model: EvaluationResultModel) -> EvaluationResult:
+        return EvaluationResult(
+            id=model.id,
+            evaluation_run_id=model.evaluation_run_id,
+            evaluation_case_id=model.evaluation_case_id,
+            result_payload=model.result_payload,
+            scores=model.scores,
+            expected_relevant=model.expected_relevant,
+            candidate_created=model.candidate_created,
+            schema_first_pass=model.schema_first_pass,
+            duration_ms=model.duration_ms,
+            retry_count=model.retry_count,
+            failure_code=model.failure_code,
+            runtime_version=model.runtime_version,
+            runtime_execution_id=model.runtime_execution_id,
             created_at=model.created_at,
         )
 

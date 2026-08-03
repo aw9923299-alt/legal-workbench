@@ -138,6 +138,10 @@ Matter 更新页把当前值、消息提取值、AI 建议值和法务最终值�
 
 尚未验证/实现：宿主与容器 CLI 版本已统一，但隔离 Worker 无 Codex 认证，因此真实 Codex 推理未执行；事项归并、任务规划、优先级建议和结果汇总 Agent 不在本轮范围。
 
+## 阶段5.1：消息研判质量评估（本轮已完成）
+
+迁移 `20260803_0011` 新增不可变版本化 `evaluation_cases`、`evaluation_runs` 和 `evaluation_results`。11 类合成非敏感 Fixture 覆盖合同、劳动、知产、闲聊、仅供知悉、事项更新、明确/模糊期限、Prompt 注入、超长消息和附件。评估持久化 Runtime/AgentDefinition 版本、严格输出、逐维分数、耗时、Schema 首次通过、失败和重试，并聚合相关性、分类、期限、角色、事实、引用、推断误报、缺失信息及无关消息误建 Candidate 等指标。API 默认 Fake 且要求认证、幂等键和 Correlation ID；真实 Codex 只允许持有认证的专用 CLI Runner 在客户端和服务端双门禁下执行，不在 API 进程运行，也不自动修改 Prompt 或 AgentDefinition。
+
 ## 阶段6：知识库
 
 实现：

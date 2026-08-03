@@ -5,6 +5,7 @@ from legal_workbench.api.routes.agents import router as agents_router
 from legal_workbench.api.routes.auth import router as auth_router
 from legal_workbench.api.routes.candidates import router as candidates_router
 from legal_workbench.api.routes.dashboard import router as dashboard_router
+from legal_workbench.api.routes.evaluations import router as evaluations_router
 from legal_workbench.api.routes.events import router as events_router
 from legal_workbench.api.routes.health import router as health_router
 from legal_workbench.api.routes.integrations import router as integrations_router
@@ -34,3 +35,4 @@ api_router.include_router(outbox_router, dependencies=authenticated)
 api_router.include_router(system_router, dependencies=authenticated)
 api_router.include_router(messages_router, dependencies=authenticated)
 api_router.include_router(events_router, dependencies=authenticated)
+api_router.include_router(evaluations_router, dependencies=authenticated)

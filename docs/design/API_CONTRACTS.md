@@ -418,11 +418,13 @@ POST /api/v1/rules/candidates/:id/approve-trial
 POST /api/v1/rules/candidates/:id/reject
 POST /api/v1/rules/candidates/:id/activate
 POST /api/v1/rules/candidates/:id/rollback
-GET  /api/v1/evaluations
-POST /api/v1/evaluations/run
+POST /api/v1/evaluations/runs
+GET  /api/v1/evaluations/runs/:runId
 ```
 
 规则启用前必须关联通过的评测运行。
+
+评估创建请求默认 `runtimeType=fake`，必须携带认证 Session、`Idempotency-Key` 和 Correlation ID；相同键只返回原 EvaluationRun。响应包含不可变 Fixture/AgentDefinition 版本、逐用例结果和相关性、分类、期限、角色、事实引用、推断误报、缺失信息、Schema 首次通过、平均耗时、失败率及重试率。`runtimeType=real` 还要求 `allowRealRuntime=true` 和服务端真实 Codex 门禁；当前 API 进程不持有 Codex 认证，因此真实路径由专用 CLI Runner 执行。评估不得启用规则、修改 Prompt 或改变 AgentDefinition 状态。
 
 ## 13. 日报和复盘接口
 
