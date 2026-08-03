@@ -1,4 +1,4 @@
-.PHONY: setup-web setup-backend web-dev backend-dev test lint compose-up compose-down compose-logs migrate
+.PHONY: setup-web setup-backend web-dev backend-dev test lint compose-up compose-down compose-logs migrate ops-start ops-stop ops-wake-check ops-backup ops-diagnostics ops-cleanup
 
 PYTHON := .venv/bin/python
 
@@ -34,3 +34,21 @@ compose-down:
 
 compose-logs:
 	docker compose logs -f
+
+ops-start:
+	$(PYTHON) scripts/legal_workbench_ops.py start
+
+ops-stop:
+	$(PYTHON) scripts/legal_workbench_ops.py stop
+
+ops-wake-check:
+	$(PYTHON) scripts/legal_workbench_ops.py wake-check
+
+ops-backup:
+	$(PYTHON) scripts/legal_workbench_ops.py backup
+
+ops-diagnostics:
+	$(PYTHON) scripts/legal_workbench_ops.py diagnostics
+
+ops-cleanup:
+	$(PYTHON) scripts/legal_workbench_ops.py cleanup

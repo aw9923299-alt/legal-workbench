@@ -45,6 +45,12 @@ data/knowledge/*
 !data/knowledge/.gitkeep
 data/codex-runs/*
 !data/codex-runs/.gitkeep
+data/operations/*
+!data/operations/.gitkeep
+data/backups/*
+!data/backups/.gitkeep
+data/local-secrets/*
+!data/local-secrets/.gitkeep
 postgres_data/
 redis_data/
 *.tsbuildinfo

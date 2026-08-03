@@ -161,54 +161,69 @@ FeishuEvent → FeishuMessage → 附件下载/正文提取
 - **真实 PostgreSQL 已验证**：登记、允许全部消息、旧版本拒绝、延后补偿、范围版本和 3 条审计记录均实际持久化；
 - **明确未执行**：补偿按钮只保存 `not_executed / REAL_FEISHU_PHASE_DEFERRED`，未调用飞书远端；真实测试消息和官方长连接继续按用户要求后置。
 
+## 阶段十三增量结果：Mac 常驻运维与系统状态
+
+- **已实现**：单一主机运维脚本提供安全启动/停止、睡眠唤醒自检、PostgreSQL custom dump 原子备份与保留期、Codex 运行目录安全清理、附件磁盘配额和脱敏诊断包；Worker 默认并发仍为 1；
+- **已实现**：停止先写接入暂停标记，再停飞书连接器、等待活动事务、停止 Worker/Scheduler 和其余 Compose 服务；事务检查失败或未排空时失败关闭，不继续停库。唤醒只拉起基础服务，在 API/PostgreSQL/Redis/Worker/Scheduler/磁盘正常后调用 PostgreSQL 恢复接口，不启动延后的飞书连接；
+- **已实现**：系统状态 API/页面显示磁盘、附件用量/配额、最近备份、最近唤醒和待恢复任务；待恢复口径不会把无飞书消息来源或仍持有有效未来租约的 Run 误报为可恢复任务；SSE 正常时不再额外每 10 秒扫描附件目录；
+- **已实现**：Supervisor 登录后及每 5 分钟自检、每日 03:15 备份的 launchd 模板；运维 JSONL 日志按 5 MiB 滚动，全部 Compose 服务按 10 MiB × 3 文件轮转，launchd stdout/stderr 不单独无限增长；失败只输出错误类型，不回显异常正文；
+- **本机已实测**：真实 PostgreSQL `pg_dump --format=custom` 已生成 177306 字节私有备份，`pg_restore --list` 识别为 PostgreSQL 18.4 custom archive；脱敏诊断包仅含 5 个状态文件、权限 `0600`，未包含 `.env` 或当前本地 Secret；新版镜像唤醒自检完成，基础组件、磁盘和备份正常，恢复计数为 0，因 Codex 未认证诚实标记为 `degraded`，自动恢复审计为 `mac-supervisor / local_supervisor`；
+- **组件冒烟已通过**：真实 PostgreSQL、隔离 Redis DB 清空恢复、迟到 Worker fencing 和 11 类合成消息通过，报告 `verificationScope=component_integration`、`hostOperationalAcceptance=false`、`realInferenceExecuted=false`、`singleObjectEndToEnd=false`，并把脚本未执行的宿主运维步骤逐项标为 `not_executed`；
+- **尚未人工安装/验收**：未改写用户 `~/Library/LaunchAgents`，真实 Mac 睡眠/唤醒和独立临时库恢复演练未执行；当前未跟踪 `.env` 尚缺 `CODEX_CLI_VERSION`，launchd 安装前必须补为 `0.146.0`；
+- **明确未执行**：真实飞书测试消息和官方长连接继续为 `not_executed / REAL_FEISHU_PHASE_DEFERRED`；隔离 Worker 无 Codex 认证，真实 Codex 推理仍未执行。
+
 ## 最终验证命令
 
 提交前以本节记录的最终结果为准。宿主 `.venv` 为 Python 3.14.6，生产镜像按项目基线使用 Python 3.12.13：
 
 ```bash
 git diff --check
-cd apps/backend
-../../.venv/bin/python -m compileall src
-../../.venv/bin/ruff check .
-../../.venv/bin/mypy --config-file pyproject.toml src
-../../.venv/bin/pytest --disable-warnings
-# 192 passed, 11 skipped（默认不启用 PostgreSQL 集成）
+cd <repository-root>
+.venv/bin/python -m compileall apps/backend/src
+.venv/bin/python -m ruff check apps/backend/src apps/backend/tests scripts
+.venv/bin/python -m mypy --config-file apps/backend/pyproject.toml \
+  apps/backend/src scripts/legal_workbench_ops.py \
+  scripts/smoke_test_codex_triage.py scripts/smoke_test_downstream_loop.py
+.venv/bin/python -m pytest apps/backend/tests --disable-warnings
+# 227 passed, 13 skipped（默认不启用 PostgreSQL/Redis 集成）
 
-RUN_POSTGRES_INTEGRATION_TESTS=1 \
-LEGAL_WORKBENCH_TEST_DATABASE_URL="${LOCAL_TEST_DATABASE_URL}" \
-../../.venv/bin/pytest --disable-warnings
-# 203 passed
+export LEGAL_WORKBENCH_TEST_DATABASE_URL="${LOCAL_TEST_DATABASE_URL}"
+export LEGAL_WORKBENCH_TEST_REDIS_URL="redis://127.0.0.1:6379/15"
+RUN_POSTGRES_INTEGRATION_TESTS=1 RUN_REDIS_INTEGRATION_TESTS=1 \
+  .venv/bin/python -m pytest apps/backend/tests --disable-warnings
+# 240 passed
 
-../../.venv/bin/python ../../scripts/smoke_test_codex_triage.py \
-  --database-url postgresql+psycopg://legal_workbench:change-me-local-only@127.0.0.1:5432/legal_workbench_stage3_019fbdd2 \
+.venv/bin/python scripts/smoke_test_codex_triage.py \
   --runtime fake --allow-database-write
 # 11/11 success；realInferenceExecuted=false
 
-../../.venv/bin/python ../../scripts/run_message_judgement_evaluation.py \
-  --database-url postgresql+psycopg://legal_workbench:change-me-local-only@127.0.0.1:5432/legal_workbench_evaluation_test \
-  --runtime fake --allow-database-write
-# 11/11 success；13 项聚合指标已落库；realInferenceExecuted=false
+.venv/bin/python scripts/smoke_test_downstream_loop.py \
+  --runtime fake --allow-database-write --allow-redis-flush
+# component_integration passed；11 cases；realInferenceExecuted=false
+# hostOperationalAcceptance=false；飞书两项 not_executed
 
-cd ../web
+cd apps/web
 npm install
 npm run typecheck
 npm run test
 npm run build
-# 12 test files / 29 tests passed；构建成功
+# 13 test files / 31 tests passed；构建成功
 cd ../..
-docker compose config --quiet
-docker compose build
-docker compose up -d postgres redis api worker scheduler web
+CODEX_CLI_VERSION=0.146.0 docker compose config --quiet
+CODEX_CLI_VERSION=0.146.0 docker compose build api worker scheduler web
+CODEX_CLI_VERSION=0.146.0 .venv/bin/python scripts/legal_workbench_ops.py wake-check
+CODEX_CLI_VERSION=0.146.0 .venv/bin/python scripts/legal_workbench_ops.py backup
+CODEX_CLI_VERSION=0.146.0 .venv/bin/python scripts/legal_workbench_ops.py diagnostics
 docker compose ps
-# API/PostgreSQL/Redis healthy；Worker/Scheduler/Web running
+# API/PostgreSQL/Redis/Worker/Scheduler/disk/backup normal
+# Codex 0.146.0 exact match；authentication=unauthenticated；wake=degraded
 
-cd apps/backend
-LEGAL_WORKBENCH_DATABASE_URL=postgresql+psycopg://legal_workbench:change-me-local-only@127.0.0.1:5432/legal_workbench_stage3_019fbdd2 \
-  ../../.venv/bin/alembic -c alembic.ini upgrade head
-LEGAL_WORKBENCH_DATABASE_URL=postgresql+psycopg://legal_workbench:change-me-local-only@127.0.0.1:5432/legal_workbench_stage3_019fbdd2 \
-  ../../.venv/bin/alembic -c alembic.ini downgrade -1
-LEGAL_WORKBENCH_DATABASE_URL=postgresql+psycopg://legal_workbench:change-me-local-only@127.0.0.1:5432/legal_workbench_stage3_019fbdd2 \
-  ../../.venv/bin/alembic -c alembic.ini upgrade head
+LEGAL_WORKBENCH_DATABASE_URL="${LOCAL_TEST_DATABASE_URL}" \
+  .venv/bin/python -m alembic -c apps/backend/alembic.ini upgrade head
+LEGAL_WORKBENCH_DATABASE_URL="${LOCAL_TEST_DATABASE_URL}" \
+  .venv/bin/python -m alembic -c apps/backend/alembic.ini downgrade -1
+LEGAL_WORKBENCH_DATABASE_URL="${LOCAL_TEST_DATABASE_URL}" \
+  .venv/bin/python -m alembic -c apps/backend/alembic.ini upgrade head
 # 20260803_0012 (head)
 
 cd ../..
@@ -218,13 +233,13 @@ docker compose run --rm --no-deps --entrypoint id worker codex-agent
 # uid=10001(codex-agent) gid=10001(codex-agent) groups=10001(codex-agent)
 ```
 
-结果：截至飞书群聊授权范围阶段，`git diff --check`、Ruff、mypy、203 个含 PostgreSQL 集成的后端测试、0012 迁移往返、前端 typecheck/12 文件 29 测试/build 和 Compose 静态配置均通过；附件阶段的 Worker 镜像与解析依赖验证、Fake Runtime 冒烟和故障恢复证据继续有效。Vite 构建产生单个约 `1,476 kB`（gzip约 `461 kB`）chunk 警告，不影响构建成功。
+结果：截至 Mac 常驻运维阶段，`git diff --check`、Ruff、mypy、227 个默认后端测试（另 13 个 PostgreSQL/Redis 测试跳过）、240 个含 PostgreSQL 和隔离 Redis 清空恢复的后端测试、0012 迁移往返、前端 typecheck/13 文件 31 测试/build、Compose 静态配置、镜像构建、launchd plist 校验、真实主机备份/诊断/唤醒自检均通过。Vite 构建产生单个约 `1,477 kB`（gzip约 `462 kB`）chunk 警告，不影响构建成功。
 
 `npm audit` 返回 `2 high`：两项均源自 React Router 的 RSC Action CSRF 公告 `GHSA-qwww-vcr4-c8h2`。当前 Registry 最新 `react-router-dom` 为 `7.18.2`，公告要求 `>=8.3.0`，暂无可安装修复版本；本项目是纯 Vite SPA，不启用 RSC/Server Actions，但该上游告警仍明确保留，未通过降级或强制安装掩盖。
 
 ## 故障注入与恢复
 
-- **已通过模拟验证**：停止 Redis 后，PostgreSQL 中消息、Run、Candidate 与 Outbox 数量不变；系统状态准确显示 Redis/Worker/Scheduler 不可用；Redis 启动并执行 `FLUSHALL` 后，恢复扫描可从 PostgreSQL 重新发现任务，Scheduler 心跳重新建立；
+- **已通过隔离集成验证**：专用 loopback Redis DB 15 在确认空库后写入唯一临时投递标记并执行 `FLUSHDB`，标记消失但 PostgreSQL queued 消息仍存在；恢复服务重新生成持久 Outbox 事件。测试拒绝远端、带凭证、DB 0/1/14 和非空 DB 15，未清空当前业务 Broker；CI 另提供独立 Redis Service 执行同一清空恢复用例；
 - **已通过模拟验证**：停止/恢复 Worker，系统状态由降级恢复正常；停止/恢复 API，HTTP 由不可达恢复 200；
 - **已通过模拟验证**：终止无网络隔离容器中的实际 `codex exec` 进程，退出码为 137；AgentRun 租约超时、重派与死信路径由自动化测试覆盖。因缺真实认证，这不是一次真实模型运行中的故障；
 - **已通过模拟验证**：飞书连接器在 `ENABLE_REAL_FEISHU=false` 时持久化为 `disabled`，人工重连返回 HTTP 409 `INVALID_STATE_TRANSITION`；长连接断线按 `1/2/4/8/16/30` 秒退避测试通过；

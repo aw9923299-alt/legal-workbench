@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -13,6 +14,10 @@ from pathlib import Path
 from uuid import uuid4
 
 from legal_workbench.agents.codex_cli import CodexCliRuntime
+from legal_workbench.agents.codex_health import (
+    CodexHealthStatus,
+    CodexRuntimeHealthChecker,
+)
 from legal_workbench.agents.message_judgement import MessageJudgementResult
 from legal_workbench.agents.runtime import (
     AgentExecutionContext,
@@ -33,6 +38,7 @@ from legal_workbench.domain.entities import (
 )
 from legal_workbench.domain.enums import FeishuEventStatus, FeishuMessageStatus
 from legal_workbench.infrastructure.unit_of_work import SqlAlchemyUnitOfWorkFactory
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 
@@ -121,7 +127,19 @@ class FakeSmokeRuntime:
 
 async def run(args: argparse.Namespace) -> int:
     if not args.allow_database_write:
-        raise SystemExit("Refusing to write smoke rows without --allow-database-write")
+        raise ValueError("Refusing to write smoke rows without --allow-database-write")
+    if args.runtime == "real" and not args.allow_real_runtime:
+        raise ValueError("Real Codex requires --allow-real-runtime")
+    real_runtime_preflight = "not_executed"
+    if args.runtime == "real":
+        health = await CodexRuntimeHealthChecker(
+            command=os.getenv("LEGAL_WORKBENCH_CODEX_COMMAND", "codex"),
+            expected_version=os.getenv("CODEX_CLI_VERSION"),
+            runs_root=args.runs_root,
+        ).check()
+        if health.status != CodexHealthStatus.AVAILABLE:
+            raise ValueError(f"Real Codex runtime is not ready: {health.status.value}")
+        real_runtime_preflight = "ready"
     engine = create_async_engine(args.database_url, pool_pre_ping=True)
     factory = SqlAlchemyUnitOfWorkFactory(async_sessionmaker(engine, expire_on_commit=False))
     rows: list[dict[str, object]] = []
@@ -226,7 +244,10 @@ async def run(args: argparse.Namespace) -> int:
         await engine.dispose()
     report = {
         "runtime": args.runtime,
-        "realInferenceExecuted": args.runtime == "real",
+        "realRuntimePreflight": real_runtime_preflight,
+        "realInferenceExecuted": (
+            args.runtime == "real" and any(bool(row["success"]) for row in rows)
+        ),
         "generatedAt": datetime.now(UTC).isoformat(),
         "results": rows,
     }
@@ -236,11 +257,34 @@ async def run(args: argparse.Namespace) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--database-url", required=True)
+    parser.add_argument(
+        "--database-url",
+        default=os.getenv("LEGAL_WORKBENCH_TEST_DATABASE_URL"),
+        help="Test database URL; prefer LEGAL_WORKBENCH_TEST_DATABASE_URL to avoid process arguments.",
+    )
     parser.add_argument("--runtime", choices=("fake", "real"), default="fake")
+    parser.add_argument("--allow-real-runtime", action="store_true")
     parser.add_argument("--runs-root", default="data/codex-runs-smoke")
     parser.add_argument("--allow-database-write", action="store_true")
-    return asyncio.run(run(parser.parse_args()))
+    args = parser.parse_args()
+    if not args.database_url:
+        parser.error(
+            "--database-url or LEGAL_WORKBENCH_TEST_DATABASE_URL is required"
+        )
+    try:
+        return asyncio.run(run(args))
+    except (OSError, RuntimeError, ValueError, SQLAlchemyError) as exc:
+        print(
+            json.dumps(
+                {
+                    "status": "failed",
+                    "errorType": type(exc).__name__,
+                    "realInferenceExecuted": False,
+                },
+                sort_keys=True,
+            )
+        )
+        return 1
 
 
 if __name__ == "__main__":

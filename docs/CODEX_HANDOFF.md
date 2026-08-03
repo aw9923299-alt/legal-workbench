@@ -33,7 +33,7 @@ Runtime 前后使用独立短事务，不在数据库事务内等待 Codex。任
 | 飞书长连接/Webhook、原始事件/消息幂等落库 | 已实现；真实凭证未联调 |
 | ContextSnapshot/AgentDefinition/AgentRun/Source/DraftArtifact | 已实现 |
 | `message_judgement` + `CodexCliRuntime` | 已实现，真实请求需显式配置 |
-| Codex 版本/隔离认证健康检查 | 已实现；当前宿主为版本不匹配且隔离认证缺失 |
+| Codex 版本/隔离认证健康检查 | 已实现；宿主与新构建 Worker 均为 0.146.0，隔离认证缺失 |
 | AgentRun 状态历史、租约与 PostgreSQL 恢复 | 已实现，Celery Beat 定时扫描 |
 | Candidate 分析修订历史 | 已实现，旧修订不覆盖 |
 | MatterUpdateProposal 人工审核 | 已实现；Proposal/Matter 双版本锁、逐字段最终值、WorkItem/Deadline 同事务落库；409 刷新保留法务草稿 |
@@ -44,6 +44,7 @@ Runtime 前后使用独立短事务，不在数据库事务内等待 Codex。任
 | HttpOnly 本地会话与 Actor 来源审计 | 已实现；生产会话签发器尚未实现 |
 | 飞书连接状态、消息版本、附件元数据/受控下载 | 已实现；下载不授权给 Codex |
 | 飞书补偿同步 | 已实现配置群聊时间窗方案；未配置群聊时明确为部分恢复 |
+| Mac 常驻运维 | 安全启停、资源门禁唤醒自检、排他每日备份、保留清理、no-follow 脱敏诊断与系统状态已实现；真实主机脚本已复验，launchd 模板未安装，物理睡眠/唤醒尚未人工验收 |
 | 飞书加密 Webhook | 尚未实现；加密载荷明确拒绝 |
 | 知识解析/检索/专业 Agent/外发 | 本轮未实现 |
 
@@ -78,6 +79,8 @@ Runtime 前后使用独立短事务，不在数据库事务内等待 Codex。任
 - `api/routes/setup.py`、`pages/SetupPage.tsx`：六个 Setup API 和九步初始化向导，飞书延后状态不会显示为成功。
 - `application/feishu_scopes.py`、`api/routes/feishu_scopes.py`：群聊授权状态机、版本/幂等/审计和延后补偿记录；
 - `apps/web/src/pages/FeishuScopesPage.tsx`：群聊范围登记、允许、排除、暂停、恢复和精确错误证据。
+- `scripts/legal_workbench_ops.py`、`infra/launchd/*.plist.example`：Mac 安全启停、唤醒恢复、PostgreSQL 备份、运行目录保留、脱敏诊断和定时模板；
+- `scripts/smoke_test_downstream_loop.py`：真实 PostgreSQL 组件、隔离 Redis DB 清空恢复 + 11 类 Fake/显式真实 Runtime 的组合验证，明确不冒充单对象 E2E 或宿主运维验收。
 
 ## 配置门禁
 
@@ -96,6 +99,6 @@ Runtime 将唯一授权 ContextSnapshot 作为不可信 JSON 直接送入 stdin�
 
 ## 下一步
 
-1. 完成本地 Mac 常驻、自检、备份、诊断和恢复；
+1. 经用户确认后把 launchd 模板安装到当前 Mac，并执行一次真实睡眠/唤醒和独立库备份恢复演练；
 2. 真实飞书测试消息与官方长连接验收已按用户要求后置，后续有测试凭证时再执行，不得写成已通过；
 3. 在专用 Runner 内使用非生产凭证执行真实 Codex 冒烟、评估和故障注入。

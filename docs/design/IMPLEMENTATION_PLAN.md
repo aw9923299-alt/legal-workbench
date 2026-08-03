@@ -150,6 +150,10 @@ Matter 更新页把当前值、消息提取值、AI 建议值和法务最终值�
 
 `/settings/feishu-scopes` 从 PostgreSQL 展示已知群、最近消息、最近错误、最近补偿及当前版本。未知群只允许登记为 `unapproved/disabled`；允许 @机器人、允许指定群全部消息、排除、暂停和恢复均进入领域状态机，使用 `If-Match`、幂等键、Actor 和追加审计。手工补偿在真实飞书阶段延后时只保存 `not_executed / REAL_FEISHU_PHASE_DEFERRED`，不会发起远端请求或展示为同步成功。单元/API、React 和真实 PostgreSQL 集成测试覆盖版本冲突及审计持久化。
 
+## 阶段5.4：Mac 常驻运行与系统状态（本轮已完成代码）
+
+`scripts/legal_workbench_ops.py` 提供基础服务安全启停、每次唤醒健康检查、PostgreSQL 事实恢复、带跨进程排他锁的 custom dump 每日备份、Codex 运行目录保留、磁盘配额和 no-follow 脱敏诊断包。`/system/health` 与 React 系统页新增磁盘、附件用量/配额、最近备份、最近唤醒和精确待恢复任务；无飞书消息来源或有效租约不会被误判为可恢复任务。`infra/launchd` 提供登录/每 5 分钟 Supervisor 和每日备份模板，自动恢复使用 `mac-supervisor / local_supervisor` 审计身份，输出由 5 MiB 滚动运维日志统一承接。真实飞书在唤醒检查中继续记录 `not_executed / REAL_FEISHU_PHASE_DEFERRED`。代码、自动化和主机实际备份/诊断/唤醒脚本已验证；launchd 安装、真实睡眠/唤醒与独立库恢复演练仍需当前 Mac 人工确认。
+
 ## 阶段6：知识库
 
 实现：

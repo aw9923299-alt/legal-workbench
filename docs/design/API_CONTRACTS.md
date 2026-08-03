@@ -39,6 +39,7 @@ If-Match: <entity-version>
 
 - 业务 API 从 HttpOnly Cookie Session 解析 Actor，应用服务接收的是后端 `RequestActor`，不直接读取浏览器声明的身份；
 - `POST /api/v1/auth/local-session` 只在显式 `local` 或 `development` 环境签发本地单用户 Session；`test/staging/production` 均拒绝；
+- `POST /api/v1/auth/local-supervisor-session` 只供绑定在 loopback 的 Mac Supervisor 使用，签发固定机器 Actor `mac-supervisor`，审计来源为 `local_supervisor`，不得把自动恢复记到本地法务用户；
 - `GET /api/v1/auth/session` 返回已验证 Actor 及 `identitySource`；
 - `X-Actor-ID` 仅在 `LEGAL_WORKBENCH_ALLOW_DEVELOPMENT_ACTOR_HEADER=true` 且处于 `local/development` 时可用，审计来源标记为 `development_header`；
 - 非本地环境必须配置至少 32 字符的非默认 Session Secret；生产环境缺少或无效 Session 返回 401，开发 Actor Header 配置会导致应用启动失败。
@@ -123,6 +124,8 @@ POST /api/v1/feishu/messages/:messageId/attachments/:attachmentId/analysis-autho
 附件授权接口要求认证 Actor、`Idempotency-Key` 和 Correlation ID，并只允许操作属于该消息且已下载的附件。附件响应返回下载/提取状态、SHA-256、页数、字符数和稳定错误码，不返回本地路径。授权只影响后续不可变 ContextSnapshot；Codex 事实引用必须精确匹配已纳入片段的附件 ID、文件名、页码、段落号和内容哈希。
 
 `POST /api/v1/system/recover-pending-jobs` 与后台定时任务复用同一 PostgreSQL recovery service；写接口要求 Actor、Idempotency-Key、Correlation ID、权限和审计。恢复操作只重建 Outbox/状态，不在 API 线程运行 Codex。
+
+`GET /api/v1/system/health` 与 `/system/metrics` 还返回 `pendingRecovery`、磁盘总量/剩余量、附件用量/配额、最近备份时间/状态和最近唤醒检查时间。备份或磁盘元数据不可读时返回 `unknown/unavailable`，不得伪造正常；有效未来租约不计入 `pendingRecovery`。
 
 ## 4. 消息候选接口
 

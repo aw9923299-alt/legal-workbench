@@ -84,6 +84,19 @@ def test_local_session_endpoint_sets_httponly_cookie() -> None:
     assert response.json()["identitySource"] == "local_session"
 
 
+def test_local_supervisor_session_uses_dedicated_machine_identity() -> None:
+    from legal_workbench.main import app
+
+    response = TestClient(app).post("/api/v1/auth/local-supervisor-session")
+
+    assert response.status_code == 201
+    assert "HttpOnly" in response.headers["set-cookie"]
+    assert response.json() == {
+        "actorId": "mac-supervisor",
+        "identitySource": "local_supervisor",
+    }
+
+
 def test_local_session_is_fail_closed_for_staging(monkeypatch: pytest.MonkeyPatch) -> None:
     from legal_workbench.main import app
 

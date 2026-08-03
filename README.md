@@ -72,7 +72,10 @@ legal-workbench/
 │     └─ tests/
 ├─ data/
 │  ├─ knowledge/              本地知识目录挂载点
-│  └─ codex-runs/             Codex 隔离运行目录
+│  ├─ codex-runs/             Codex 隔离运行目录
+│  ├─ operations/             脱敏运维状态与滚动日志
+│  ├─ backups/                PostgreSQL 私有逻辑备份
+│  └─ local-secrets/          本地私有集成 Secret
 ├─ infra/
 │  ├─ docker/
 │  └─ launchd/
@@ -175,6 +178,7 @@ npm run build
 - AI 质量评估使用 11 类合成非敏感版本化 Fixture，持久化 EvaluationCase/Run/Result，并确定性汇总相关性、分类、期限、角色、事实引用、推断误报、缺失信息、Schema、耗时、失败和重试指标；Fake 只验证评估管线，只有显式真实 Runner 结果才代表模型质量；
 - `/setup` 九步向导从 PostgreSQL 和实时探针恢复基础服务、飞书凭证掩码/授权范围、Codex CLI/版本/认证/冒烟状态；本地 SecretProvider 使用 `0700/0600` 和原子替换，Codex 验证与冒烟只排队给隔离 Worker；
 - `/settings/feishu-scopes` 使用 PostgreSQL 真实范围数据；未知群默认 `unapproved/disabled`，允许、排除、暂停、恢复和延后补偿都使用 Actor、版本锁、幂等键与审计；
+- `scripts/legal_workbench_ops.py` 提供安全启动/停止、睡眠唤醒自检、PostgreSQL 每日自定义格式备份、Codex 运行目录保留、脱敏诊断包和滚动运维日志；系统状态页展示磁盘、附件配额、最近备份、最近唤醒和 PostgreSQL 待恢复任务；
 - Agent stdout/stderr 常见凭证格式脱敏，运行目录只返回受控逻辑路径；所有新增写操作继续要求后端 Actor、Idempotency-Key、Correlation ID 和审计。
 
 部分实现：
@@ -182,10 +186,11 @@ npm run build
 - 飞书开关关闭时真实入口 fail closed；长连接缺少 App ID/Secret、Webhook 缺少 Verification Token 时拒绝启动。当前环境未提供真实凭证，长连接与远端时间窗补偿仅通过 Fake/自动化测试验证；Webhook 加密载荷仍明确拒绝；
 - 容器 Worker 以专用 UID、最小环境变量和无知识目录挂载运行 Codex；主机模式仍依赖 Codex 自身只读沙箱，不声称是完整 OS 级隔离。
 - `CODEX_CLI_VERSION` 是唯一部署版本来源；当前宿主 CLI 与新构建 Worker 镜像均为 `0.146.0`。隔离 Worker 仍未配置 Codex 认证，因此真实 Codex 推理未执行，11 类消息仅通过 Fake Runtime + 真实 PostgreSQL 验证。
+- `infra/launchd` 已提供登录后/每 5 分钟自检和每日 03:15 备份模板；模板尚未写入当前用户的 `~/Library/LaunchAgents`，安装前必须替换绝对路径并确认 `.env` 已含 `CODEX_CLI_VERSION=0.146.0`。
 - 当前 Registry 最新 `react-router-dom@7.18.2` 仍命中 RSC Action CSRF 公告 `GHSA-qwww-vcr4-c8h2`；本项目不启用 RSC/Server Actions，但在上游发布可安装修复版本前，`npm audit` 仍会报告 2 个 high，详见 `QA_REPORT.md`。
 
 ## 当前开发顺序
 
-1. 完成 Mac 常驻、自检、备份、诊断和恢复闭环；
+1. 经用户确认后安装 launchd 模板，并执行一次真实 Mac 睡眠/唤醒与备份恢复演练；
 2. 在专用 Runner 认证可用时执行真实 Codex 安全冒烟与真实评估；
 3. 真实飞书测试消息和官方长连接验收按用户要求后置，恢复时单独执行且人工确认个人未读状态。

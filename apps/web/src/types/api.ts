@@ -325,6 +325,14 @@ export interface SystemHealth {
     lastCandidateAt: string | null;
     lastAgentRunUpdateAt: string | null;
     lastOutboxFailureAt: string | null;
+    pendingRecovery: number;
+    diskFreeBytes: number | null;
+    diskTotalBytes: number | null;
+    attachmentBytesUsed: number | null;
+    attachmentQuotaBytes: number;
+    lastBackupAt: string | null;
+    lastBackupStatus: string;
+    lastWakeCheckAt: string | null;
   } | null;
   codex: {
     enabled: boolean;

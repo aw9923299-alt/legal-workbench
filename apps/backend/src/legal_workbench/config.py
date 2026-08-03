@@ -72,6 +72,11 @@ class Settings(BaseSettings):
     knowledge_root: str = "/data/knowledge"
     codex_runs_root: str = "/data/codex-runs"
     setup_secret_root: str = "/data/local-secrets"
+    operations_state_root: str = "/data/operations"
+    backup_root: str = "/data/backups"
+    backup_max_age_hours: int = 36
+    minimum_disk_free_bytes: int = 5 * 1024 * 1024 * 1024
+    codex_run_retention_days: int = 14
     codex_command: str = "codex"
     codex_cli_version: str = Field(
         default="0.146.0",
@@ -89,6 +94,7 @@ class Settings(BaseSettings):
     )
 
     local_actor_id: str = "local-legal-user"
+    local_supervisor_actor_id: str = "mac-supervisor"
     session_secret: str = "development-only-change-me"
     session_cookie_name: str = "legal_workbench_session"
     session_ttl_seconds: int = 43200
@@ -166,6 +172,12 @@ class Settings(BaseSettings):
             raise ValueError("Development actor headers cannot be enabled in production.")
         if not 0 <= self.message_analysis_manual_review_threshold <= 1:
             raise ValueError("Message analysis manual-review threshold must be between 0 and 1.")
+        if self.backup_max_age_hours < 1 or self.codex_run_retention_days < 1:
+            raise ValueError("Backup age and Codex retention settings must be positive.")
+        if self.minimum_disk_free_bytes < 0:
+            raise ValueError("Minimum disk free bytes cannot be negative.")
+        if self.analysis_recovery_stale_seconds < 1:
+            raise ValueError("Analysis recovery stale seconds must be positive.")
         return self
 
 

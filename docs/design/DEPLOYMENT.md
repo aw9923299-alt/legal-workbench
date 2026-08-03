@@ -70,6 +70,23 @@ integrations  feishu-connector、file-indexer
 - 监控Docker是否可用、最后飞书事件时间、队列年龄和磁盘空间；
 - 主机离线窗口写入系统状态。
 
+仓库内 `scripts/legal_workbench_ops.py` 是唯一主机运维入口：
+
+```bash
+make ops-start         # 不启动延后的飞书连接器
+make ops-wake-check    # 拉起基础服务、检查健康并从 PostgreSQL 恢复任务
+make ops-backup        # pg_dump custom 格式、原子落盘、SHA-256、保留期清理
+make ops-diagnostics   # 生成不含环境变量、密钥和真实正文的诊断包
+make ops-cleanup       # 仅清理过期、非活动、UUID 命名的 Codex 运行目录
+make ops-stop          # 暂停接入、等待事务、先停 Worker/Scheduler 再停 Compose
+```
+
+运维状态和 5 MiB 滚动日志默认写入 `data/operations`，备份写入 `data/backups`，文件权限为 `0600`；Compose 的全部服务另使用 `json-file` 10 MiB × 3 文件轮转。脚本从 `.env` 读取非敏感运行参数，但失败输出只返回错误类型，不输出异常正文或命令凭证。宿主路径可以用 `LEGAL_WORKBENCH_OPS_STATE_ROOT`、`LEGAL_WORKBENCH_OPS_BACKUP_ROOT`、`LEGAL_WORKBENCH_OPS_CODEX_RUNS_ROOT` 和 `LEGAL_WORKBENCH_OPS_ATTACHMENT_ROOT` 的绝对路径覆盖；同一变量同时驱动主机脚本与 Compose bind source，容器目标仍固定为 `/data/operations`、`/data/backups`、`/data/codex-runs` 和 `/data/feishu-attachments`，避免两侧观察不同目录。
+
+`infra/launchd/com.legal-workbench.supervisor.plist.example` 在登录后及每 300 秒执行唤醒自检；`com.legal-workbench.backup.plist.example` 每日 03:15 备份。一键安全停止会留下持久标记，Supervisor 只记录 `paused`，不会在 5 分钟后擅自拉起；活动事务检查失败或超时也会失败关闭，不继续停止数据库。只有显式 `make ops-start` 才清除标记。自动恢复使用独立 `mac-supervisor / local_supervisor` 审计身份。安装前复制到 `~/Library/LaunchAgents`、把所有占位符替换为当前仓库和虚拟环境绝对路径，并先执行 `plutil -lint`。模板显式提供 Homebrew/系统 Docker CLI 常用 PATH；若本机 Docker 安装在其他位置，必须同步调整。当前仓库不会自动改写用户的 launchd 配置；模板 stdout/stderr 指向 `/dev/null`，结果和失败类型统一进入受控滚动运维日志。
+
+唤醒自检只有在 PostgreSQL、Redis、Worker、Scheduler 和磁盘/附件配额均正常时才触发 PostgreSQL 恢复。备份缺失/过期和 Codex 未认证会保留为 warning，并把本次唤醒标记为 `degraded`；不会伪装成已就绪。首装时它们不会阻止数据库事实恢复，真实 Codex AgentRun 仍受 Worker 运行时健康门禁保护。
+
 ## 7. 飞书恢复
 
 ```text
@@ -82,7 +99,7 @@ integrations  feishu-connector、file-indexer
 → 工作台展示恢复结果和不可覆盖窗口
 ```
 
-当前远端补偿是配置群聊的时间窗查询，不是租户级游标。Mac 唤醒后应调用 `/integrations/feishu/reconcile`，然后由数据库恢复扫描重派 Outbox/待分析消息。
+当前远端补偿是配置群聊的时间窗查询，不是租户级游标。按本轮用户指示，真实测试消息和官方长连接验收后置，因此当前 `wake-check` 不启动连接器或调用远端补偿，只保存 `not_executed / REAL_FEISHU_PHASE_DEFERRED`；PostgreSQL Outbox、queued 消息和过期租约仍会恢复。恢复真实飞书阶段后，才在单独验收中启用配置群时间窗补偿。
 
 ## 8. Worker与Codex Runner
 
@@ -108,13 +125,15 @@ Codex Runner：
 
 - `/api/v1/health/live`：进程存活；
 - `/api/v1/health/ready`：PostgreSQL和Redis就绪；
-- `/api/v1/system/health`：FastAPI、PostgreSQL、Redis、Worker、Scheduler、飞书、Codex CLI/认证和运行指标；
+- `/api/v1/system/health`：FastAPI、PostgreSQL、Redis、Worker、Scheduler、飞书、Codex CLI/认证、磁盘、备份和运行指标；
 - `/api/v1/events/stream`：SSE 运行变化，断开不影响 PostgreSQL 事实；
 - 飞书连接状态和最后事件时间；
 - Celery队列长度、最老任务和死信；
 - Codex运行数、超时和租约；
 - 文件解析失败；
 - 磁盘空间和最近备份。
+
+系统页的“待恢复任务”仅统计 PostgreSQL 中无活动 Run 的待分析消息、陈旧 queued Run，以及心跳陈旧且租约已过期/缺失的 preparing/running Run；仍持有有效未来租约的单并发 Worker 不会被误报。
 
 ## 10. 日志和审计
 
@@ -135,6 +154,8 @@ curl --cookie-jar /tmp/legal-workbench-cookie http://localhost:8000/api/v1/syste
 ```
 
 故障恢复验证应依次停止/恢复 Redis、Worker 和 API，并检查 PostgreSQL 中 queued 消息、AgentRun 租约、Outbox 和死信仍可由 scheduler 或 `/system/recover-pending-jobs` 恢复。Codex 进程终止测试必须得到明确失败码，不能以伪造成功结果完成。
+
+备份恢复演练应使用独立临时数据库，先对 `.dump` 执行 `pg_restore --list`，再恢复并验证 Alembic head、核心表数量和只追加审计；不得覆盖正在运行的业务库。诊断包只含 Docker/Compose/Git 状态、磁盘及脱敏运维元数据，不含 `.env`、数据库内容、飞书正文或附件。
 
 集成Profiles在功能实现和安全评审完成后才启用：
 
