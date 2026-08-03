@@ -113,6 +113,17 @@ FeishuEvent → FeishuMessage → 附件下载/正文提取
 - **已通过真实 PostgreSQL 验证**：执行 `开始 → 建依赖 → 等待 → 解决依赖 → 恢复 → 完成`，最终 WorkItem 版本 7、Dependency 版本 2，并验证 6 条审计、6 条 Outbox 和完成动作唯一幂等记录；
 - **已通过自动化验证**：默认后端 `160 passed, 7 skipped`，开启 PostgreSQL 集成后 `167 passed`；Ruff、mypy、前端 typecheck、6 个测试文件共 13 个测试和生产构建通过。Vite 仍只有已知大 chunk 警告。
 
+## 阶段八增量结果：今日工作台真实队列
+
+- **已实现**：`GET /api/v1/dashboard/today` 从 Candidate、最新失败 AgentRun/Message、开放 Matter/WorkItem、有效 Deadline、待审外发 ReviewPackage、Outbox 死信、持久化集成状态和实时健康快照生成八类队列；
+- **已实现**：队列严格按硬期限、逾期、法律风险、人工确认优先级、等待时长、创建时间和稳定 ID 排序；AI 建议优先级只单独展示，不参与覆盖人工值；
+- **已实现**：Deadline 查询只限定当前 Actor 相关 WorkItem/Matter，WorkItem 和 Matter 期限共同取最早值，避免无关全库期限挤占读取上限；健康探针异常返回脱敏系统异常项，不拖垮业务队列；
+- **已实现**：React 根路由进入今日工作台，八类标签、真实计数、加载/空/失败/Correlation ID/重试、30 秒刷新和真实对象链接全部接入；待审外发链接可直接打开指定审核包；
+- **已清理**：删除 `data/mock.ts`、`services/adapters.ts`、旧 `types/domain.ts` 及仅服务于原型的 AI 助手/任务表格/状态标签组件；运行代码未发现上述 Mock 引用；
+- **已通过真实 PostgreSQL 验证**：独立 `legal_workbench_dashboard_test` 从空库升级到 `20260803_0010 (head)`，实际保存 Matter、WorkItem 及 Matter/WorkItem 两级 Deadline 后读取投影，验证硬期限合并、确定性排序、逾期分组和真实路由；
+- **已通过自动化验证**：默认后端 `166 passed, 8 skipped`，开启 PostgreSQL 集成后 `174 passed`；Ruff、mypy、前端 typecheck、7 个测试文件共 16 个测试和生产构建通过。Vite 仍只有已知大 chunk 警告；
+- **未执行**：真实飞书测试消息与官方长连接继续按用户指示后置；本阶段没有将本地 PostgreSQL 测试描述为真实飞书联调。
+
 ## 最终验证命令
 
 提交前以本节记录的最终结果为准。宿主 `.venv` 为 Python 3.14.6，生产镜像按项目基线使用 Python 3.12.13：
@@ -124,12 +135,12 @@ cd apps/backend
 ../../.venv/bin/ruff check .
 ../../.venv/bin/mypy --config-file pyproject.toml src
 ../../.venv/bin/pytest --disable-warnings
-# 160 passed, 7 skipped（默认不启用 PostgreSQL 集成）
+# 166 passed, 8 skipped（默认不启用 PostgreSQL 集成）
 
 RUN_POSTGRES_INTEGRATION_TESTS=1 \
 LEGAL_WORKBENCH_TEST_DATABASE_URL="${LOCAL_TEST_DATABASE_URL}" \
 ../../.venv/bin/pytest --disable-warnings
-# 167 passed
+# 174 passed
 
 ../../.venv/bin/python ../../scripts/smoke_test_codex_triage.py \
   --database-url postgresql+psycopg://legal_workbench:change-me-local-only@127.0.0.1:5432/legal_workbench_stage3_019fbdd2 \
@@ -141,7 +152,7 @@ npm install
 npm run typecheck
 npm run test
 npm run build
-# 6 test files / 13 tests passed；构建成功
+# 7 test files / 16 tests passed；构建成功
 cd ../..
 docker compose config --quiet
 docker compose build
@@ -165,7 +176,7 @@ docker compose run --rm --no-deps --entrypoint id worker codex-agent
 # uid=10001(codex-agent) gid=10001(codex-agent) groups=10001(codex-agent)
 ```
 
-结果：截至 WorkItem 生命周期阶段，`git diff --check`、Ruff、mypy、167 个含 PostgreSQL 集成的后端测试、0010 迁移往返、前端 typecheck/test/build 和 Compose 静态配置均通过；附件阶段的 Worker 镜像与解析依赖验证、Fake Runtime 冒烟和故障恢复证据继续有效。Vite 构建产生单个约 `1,454 kB`（gzip约 `457 kB`）chunk 警告，不影响构建成功。
+结果：截至今日工作台阶段，`git diff --check`、Ruff、mypy、174 个含 PostgreSQL 集成的后端测试、0010 迁移往返、前端 typecheck/test/build 和 Compose 静态配置均通过；附件阶段的 Worker 镜像与解析依赖验证、Fake Runtime 冒烟和故障恢复证据继续有效。Vite 构建产生单个约 `1,435 kB`（gzip约 `451 kB`）chunk 警告，不影响构建成功。
 
 `npm audit` 返回 `2 high`：两项均源自 React Router 的 RSC Action CSRF 公告 `GHSA-qwww-vcr4-c8h2`。当前 Registry 最新 `react-router-dom` 为 `7.18.2`，公告要求 `>=8.3.0`，暂无可安装修复版本；本项目是纯 Vite SPA，不启用 RSC/Server Actions，但该上游告警仍明确保留，未通过降级或强制安装掩盖。
 

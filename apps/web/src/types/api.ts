@@ -30,6 +30,48 @@ export type WorkItemStatus =
   | 'done'
   | 'cancelled';
 
+export type DashboardGroup =
+  | 'today_must_handle'
+  | 'overdue'
+  | 'pending_candidates'
+  | 'analysis_failed'
+  | 'waiting_others'
+  | 'upcoming_deadlines'
+  | 'pending_outbound_review'
+  | 'system_abnormal';
+
+export interface DashboardItem {
+  id: string;
+  group: DashboardGroup;
+  objectType: string;
+  title: string;
+  description: string;
+  href: string;
+  status: string;
+  createdAt: string;
+  dueAt: string | null;
+  isHardDeadline: boolean;
+  isOverdue: boolean;
+  legalRisk: LegalRisk;
+  confirmedPriority: Priority | null;
+  aiSuggestedPriority: Priority | null;
+  waitingSince: string | null;
+  waitingSeconds: number;
+  rankingReasons: string[];
+}
+
+export interface DashboardToday {
+  generatedAt: string;
+  todayMustHandle: DashboardItem[];
+  overdue: DashboardItem[];
+  pendingCandidates: DashboardItem[];
+  analysisFailed: DashboardItem[];
+  waitingOthers: DashboardItem[];
+  upcomingDeadlines: DashboardItem[];
+  pendingOutboundReview: DashboardItem[];
+  systemAbnormal: DashboardItem[];
+}
+
 export interface MessageCandidate {
   id: string;
   contextSnapshotId: string;

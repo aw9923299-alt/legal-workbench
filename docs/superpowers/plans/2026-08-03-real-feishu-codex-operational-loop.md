@@ -548,7 +548,7 @@ git commit -m "feat: complete work item lifecycle"
 - Produces: `GET /api/v1/dashboard/today`.
 - Consumes: Candidate, AgentRun, WorkItem, Deadline, ReviewPackage, Communication, and system-health queries.
 
-- [ ] **Step 1: Write failing deterministic-order tests**
+- [x] **Step 1: Write failing deterministic-order tests**
 
 ```python
 async def test_dashboard_orders_hard_deadline_before_soft_high_risk(service):
@@ -560,11 +560,11 @@ async def test_every_dashboard_item_has_a_real_route(service):
     assert all(item.href.startswith(("/inbox/", "/matters/", "/agent-runs/", "/reviews", "/system")) for item in queue.all_items())
 ```
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 Run: `.venv/bin/python -m pytest apps/backend/tests/test_dashboard_queue.py -q`
 
-- [ ] **Step 3: Implement the projection and sort key**
+- [x] **Step 3: Implement the projection and sort key**
 
 ```python
 def queue_sort_key(item: DashboardItem) -> tuple[object, ...]:
@@ -581,15 +581,15 @@ def queue_sort_key(item: DashboardItem) -> tuple[object, ...]:
 
 Return the eight required groups and include the exact reasons used for ranking. Codex priority remains a separate advisory field.
 
-- [ ] **Step 4: Replace the React dashboard**
+- [x] **Step 4: Replace the React dashboard**
 
 Use TanStack Query, QueryState, real counts, real object links, loading/empty/error/retry states, and system-degraded banners. Set `/` to redirect to `/dashboard`.
 
-- [ ] **Step 5: Remove runtime Mock sources**
+- [x] **Step 5: Remove runtime Mock sources**
 
 Delete `data/mock.ts` and `services/adapters.ts`. Pages outside this scope show explicit unavailable states if they lack real APIs.
 
-- [ ] **Step 6: Run RED→GREEN regression and commit**
+- [x] **Step 6: Run RED→GREEN regression and commit**
 
 ```bash
 .venv/bin/python -m pytest apps/backend/tests/test_dashboard_queue.py -q

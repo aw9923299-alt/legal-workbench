@@ -1,104 +1,180 @@
-import { Alert, Badge, Button, Card, Segmented, Space, Tabs, Typography } from 'antd';
-import { AlertOutlined, ClockCircleOutlined, ExclamationCircleOutlined, InboxOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons';
+import {
+  Alert,
+  Badge,
+  Button,
+  Card,
+  Empty,
+  List,
+  Space,
+  Tabs,
+  Tag,
+  Typography,
+} from 'antd';
+import {
+  AlertOutlined,
+  AuditOutlined,
+  ClockCircleOutlined,
+  ExclamationCircleOutlined,
+  InboxOutlined,
+  ReloadOutlined,
+  TeamOutlined,
+  WarningOutlined,
+} from '@ant-design/icons';
+import { useQuery } from '@tanstack/react-query';
 import { useMemo, useState } from 'react';
-import { inboxItems, tasks } from '../data/mock';
-import type { Task } from '../types/domain';
+import { useNavigate } from 'react-router-dom';
 import MetricStrip from '../components/MetricStrip';
-import TaskTable from '../components/TaskTable';
-import AiAssistant from '../components/AiAssistant';
+import { QueryState } from '../components/QueryState';
+import { legalApi } from '../services/api';
+import type { DashboardItem, DashboardToday } from '../types/api';
 
 const { Title, Text } = Typography;
 
-export default function DashboardPage({ onOpenTask }: { onOpenTask: (task: Task) => void }) {
-  const [scope, setScope] = useState('今天');
-  const urgentTasks = useMemo(() => tasks.filter((task) => task.priority !== '低'), []);
+type QueueKey = Exclude<keyof DashboardToday, 'generatedAt'>;
+
+const queueDefinitions: Array<{ key: QueueKey; label: string }> = [
+  { key: 'todayMustHandle', label: '今日必须处理' },
+  { key: 'overdue', label: '已逾期' },
+  { key: 'pendingCandidates', label: '待确认 Candidate' },
+  { key: 'analysisFailed', label: '分析失败' },
+  { key: 'waitingOthers', label: '等待他人' },
+  { key: 'upcomingDeadlines', label: '即将到期' },
+  { key: 'pendingOutboundReview', label: '待审核外发' },
+  { key: 'systemAbnormal', label: '系统异常' },
+];
+
+function formatDateTime(value: string | null): string | null {
+  if (!value) return null;
+  return new Intl.DateTimeFormat('zh-CN', {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).format(new Date(value));
+}
+
+function DashboardQueue({ items }: { items: DashboardItem[] }) {
+  const navigate = useNavigate();
+  if (items.length === 0) {
+    return <Empty className="dashboard-empty" description="当前队列为空" image={Empty.PRESENTED_IMAGE_SIMPLE} />;
+  }
+
+  return (
+    <List
+      className="dashboard-queue-list"
+      dataSource={items}
+      renderItem={(item) => (
+        <List.Item className="dashboard-queue-item">
+          <button type="button" className="dashboard-item-button" onClick={() => navigate(item.href)}>
+            <span className="dashboard-item-heading">
+              <strong>{item.title}</strong>
+              <Tag bordered={false}>{item.status}</Tag>
+            </span>
+            {item.description && <span className="dashboard-item-description">{item.description}</span>}
+            <span className="dashboard-item-meta">
+              {item.dueAt && <span>截止：{formatDateTime(item.dueAt)}</span>}
+              {item.waitingSince && <span>等待自：{formatDateTime(item.waitingSince)}</span>}
+              <span>类型：{item.objectType}</span>
+            </span>
+            <span className="dashboard-ranking-reasons">
+              {item.rankingReasons.map((reason) => <Tag key={reason} color={item.isOverdue ? 'error' : 'blue'}>{reason}</Tag>)}
+              {item.aiSuggestedPriority && (
+                <Tag color="default">AI 建议优先级：{item.aiSuggestedPriority}（仅供参考）</Tag>
+              )}
+            </span>
+          </button>
+        </List.Item>
+      )}
+    />
+  );
+}
+
+export default function DashboardPage() {
+  const [activeQueue, setActiveQueue] = useState<QueueKey>('todayMustHandle');
+  const dashboard = useQuery({
+    queryKey: ['dashboard', 'today'],
+    queryFn: () => legalApi.getDashboardToday(),
+    refetchInterval: 30_000,
+  });
+
+  const tabs = useMemo(() => queueDefinitions.map(({ key, label }) => ({
+    key,
+    label: <span>{label} <Badge count={dashboard.data?.[key].length ?? 0} showZero size="small" /></span>,
+    children: <DashboardQueue items={dashboard.data?.[key] ?? []} />,
+  })), [dashboard.data]);
+
+  const generatedAt = dashboard.data ? formatDateTime(dashboard.data.generatedAt) : null;
+  const systemProblems = dashboard.data?.systemAbnormal.length ?? 0;
 
   return (
     <div className="page dashboard-page">
       <div className="page-title-row">
         <div>
-          <span className="eyebrow">SATURDAY · 2026.08.01</span>
+          <span className="eyebrow">POSTGRESQL · DETERMINISTIC QUEUE</span>
           <Title level={2}>今日工作台</Title>
-          <Text type="secondary">先处理高风险、临近截止和正在等待你行动的事项。</Text>
+          <Text type="secondary">硬期限、逾期、法律风险、人工确认优先级、等待时长和创建时间共同决定顺序。</Text>
         </div>
-        <Space>
-          <Button icon={<ReloadOutlined />}>同步飞书</Button>
-          <Button type="primary" icon={<PlusOutlined />}>新建任务</Button>
-        </Space>
+        <Button icon={<ReloadOutlined />} loading={dashboard.isFetching} onClick={() => void dashboard.refetch()}>
+          刷新队列
+        </Button>
       </div>
 
-      <Alert
-        className="sync-alert"
-        type="info"
-        showIcon
-        message="飞书同步正常"
-        description="已同步 42 个授权会话；最近同步 12:58。2 个敏感群聊已排除，私聊仅读取包含 @法务 或明确授权的线程。"
-        action={<Button size="small">查看授权范围</Button>}
-      />
-
-      <MetricStrip items={[
-        { label: '今日必须处理', value: 4, hint: '2 项将在 4 小时内到期', tone: 'critical', icon: <ClockCircleOutlined /> },
-        { label: '已逾期', value: 1, hint: '最长逾期 22 小时', tone: 'warning', icon: <ExclamationCircleOutlined /> },
-        { label: '高风险事项', value: 3, hint: '含 1 项严重风险', tone: 'critical', icon: <AlertOutlined /> },
-        { label: '等待我确认', value: 6, hint: '新增 3 条 AI 判断', tone: 'info', icon: <InboxOutlined /> },
-      ]} />
-
-      <div className="dashboard-grid">
-        <main className="dashboard-main">
-          <Card className="work-queue-card" bordered={false}>
-            <div className="section-toolbar">
-              <div>
-                <Title level={4}>下一步工作队列</Title>
-                <Text type="secondary">按紧迫度、法律风险、业务影响与等待时长综合排序</Text>
-              </div>
-              <Segmented value={scope} onChange={(value) => setScope(String(value))} options={['今天', '本周', '全部']} />
-            </div>
-            <Tabs
-              defaultActiveKey="focus"
-              items={[
-                { key: 'focus', label: <span>应立即处理 <Badge count={4} size="small" /></span>, children: <TaskTable data={urgentTasks} onOpen={onOpenTask} /> },
-                { key: 'waiting', label: '等待回复', children: <TaskTable data={tasks.filter((task) => task.waitingFor)} onOpen={onOpenTask} /> },
-                { key: 'risk', label: '风险升级', children: <TaskTable data={tasks.filter((task) => ['严重', '高'].includes(task.legalRisk))} onOpen={onOpenTask} /> },
-              ]}
+      <QueryState loading={dashboard.isLoading} error={dashboard.error} onRetry={() => void dashboard.refetch()}>
+        {dashboard.data && (
+          <>
+            <Alert
+              className="sync-alert"
+              type={systemProblems > 0 ? 'warning' : 'info'}
+              showIcon
+              message={systemProblems > 0 ? `检测到 ${systemProblems} 项系统异常` : '工作队列已从业务事实库生成'}
+              description={`生成时间：${generatedAt ?? '未知'}。AI 优先级只作为建议展示，不参与覆盖人工确认值。`}
+              action={systemProblems > 0 ? <Button size="small" onClick={() => setActiveQueue('systemAbnormal')}>查看异常</Button> : undefined}
             />
-          </Card>
 
-          <Card className="week-card" bordered={false}>
-            <div className="section-toolbar compact">
-              <div><Title level={4}>本周处理概览</Title><Text type="secondary">不以数量替代质量，仅用于识别积压与阻塞</Text></div>
-              <Button type="link">查看周报草稿</Button>
-            </div>
-            <div className="week-grid">
-              <div><strong>26</strong><span>新识别事项</span></div>
-              <div><strong>18</strong><span>确认创建任务</span></div>
-              <div><strong>13</strong><span>本周已完成</span></div>
-              <div><strong>4.6h</strong><span>平均首次响应</span></div>
-              <div><strong>3</strong><span>当前阻塞事项</span></div>
-            </div>
-          </Card>
-        </main>
+            <MetricStrip items={[
+              {
+                label: '今日必须处理', value: dashboard.data.todayMustHandle.length,
+                hint: '按确定性规则排序', tone: 'critical', icon: <ClockCircleOutlined />,
+                onClick: () => setActiveQueue('todayMustHandle'),
+              },
+              {
+                label: '已逾期', value: dashboard.data.overdue.length,
+                hint: '包含未满足的有效期限', tone: 'warning', icon: <ExclamationCircleOutlined />,
+                onClick: () => setActiveQueue('overdue'),
+              },
+              {
+                label: '待确认 Candidate', value: dashboard.data.pendingCandidates.length,
+                hint: '必须由法务人工处置', tone: 'info', icon: <InboxOutlined />,
+                onClick: () => setActiveQueue('pendingCandidates'),
+              },
+              {
+                label: '系统异常', value: dashboard.data.systemAbnormal.length,
+                hint: '连接、任务与死信状态', tone: systemProblems > 0 ? 'critical' : 'neutral', icon: <WarningOutlined />,
+                onClick: () => setActiveQueue('systemAbnormal'),
+              },
+            ]} />
 
-        <div className="dashboard-side">
-          <AiAssistant />
-          <Card className="side-card" title={<span>AI 待确认消息 <Badge count={inboxItems.length} /></span>} extra={<Button type="link">进入收件箱</Button>}>
-            {inboxItems.slice(0, 3).map((item) => (
-              <button className="inbox-mini-item" key={item.id}>
-                <span className="inbox-mini-top"><strong>{item.aiDecision}</strong><em>{Math.round(item.confidence * 100)}%</em></span>
-                <span>{item.summary}</span>
-                <small>{item.chatName} · {item.sentAt}</small>
-              </button>
-            ))}
-          </Card>
-          <Card className="side-card" title="即将发生的节点">
-            <div className="deadline-list">
-              <div><time>14:00</time><span>主播解约事实核查会</span></div>
-              <div><time>16:00</time><span>解约风险意见内部截止</span></div>
-              <div><time>18:00</time><span>直播广告脚本定稿</span></div>
-              <div><time>明日</time><span>音乐版权申诉材料截止</span></div>
-            </div>
-          </Card>
-        </div>
-      </div>
+            <Card className="work-queue-card" variant="borderless">
+              <div className="section-toolbar">
+                <div>
+                  <Title level={4}>持续跟踪队列</Title>
+                  <Space size="middle" wrap>
+                    <Text type="secondary"><AlertOutlined /> 法律风险优先</Text>
+                    <Text type="secondary"><TeamOutlined /> 等待时长可见</Text>
+                    <Text type="secondary"><AuditOutlined /> 外发仍需审核</Text>
+                  </Space>
+                </div>
+              </div>
+              <Tabs
+                activeKey={activeQueue}
+                onChange={(key) => setActiveQueue(key as QueueKey)}
+                items={tabs}
+              />
+            </Card>
+          </>
+        )}
+      </QueryState>
     </div>
   );
 }

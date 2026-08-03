@@ -28,7 +28,7 @@
 候选消息
 → 创建事项和两个WorkItem
 → 确认优先级
-→ 生成Mock DraftArtifact
+→ 生成测试 DraftArtifact
 → 审核包修改后通过
 → 模拟发送
 → 时间线和审计记录
@@ -88,6 +88,17 @@ python -m pytest apps/backend/tests/test_postgres_work_item_lifecycle.py -q
 ```
 
 集成测试执行开始、建依赖、等待、解决依赖、恢复和完成，检查 WorkItem/Dependency 版本、审计、Outbox 与幂等回放。
+
+今日工作台可单独验证：
+
+```bash
+.venv/bin/python -m pytest \
+  apps/backend/tests/test_dashboard_queue.py \
+  apps/backend/tests/test_postgres_dashboard_queue.py -q
+npm run test --workspace @legal-workbench/web -- --run DashboardPage
+```
+
+PostgreSQL 投影集成测试需要显式设置 `RUN_POSTGRES_INTEGRATION_TESTS=1` 和独立测试数据库 URL。测试固定验证硬期限优先、风险/人工优先级/等待时间排序、AI 建议不覆盖排序、八类对象链接、健康探针脱敏降级、HTTP 契约及前端加载/空/失败/Correlation ID/重试状态。
 
 涉及数据库或Compose时还应执行：
 

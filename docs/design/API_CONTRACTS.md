@@ -236,6 +236,27 @@ interface WorkItemActionRequest {
 
 调用 `wait` 前先通过 `dependencies` 创建开放依赖；`pause/wait/block/cancel/reopen` 必须填写原因，`block` 还必须填写 `blockerOwnerId`。
 
+## 6.1 今日工作台接口
+
+```http
+GET /api/v1/dashboard/today
+```
+
+接口只接受后端认证 Actor，并从 PostgreSQL 业务事实与实时健康快照投影以下队列：
+
+```text
+todayMustHandle
+overdue
+pendingCandidates
+analysisFailed
+waitingOthers
+upcomingDeadlines
+pendingOutboundReview
+systemAbnormal
+```
+
+每项返回真实对象 `href`、截止时间、硬期限、法律风险、人工确认优先级、AI 建议优先级、等待时间和实际排序理由。队列按“硬期限 → 逾期 → 法律风险 → 人工确认优先级 → 等待时长 → 创建时间 → ID”确定性排序；AI 建议优先级不参与排序，也不得覆盖人工值。健康探针失败会形成脱敏的 `systemAbnormal` 项，不泄露原始异常或阻断其他业务队列。
+
 ## 7. 优先级确认接口
 
 ```http

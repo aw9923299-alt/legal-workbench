@@ -3,6 +3,7 @@ import type {
   AgentRunRecord,
   CandidateStatus,
   CandidateRevision,
+  DashboardToday,
   Deadline,
   LegalMatter,
   MatterUpdateProposal,
@@ -232,6 +233,10 @@ export interface ConfirmCandidateInput {
 }
 
 export const legalApi = {
+  getDashboardToday(): Promise<DashboardToday> {
+    return request('/dashboard/today');
+  },
+
   listMessages(filters: {
     statuses?: FeishuMessageStatus[];
     search?: string;

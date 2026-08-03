@@ -69,8 +69,8 @@ function CandidateRoute() {
 function RouteContent() {
   const navigate = useNavigate();
   return <Routes>
-    <Route path="/" element={<Navigate replace to="/inbox" />} />
-    <Route path="/dashboard" element={<DashboardPage onOpenTask={() => navigate('/matters')} />} />
+    <Route path="/" element={<Navigate replace to="/dashboard" />} />
+    <Route path="/dashboard" element={<DashboardPage />} />
     <Route path="/inbox" element={<InboxPage />} />
     <Route path="/inbox/:messageId" element={<MessageDetailPage />} />
     <Route path="/candidates/:candidateId" element={<CandidateRoute />} />

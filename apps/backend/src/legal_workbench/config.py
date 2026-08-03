@@ -1,6 +1,7 @@
 from enum import StrEnum
 from functools import lru_cache
 from typing import Self
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -35,6 +36,7 @@ class Settings(BaseSettings):
     environment: RuntimeEnvironment = RuntimeEnvironment.DEVELOPMENT
     api_prefix: str = "/api/v1"
     log_level: str = "INFO"
+    local_timezone: str = "Asia/Shanghai"
     cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost:5173"])
 
     database_url: str = Field(
@@ -116,17 +118,26 @@ class Settings(BaseSettings):
     def normalize_optional_process_ids(cls, value: object) -> object:
         return None if value == "" else value
 
+    @field_validator("local_timezone")
+    @classmethod
+    def validate_local_timezone(cls, value: str) -> str:
+        try:
+            ZoneInfo(value)
+        except ZoneInfoNotFoundError as exc:
+            raise ValueError("Local timezone must be a valid IANA timezone.") from exc
+        return value
+
     @model_validator(mode="after")
     def validate_security_boundaries(self) -> Self:
         if self.enable_real_feishu:
             if self.feishu_event_source == FeishuEventSourceMode.LONG_CONNECTION and not (
-                (self.feishu_app_id or "").strip()
-                and (self.feishu_app_secret or "").strip()
+                (self.feishu_app_id or "").strip() and (self.feishu_app_secret or "").strip()
             ):
                 raise ValueError("Real Feishu long_connection mode requires app credentials.")
-            if self.feishu_event_source == FeishuEventSourceMode.WEBHOOK and not (
-                self.feishu_verification_token or ""
-            ).strip():
+            if (
+                self.feishu_event_source == FeishuEventSourceMode.WEBHOOK
+                and not (self.feishu_verification_token or "").strip()
+            ):
                 raise ValueError("Real Feishu webhook mode requires a verification token.")
         if self.environment not in {
             RuntimeEnvironment.LOCAL,

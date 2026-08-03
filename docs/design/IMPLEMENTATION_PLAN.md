@@ -73,13 +73,13 @@ legal-workbench/
 
 - 一条Candidate生成多个WorkItem；
 - 优先级和完成时间确认；
-- 前端 API 查询层与消息研判相关加载/错误/重试状态。
+- 前端 API 查询层与消息研判相关加载/错误/重试状态；
 - 统一 `resolve` API 支持关联、登记更新、仅供知悉和忽略，所有动作保留人工身份、幂等和审计；
 - React Router + TanStack Query 的 AI 收件箱、消息详情、AgentRun 列表/详情和系统状态页；
 - SSE 五类事件、断线退避和有限轮询回退；
 - Candidate 分析版本对比、人工创建/关联 Matter 和死信恢复操作。
 
-部分实现：`update_existing` 当前登记 Candidate 与既有 Matter 的更新关系，不直接修改事项字段；与本闭环无关的旧页面仍可能保留演示数据。
+`update_existing` 已由阶段 4.5 的 MatterUpdateProposal 人工审核闭环替代；运行时 Mock 数据和 Mock 适配器已由阶段 4.7 删除。
 
 验收：刷新可恢复；人工确认值不被自动覆盖；端到端测试覆盖主流程。
 
@@ -114,6 +114,10 @@ legal-workbench/
 
 迁移 `20260803_0010` 增加 `paused` 状态、暂停/取消原因和依赖解决人。`start/pause/wait/block/resume/complete/cancel/reopen/change_owner/change_deadline/change_next_action/add_dependency/resolve_dependency` 全部由领域层校验，API 写操作要求认证、幂等键、Correlation ID 和 `If-Match`。等待/恢复/完成严格检查开放依赖，成功写入在同一 PostgreSQL 事务内保存版本、审计、Outbox 和幂等结果。事项详情页已提供对应人工操作，不允许前端直接写状态字符串。
 
+## 阶段4.7：今日工作台确定性队列（本轮已完成）
+
+`GET /api/v1/dashboard/today` 从 Candidate、AgentRun、Message、Matter、WorkItem、Deadline、ReviewPackage、Outbox 死信、集成连接及实时健康状态生成八类真实队列。排序严格使用硬期限、逾期、法律风险、人工确认优先级、等待时长、创建时间和稳定 ID；Codex/AI 优先级仅单独展示。React 首页已切换为 TanStack Query 数据、加载/空/失败/Correlation ID/重试状态和真实对象链接，`/` 进入 `/dashboard`；旧 `data/mock.ts`、`services/adapters.ts` 及其专用原型组件已删除。
+
 ## 阶段5：Codex Runtime与消息研判 Agent（本轮已完成）
 
 已实现：
@@ -128,7 +132,7 @@ legal-workbench/
 
 已通过模拟验证：11 类消息 Fake Runtime + PostgreSQL 冒烟、Prompt 注入、截断、输出修复、Candidate revision、队列/租约/死信恢复和 0006 迁移往返。
 
-尚未验证/实现：当前宿主 CLI 版本与容器固定版本不一致，隔离 Worker 无 API Key，因此真实 Codex 推理未执行；事项归并、任务规划、优先级建议和结果汇总 Agent 不在本轮范围。
+尚未验证/实现：宿主与容器 CLI 版本已统一，但隔离 Worker 无 Codex 认证，因此真实 Codex 推理未执行；事项归并、任务规划、优先级建议和结果汇总 Agent 不在本轮范围。
 
 ## 阶段6：知识库
 
