@@ -124,6 +124,15 @@ FeishuEvent → FeishuMessage → 附件下载/正文提取
 - **已通过自动化验证**：默认后端 `166 passed, 8 skipped`，开启 PostgreSQL 集成后 `174 passed`；Ruff、mypy、前端 typecheck、7 个测试文件共 16 个测试和生产构建通过。Vite 仍只有已知大 chunk 警告；
 - **未执行**：真实飞书测试消息与官方长连接继续按用户指示后置；本阶段没有将本地 PostgreSQL 测试描述为真实飞书联调。
 
+## 阶段九增量结果：Matter 审核与 WorkItem 操作界面
+
+- **已实现**：Matter 更新建议页固定展示当前值、消息提取值、AI 建议值和法务最终值，逐字段显式批准/拒绝；拒绝字段不会把 AI 值当作正式值提交；
+- **已实现**：审核请求使用稳定幂等上下文；后端返回 409 时刷新 Proposal 与当前 Matter、明确显示“未修改 Matter”，并保留法务逐字段决定和最终值草稿；
+- **已实现**：WorkItem 控件按服务器状态派生可用操作，覆盖开始、暂停、等待、阻塞、恢复、完成、取消、重开、负责人、计划完成时间、下一步行动、建依赖和解决依赖；后端仍负责最终状态机和版本判断；
+- **已实现**：成功操作刷新 Matter、WorkItem、Matter 列表和今日工作台；创建待审外发审核包后同步刷新今日队列；
+- **已通过自动化验证**：前端 `10` 个测试文件、`24` 个测试全部通过，覆盖四类值分离、部分批准、加载/失败/Correlation ID/重试、全部 WorkItem 状态操作映射、权限禁用和 409 草稿保留；TypeScript 检查和生产构建通过，Vite 仍只有已知大 chunk 警告；
+- **未执行**：真实飞书测试消息和官方长连接继续按用户指示后置；本阶段不改变其验收状态。
+
 ## 最终验证命令
 
 提交前以本节记录的最终结果为准。宿主 `.venv` 为 Python 3.14.6，生产镜像按项目基线使用 Python 3.12.13：
@@ -152,7 +161,7 @@ npm install
 npm run typecheck
 npm run test
 npm run build
-# 7 test files / 16 tests passed；构建成功
+# 10 test files / 24 tests passed；构建成功
 cd ../..
 docker compose config --quiet
 docker compose build
@@ -176,7 +185,7 @@ docker compose run --rm --no-deps --entrypoint id worker codex-agent
 # uid=10001(codex-agent) gid=10001(codex-agent) groups=10001(codex-agent)
 ```
 
-结果：截至今日工作台阶段，`git diff --check`、Ruff、mypy、174 个含 PostgreSQL 集成的后端测试、0010 迁移往返、前端 typecheck/test/build 和 Compose 静态配置均通过；附件阶段的 Worker 镜像与解析依赖验证、Fake Runtime 冒烟和故障恢复证据继续有效。Vite 构建产生单个约 `1,435 kB`（gzip约 `451 kB`）chunk 警告，不影响构建成功。
+结果：截至人工审核与 WorkItem 操作界面阶段，`git diff --check`、Ruff、mypy、174 个含 PostgreSQL 集成的后端测试、0010 迁移往返、前端 typecheck/10 文件 24 测试/build 和 Compose 静态配置均通过；附件阶段的 Worker 镜像与解析依赖验证、Fake Runtime 冒烟和故障恢复证据继续有效。Vite 构建产生单个约 `1,437 kB`（gzip约 `452 kB`）chunk 警告，不影响构建成功。
 
 `npm audit` 返回 `2 high`：两项均源自 React Router 的 RSC Action CSRF 公告 `GHSA-qwww-vcr4-c8h2`。当前 Registry 最新 `react-router-dom` 为 `7.18.2`，公告要求 `>=8.3.0`，暂无可安装修复版本；本项目是纯 Vite SPA，不启用 RSC/Server Actions，但该上游告警仍明确保留，未通过降级或强制安装掩盖。
 

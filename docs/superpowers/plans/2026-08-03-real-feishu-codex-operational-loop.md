@@ -620,7 +620,7 @@ git commit -m "feat: complete daily legal workbench"
 - Consumes: WorkItem lifecycle APIs from Task 5.
 - Produces: four-column comparison and version-conflict recovery UX.
 
-- [ ] **Step 1: Write failing component tests**
+- [x] **Step 1: Write failing component tests**
 
 ```tsx
 it('keeps human final values distinct from AI suggestions', async () => {
@@ -634,19 +634,19 @@ it('keeps human final values distinct from AI suggestions', async () => {
 
 Add tests for partial approval, 409 refresh, every WorkItem action, loading, failure, retry, and permission errors.
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 Run: `npm run test --workspace @legal-workbench/web -- --run MatterUpdateComparison WorkItemActions`
 
-- [ ] **Step 3: Implement proposal comparison and review mutations**
+- [x] **Step 3: Implement proposal comparison and review mutations**
 
 Use one stable mutation context per payload. Clear it only after success or deterministic 4xx. On 409, preserve the human draft, refetch Matter/Proposal, and show a conflict banner.
 
-- [ ] **Step 4: Implement WorkItem action controls**
+- [x] **Step 4: Implement WorkItem action controls**
 
 Derive available actions from server status, but let the backend remain authoritative. Every mutation sends the current version through `If-Match` and refreshes Matter, WorkItem, and dashboard queries.
 
-- [ ] **Step 5: Run RED→GREEN and commit**
+- [x] **Step 5: Run RED→GREEN and commit**
 
 ```bash
 npm run test --workspace @legal-workbench/web -- --run

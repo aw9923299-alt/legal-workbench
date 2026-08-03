@@ -158,9 +158,9 @@ npm run build
 - Celery Beat 以 PostgreSQL advisory lock 扫描丢失的 queued 投递和过期 Worker 租约，重建 Outbox 或进入 `dead_letter`，Redis 清空不丢业务事实；
 - 合法结果自动建立待人工确认 Candidate；无关消息不建 Candidate，任何置信度均不自动建立 Matter；
 - Candidate确认创建Matter和初始WorkItem的事务闭环；
-- 前端接入Candidate、Matter、WorkItem、优先级、期限、依赖和审核接口；
+- 前端接入Candidate、Matter、WorkItem、优先级、期限、依赖和审核接口；Matter 更新审核稳定区分当前值、消息提取值、AI 建议值和法务最终值，409 冲突刷新后保留法务草稿；
 - PriorityConfirmation、Deadline和WorkItemDependency模型；
-- WorkItem 完整生命周期、依赖解决、领域状态机、乐观锁、审计和幂等操作页；
+- WorkItem 完整生命周期、依赖解决、领域状态机、乐观锁、审计和幂等操作页；操作后同步刷新 Matter、WorkItem 和今日工作台；
 - 今日工作台使用 PostgreSQL 业务事实和实时健康快照生成八类队列；硬期限、逾期、风险、人工优先级、等待时长和创建时间确定排序，AI 优先级仅作提示；
 - ReviewPackage、ReviewRecord、Communication及所有外发人工审核门禁；
 - Outbox并发领取、指数退避、重试、死信和重新入队；

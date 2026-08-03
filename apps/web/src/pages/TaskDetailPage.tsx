@@ -19,6 +19,8 @@ import {
 import { ArrowLeftOutlined, CalendarOutlined, LinkOutlined, ReloadOutlined, RobotOutlined } from '@ant-design/icons';
 import dayjs, { type Dayjs } from 'dayjs';
 import { useCallback, useEffect, useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
+import WorkItemActions, { type WorkItemLifecycleAction } from '../components/WorkItemActions';
 import {
   clearMutationContext,
   getOrCreateMutationContext,
@@ -31,8 +33,7 @@ import type { Deadline, LegalMatter, Priority, WorkItem, WorkItemDependency } fr
 const { Title, Text, Paragraph } = Typography;
 
 type Dialog = { type: 'priority' | 'deadline' | 'dependency'; workItem: WorkItem } | undefined;
-type LifecycleAction = 'start' | 'pause' | 'wait' | 'block' | 'resume' | 'complete' | 'cancel' | 'reopen' | 'owner' | 'changeDeadline' | 'nextAction';
-type LifecycleDialog = { action: LifecycleAction; workItem: WorkItem } | undefined;
+type LifecycleDialog = { action: WorkItemLifecycleAction; workItem: WorkItem } | undefined;
 
 interface PriorityValues { priority: Priority; completeAt?: Dayjs; reasons: string; overrideReason?: string }
 interface DeadlineValues { deadlineType: string; dueAt: Dayjs; isHard: boolean; sourceReference?: string }
@@ -41,6 +42,7 @@ interface LifecycleValues { reason?: string; waitingPartyId?: string; blockerOwn
 interface ReviewPackageValues { title: string; background: string; reasoning: string; proposedContent: string; receiveId?: string; replyToMessageId?: string }
 
 export default function TaskDetailPage({ matterId, onBack }: { matterId: string; onBack: () => void }) {
+  const queryClient = useQueryClient();
   const [matter, setMatter] = useState<LegalMatter>();
   const [workItems, setWorkItems] = useState<WorkItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -74,6 +76,16 @@ export default function TaskDetailPage({ matterId, onBack }: { matterId: string;
 
   useEffect(() => { void load(); }, [load]);
 
+  const refreshOperationalState = async () => {
+    await load();
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ['matter', matterId] }),
+      queryClient.invalidateQueries({ queryKey: ['matters'] }),
+      queryClient.invalidateQueries({ queryKey: ['work-items', matterId] }),
+      queryClient.invalidateQueries({ queryKey: ['dashboard', 'today'] }),
+    ]);
+  };
+
   const openPriority = (workItem: WorkItem) => {
     priorityForm.setFieldsValue({
       priority: workItem.priority,
@@ -94,7 +106,7 @@ export default function TaskDetailPage({ matterId, onBack }: { matterId: string;
     setDialog({ type: 'dependency', workItem });
   };
 
-  const openLifecycle = (workItem: WorkItem, action: LifecycleAction) => {
+  const openLifecycle = (workItem: WorkItem, action: WorkItemLifecycleAction) => {
     lifecycleForm.setFieldsValue({
       reason: undefined,
       waitingPartyId: workItem.waitingPartyId ?? undefined,
@@ -146,6 +158,7 @@ export default function TaskDetailPage({ matterId, onBack }: { matterId: string;
       });
       message.success('审核包已创建并提交审核');
       setReviewOpen(false);
+      await queryClient.invalidateQueries({ queryKey: ['dashboard', 'today'] });
     } catch (reason) {
       message.error(reason instanceof Error ? reason.message : '创建审核包失败');
     } finally {
@@ -193,7 +206,7 @@ export default function TaskDetailPage({ matterId, onBack }: { matterId: string;
         message.success('依赖关系已创建');
       }
       setDialog(undefined);
-      await load();
+      await refreshOperationalState();
     } catch (reason) {
       if (dependencyMutationKey && isDefinitiveMutationFailure(reason)) {
         clearMutationContext(dependencyMutationKey);
@@ -235,7 +248,7 @@ export default function TaskDetailPage({ matterId, onBack }: { matterId: string;
       clearMutationContext(key);
       message.success('WorkItem 已更新');
       setLifecycleDialog(undefined);
-      await load();
+      await refreshOperationalState();
     } catch (reason) {
       if (isDefinitiveMutationFailure(reason)) clearMutationContext(key);
       message.error(reason instanceof Error ? reason.message : 'WorkItem 更新失败');
@@ -255,7 +268,7 @@ export default function TaskDetailPage({ matterId, onBack }: { matterId: string;
       );
       clearMutationContext(key);
       message.success('依赖已解决');
-      await load();
+      await refreshOperationalState();
     } catch (reason) {
       if (isDefinitiveMutationFailure(reason)) clearMutationContext(key);
       message.error(reason instanceof Error ? reason.message : '解决依赖失败');
@@ -391,13 +404,11 @@ function WorkItemCard({ item, onPriority, onDeadline, onDependency, onLifecycle,
   onPriority: () => void;
   onDeadline: () => void;
   onDependency: () => void;
-  onLifecycle: (action: LifecycleAction) => void;
+  onLifecycle: (action: WorkItemLifecycleAction) => void;
   onResolveDependency: (dependency: WorkItemDependency) => void;
 }) {
   const [deadlines, setDeadlines] = useState<Deadline[]>([]);
   const [dependencies, setDependencies] = useState<WorkItemDependency[]>([]);
-  const isTerminal = ['done', 'cancelled'].includes(item.status);
-
   useEffect(() => {
     void Promise.all([legalApi.listDeadlines(item.id), legalApi.listDependencies(item.id)])
       .then(([deadlineValues, dependencyValues]) => { setDeadlines(deadlineValues); setDependencies(dependencyValues); })
@@ -420,19 +431,13 @@ function WorkItemCard({ item, onPriority, onDeadline, onDependency, onLifecycle,
           {deadlines.map((value) => <Tag icon={<CalendarOutlined />} key={value.id} color={value.isHard ? 'red' : 'gold'}>{new Date(value.dueAt).toLocaleString()}</Tag>)}
           {dependencies.map((value) => <Tag icon={<LinkOutlined />} key={value.id}>{value.dependencyType}: {value.description || value.externalPartyId || value.dependsOnWorkItemId}{value.status === 'active' && <Button type="link" size="small" onClick={() => onResolveDependency(value)}>解决</Button>}</Tag>)}
         </div>
-        <Space style={{ marginTop: 14 }} wrap>
-          {!isTerminal && <Button onClick={onPriority}>确认优先级</Button>}
-          <Button onClick={onDeadline}>添加期限</Button>
-          {!isTerminal && <Button onClick={onDependency}>添加依赖</Button>}
-          {item.status === 'todo' && <><Button type="primary" onClick={() => onLifecycle('start')}>开始</Button><Button onClick={() => onLifecycle('wait')}>等待</Button><Button danger onClick={() => onLifecycle('block')}>阻塞</Button></>}
-          {item.status === 'in_progress' && <><Button onClick={() => onLifecycle('pause')}>暂停</Button><Button onClick={() => onLifecycle('wait')}>等待</Button><Button danger onClick={() => onLifecycle('block')}>阻塞</Button><Button type="primary" onClick={() => onLifecycle('complete')}>完成</Button></>}
-          {['paused', 'waiting', 'blocked'].includes(item.status) && <Button type="primary" onClick={() => onLifecycle('resume')}>恢复</Button>}
-          {['paused', 'waiting'].includes(item.status) && <Button danger onClick={() => onLifecycle('block')}>阻塞</Button>}
-          {item.status === 'pending_review' && <Button type="primary" onClick={() => onLifecycle('complete')}>完成</Button>}
-          {!isTerminal && <Button danger onClick={() => onLifecycle('cancel')}>取消</Button>}
-          {isTerminal && <Button onClick={() => onLifecycle('reopen')}>重新打开</Button>}
-          {!isTerminal && <><Button onClick={() => onLifecycle('owner')}>改负责人</Button><Button onClick={() => onLifecycle('changeDeadline')}>改完成时间</Button><Button onClick={() => onLifecycle('nextAction')}>改下一步</Button></>}
-        </Space>
+        <WorkItemActions
+          status={item.status}
+          onPriority={onPriority}
+          onDeadline={onDeadline}
+          onDependency={onDependency}
+          onLifecycle={onLifecycle}
+        />
       </Card>
     </List.Item>
   );

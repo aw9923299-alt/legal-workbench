@@ -118,6 +118,10 @@ legal-workbench/
 
 `GET /api/v1/dashboard/today` 从 Candidate、AgentRun、Message、Matter、WorkItem、Deadline、ReviewPackage、Outbox 死信、集成连接及实时健康状态生成八类真实队列。排序严格使用硬期限、逾期、法律风险、人工确认优先级、等待时长、创建时间和稳定 ID；Codex/AI 优先级仅单独展示。React 首页已切换为 TanStack Query 数据、加载/空/失败/Correlation ID/重试状态和真实对象链接，`/` 进入 `/dashboard`；旧 `data/mock.ts`、`services/adapters.ts` 及其专用原型组件已删除。
 
+## 阶段4.8：人工审核与 WorkItem 操作界面（本轮已完成）
+
+Matter 更新页把当前值、消息提取值、AI 建议值和法务最终值稳定分栏，并要求每个建议字段显式批准或拒绝；409 版本冲突不会丢失法务草稿，会刷新 Proposal/Matter 并明确提示未写入。事项详情页根据服务器状态展示合法 WorkItem 生命周期、负责人、期限、下一步和依赖操作，所有正式写入仍经领域层、`If-Match`、幂等键和审计，成功后刷新 Matter、WorkItem 与今日工作台。
+
 ## 阶段5：Codex Runtime与消息研判 Agent（本轮已完成）
 
 已实现：

@@ -35,8 +35,8 @@ Runtime 前后使用独立短事务，不在数据库事务内等待 Codex。任
 | Codex 版本/隔离认证健康检查 | 已实现；当前宿主为版本不匹配且隔离认证缺失 |
 | AgentRun 状态历史、租约与 PostgreSQL 恢复 | 已实现，Celery Beat 定时扫描 |
 | Candidate 分析修订历史 | 已实现，旧修订不覆盖 |
-| MatterUpdateProposal 人工审核 | 已实现；Proposal/Matter 双版本锁、逐字段最终值、WorkItem/Deadline 同事务落库 |
-| WorkItem 全生命周期 | 已实现；13 类领域动作、WorkItem/Dependency 双版本、审计/Outbox/幂等同事务 |
+| MatterUpdateProposal 人工审核 | 已实现；Proposal/Matter 双版本锁、逐字段最终值、WorkItem/Deadline 同事务落库；409 刷新保留法务草稿 |
+| WorkItem 全生命周期 | 已实现；13 类领域动作、WorkItem/Dependency 双版本、审计/Outbox/幂等同事务；页面按状态展示合法操作并刷新相关队列 |
 | 今日工作台 | 已实现；八类 PostgreSQL/健康队列、确定性排序、真实链接和完整查询状态，运行时 Mock 已删除 |
 | PDF/DOCX/TXT/Markdown 附件正文 | 已实现受控解析与引用；图片/扫描 PDF 无 OCR，明确正文不可用 |
 | HttpOnly 本地会话与 Actor 来源审计 | 已实现；生产会话签发器尚未实现 |
@@ -65,6 +65,7 @@ Runtime 前后使用独立短事务，不在数据库事务内等待 Codex。任
 - `application/work_item_lifecycle.py`：WorkItem 状态、字段和依赖解决的统一领域编排；
 - `api/routes/matter_update_proposals.py`：更新建议读取与审核 API；
 - `apps/web/src/pages/MatterUpdateProposalPage.tsx`：当前值/消息提取值/AI建议值/法务最终值四列审核页。
+- `apps/web/src/components/{MatterUpdateComparison,WorkItemActions}.tsx`：逐字段人工决定与按状态派生的 WorkItem 操作控件。
 - `application/dashboard.py`：八类队列契约和确定性排序；
 - `infrastructure/dashboard.py`：PostgreSQL 事实与健康状态投影；
 - `apps/web/src/pages/DashboardPage.tsx`：真实今日工作台、异常提示和对象跳转。

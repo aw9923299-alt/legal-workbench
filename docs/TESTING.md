@@ -100,6 +100,15 @@ npm run test --workspace @legal-workbench/web -- --run DashboardPage
 
 PostgreSQL 投影集成测试需要显式设置 `RUN_POSTGRES_INTEGRATION_TESTS=1` 和独立测试数据库 URL。测试固定验证硬期限优先、风险/人工优先级/等待时间排序、AI 建议不覆盖排序、八类对象链接、健康探针脱敏降级、HTTP 契约及前端加载/空/失败/Correlation ID/重试状态。
 
+Matter 更新审核与 WorkItem 操作页可单独验证：
+
+```bash
+npm run test --workspace @legal-workbench/web -- --run \
+  MatterUpdateComparison WorkItemActions MatterUpdateProposalPage
+```
+
+组件测试覆盖四类值的视觉边界、逐字段部分批准、全部状态下的合法 WorkItem 操作，以及后端返回 409 时刷新当前 Matter 但保留法务决定和最终值草稿。后端仍是状态迁移和版本校验的唯一权威。
+
 涉及数据库或Compose时还应执行：
 
 ```bash
