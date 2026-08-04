@@ -1,6 +1,6 @@
-import { Avatar, Button, Input, List, Typography } from 'antd';
-import { RobotOutlined, SendOutlined } from '@ant-design/icons';
-import { useState } from 'react';
+import { Avatar, List, Typography } from 'antd';
+import { RobotOutlined } from '@ant-design/icons';
+import { SemanticStatusTag } from './StatusTags';
 
 const suggestions = [
   '优先处理主播解约事项：16:00 前需形成风险口径。',
@@ -9,12 +9,11 @@ const suggestions = [
 ];
 
 export default function AiAssistant() {
-  const [query, setQuery] = useState('');
   return (
     <aside className="assistant-panel">
       <div className="panel-heading">
-        <div><span className="eyebrow">AI LEGAL CONCIERGE</span><h3><RobotOutlined /> 管家今日建议</h3></div>
-        <span className="assistant-status">在线</span>
+        <div><span className="eyebrow">演示建议</span><h3><RobotOutlined /> AI 建议（演示）</h3></div>
+        <SemanticStatusTag kind="ai">AI 建议 · 需人工核对</SemanticStatusTag>
       </div>
       <List
         className="assistant-list"
@@ -27,16 +26,9 @@ export default function AiAssistant() {
         )}
       />
       <div className="assistant-evidence">
-        <Typography.Text strong>回答依据</Typography.Text>
-        <Typography.Paragraph>综合 5 个任务、12 条飞书消息与 4 个截止节点。所有建议需人工确认。</Typography.Paragraph>
+        <Typography.Text strong>依据范围</Typography.Text>
+        <Typography.Paragraph>仅基于本地演示任务、待确认消息和期限样例；不代表已执行知识检索或实时系统分析。</Typography.Paragraph>
       </div>
-      <Input.TextArea
-        value={query}
-        onChange={(event) => setQuery(event.target.value)}
-        placeholder="例如：哪些任务超过三天没有进展？"
-        autoSize={{ minRows: 2, maxRows: 4 }}
-      />
-      <Button type="primary" block icon={<SendOutlined />} disabled={!query.trim()}>询问 AI 管家</Button>
     </aside>
   );
 }
