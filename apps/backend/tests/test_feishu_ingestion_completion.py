@@ -155,15 +155,16 @@ def test_edit_and_recall_events_are_classified(
     assert normalized.should_trigger_analysis is (operation == FeishuMessageOperation.EDIT)
 
 
-def test_real_long_connection_requires_app_credentials() -> None:
-    with pytest.raises(ValidationError, match="app credentials"):
-        Settings(
-            enable_real_feishu=True,
-            feishu_event_source="long_connection",
-            feishu_app_id=None,
-            feishu_app_secret=None,
-            _env_file=None,
-        )
+def test_real_personal_sync_accepts_local_secret_credentials() -> None:
+    settings = Settings(
+        enable_real_feishu=True,
+        feishu_event_source="long_connection",
+        feishu_app_id=None,
+        feishu_app_secret=None,
+        _env_file=None,
+    )
+
+    assert settings.enable_real_feishu is True
 
 
 def test_real_webhook_requires_verification_token() -> None:

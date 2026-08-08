@@ -1,13 +1,14 @@
 # Codex 项目交接说明
 
-更新日期：2026-08-08
+更新日期：2026-08-09
 
 ## 当前可用闭环
 
 ```text
-FeishuEvent
-→ FeishuMessage
-→ FeishuMessageReceived Outbox
+Workbench OAuth + PKCE → LocalSecretProvider → Feishu User API
+→ PersonalSyncRuntimeFactory (Manual / Scheduled)
+→ Unified Ingestion → MessageAnalysisPolicy
+→ AutomaticAnalysisGate → FeishuMessageAnalysisRequested Outbox
 → Celery feishu.process_message
 → ContextSnapshot
 → AgentDefinition(message_judgement) + AgentRun + AgentRunSource
@@ -27,15 +28,16 @@ Runtime 前后使用独立短事务，不在数据库事务内等待 Codex。任
 |---|---|
 | React 收件箱/消息详情/Agent运行中心/系统状态/Candidate动作 | 已实现，核心闭环数据均连接 FastAPI |
 | 飞书群聊授权范围 | 已实现；未知群默认未批准/禁用，允许/排除/暂停/恢复使用版本锁、幂等和审计；远端补偿延后 |
-| 飞书个人账号同步 | 已实现 User OAuth + PKCE/缺权提示、并发与崩溃安全 Token generation、短事务 Scope lease、P2P/群/Thread、附件 metadata-only 降级、消息关联原生文档 Context 和来源优先级；当前 Mac 的官方用户 API 读取已实测，工作台自身 OAuth 因未配置 App Secret/redirect 未完成 |
-| 本地飞书补充连接器 | 已实现只读 Discovery、已知明文 Schema allowlist、统一 Ingestion、本地 P2P 默认未批准和关联附件私有复制；当前 Mac 发现的消息核心库不透明或加密，未绕过加密、未导入本地消息 |
+| 飞书个人账号同步 | 已实现唯一 Runtime composition root、Workbench OAuth + PKCE、Capability 投影、fenced Token rotation、Manual/Scheduled 同构、P2P/群/Thread、附件 metadata-only 降级和原生文档同步；当前 Mac 已完成 Workbench OAuth、强制 Refresh、User API、Manual 与 Scheduled 真实验收 |
+| 自动消息分析门禁 | `AutomaticAnalysisGate` 是自动 `FeishuMessageAnalysisRequested` 的唯一入口；消息、附件下载、metadata-only、下载失败、提取成功/失败/body-unavailable 和本地 materialize 均以持久化 `analysis_disposition == analyze` 为准，人工入口独立 |
+| 本地飞书补充连接器 | 已实现 Mac Host CLI/Makefile/launchd 示例、SQLite 只读、已知明文 Schema allowlist、统一 Ingestion、本地 P2P 默认未批准和来源优先级；当前 Mac 实测为 `supported_but_no_readable_local_records`，未绕过加密 |
 | SSE + 断线轮询回退 | 已实现，五类运行事件触发 Query 刷新 |
 | Python FastAPI + SQLAlchemy + PostgreSQL | 已实现 |
 | Outbox 领取、重试、死信、显式 Handler 注册 | 已实现；人工重入队带 Actor/幂等/审计 |
 | 飞书长连接/Webhook、原始事件/消息幂等落库 | 已实现；真实凭证未联调 |
 | ContextSnapshot/AgentDefinition/AgentRun/Source/DraftArtifact | 已实现 |
-| `message_judgement` + `CodexCliRuntime` | 已实现，真实请求需显式配置 |
-| Codex 版本/隔离认证健康检查 | 已实现；宿主与新构建 Worker 均为 0.146.0，隔离认证缺失 |
+| `message_judgement` + `CodexCliRuntime` | 已实现，当前 Mac 已由 Workbench 隔离认证目录完成真实 AgentRun，并产生待人工确认 Candidate |
+| Codex 版本/隔离认证健康检查 | 已实现；宿主与 Worker 均为 0.146.0，显式隔离认证已验收；不得继承 ambient `CODEX_HOME` |
 | AgentRun 状态历史、租约与 PostgreSQL 恢复 | 已实现，Celery Beat 定时扫描 |
 | Candidate 分析修订历史 | 已实现，旧修订不覆盖 |
 | MatterUpdateProposal 人工审核 | 已实现；Proposal/Matter 双版本锁、逐字段最终值、WorkItem/Deadline 同事务落库；409 刷新保留法务草稿 |
@@ -60,6 +62,9 @@ Runtime 前后使用独立短事务，不在数据库事务内等待 Codex。任
 - `application/analysis_recovery.py`：Redis/Worker 丢失后的 PostgreSQL 恢复扫描；
 - `agents/codex_health.py`：真实 CLI 版本、隔离认证和运行目录检查；
 - `infrastructure/outbox.py`：显式事件 Handler 注册。
+- `application/automatic_analysis_gate.py`：所有自动分析事件的持久化策略门禁；
+- `infrastructure/feishu_personal_runtime.py`：Manual/Scheduled 共用的唯一 Personal Sync 依赖组装；
+- `application/feishu_capabilities.py`：Identity、消息、群发现、文档、Drive、附件的独立 Scope 投影；
 - `api/routes/messages.py`：收件箱和消息详情查询；
 - `api/routes/events.py`：SSE 健康及业务变化事件；
 - `infrastructure/system_status.py`：真实依赖健康和 PostgreSQL 运行指标；
@@ -80,7 +85,7 @@ Runtime 前后使用独立短事务，不在数据库事务内等待 Codex。任
 - `application/setup.py`、`infrastructure/secrets.py`：脱敏 Setup 状态、原子本地 Secret、Codex Worker 检查编排；
 - `api/routes/setup.py`、`pages/SetupPage.tsx`：六个 Setup API 和九步初始化向导，飞书延后状态不会显示为成功。
 - `application/feishu_scopes.py`、`api/routes/feishu_scopes.py`：群聊授权状态机、版本/幂等/审计和延后补偿记录；
-- `application/feishu_user_auth.py`、`application/feishu_personal_sync.py`、`application/feishu_documents.py`：个人身份授权、Token generation、短事务 lease/Checkpoint、Thread、统一消息采集和飞书文档管道；
+- `application/feishu_user_auth.py`、`application/feishu_personal_sync.py`、`application/feishu_documents.py`：个人身份授权、durable/fenced Token rotation、短事务 lease/Checkpoint、Thread、统一消息采集和飞书文档管道；
 - `integrations/feishu_local_connector.py`：当前 Mac 飞书数据的只读、安全 Schema Discovery 和标准化本地记录入口；
 - `integrations/feishu_user_{oauth,client}.py`、`api/routes/feishu_user.py`：官方 User OAuth/User API 适配与个人同步 API；
 - `apps/web/src/pages/FeishuScopesPage.tsx`：群聊范围登记、允许、排除、暂停、恢复和精确错误证据。
@@ -105,6 +110,6 @@ Runtime 将唯一授权 ContextSnapshot 作为不可信 JSON 直接送入 stdin�
 ## 下一步
 
 1. 经用户确认后把 launchd 模板安装到当前 Mac，并执行一次真实睡眠/唤醒和独立库备份恢复演练；
-2. 在 Setup 中配置现有飞书应用的 App Secret 和已登记 OAuth redirect，再执行工作台自身 OAuth/Refresh 真实验收；不得复用或导出其他客户端凭证；
-3. 选择经确认的非敏感附件完成正文下载验收，并由另一账号配合验证未读状态；
-4. 在专用 Runner 内配置隔离认证后执行真实 Codex 冒烟、Candidate 和故障注入。
+2. 如需本地消息补充，等待飞书客户端出现明确支持的明文消息 Schema；继续保持 fail-closed，不尝试解密；
+3. 由另一账号配合验证未读状态，并按需补齐 Drive Search、Attachment Read 等可选 Scope；这些缺权不得阻断消息同步；
+4. 为非本地环境补齐生产会话签发器；本轮真实 Candidate 继续保持 `pending_confirmation`，不得自动创建 Matter 或 WorkItem。

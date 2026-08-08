@@ -96,6 +96,7 @@ async def collect_system_health(settings: Settings) -> SystemHealthResponse:
         command=settings.codex_command,
         expected_version=settings.codex_expected_version,
         runs_root=settings.codex_runs_root,
+        auth_home=settings.codex_auth_home,
     ).check()
     components = {
         key: ComponentHealthResponse.model_validate(value)

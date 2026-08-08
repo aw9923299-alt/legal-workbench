@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Protocol
 from uuid import UUID, uuid4
 
+from legal_workbench.application.automatic_analysis_gate import AutomaticAnalysisGate
 from legal_workbench.application.ports import UnitOfWork, UnitOfWorkFactory
 from legal_workbench.domain.entities import (
     DocumentExtraction,
@@ -12,7 +13,6 @@ from legal_workbench.domain.entities import (
     DocumentVersion,
     ExtractedDocument,
     MessageAttachment,
-    OutboxEvent,
 )
 from legal_workbench.domain.enums import AttachmentDownloadStatus, DocumentExtractionStatus
 from legal_workbench.domain.errors import (
@@ -49,9 +49,11 @@ class DocumentExtractionService:
         self,
         uow_factory: UnitOfWorkFactory,
         extractor: DocumentExtractor,
+        analysis_gate: AutomaticAnalysisGate | None = None,
     ) -> None:
         self._uow_factory = uow_factory
         self._extractor = extractor
+        self._analysis_gate = analysis_gate or AutomaticAnalysisGate()
 
     async def execute(self, attachment_id: UUID) -> DocumentExtractionResult:
         prepared = await self._prepare(attachment_id)
@@ -226,27 +228,14 @@ class DocumentExtractionService:
         attachments = await uow.feishu.list_attachments(message_id)
         if not attachments or not all(_is_attachment_terminal(value) for value in attachments):
             return
-        event_type = "FeishuMessageAnalysisRequested"
-        if await uow.outbox_events.exists_pending(
-            event_type=event_type,
-            aggregate_id=message_id,
-        ):
-            return
         message = await uow.feishu.get_message_by_id(message_id)
-        await uow.outbox_events.add(
-            OutboxEvent(
-                id=uuid4(),
-                event_type=event_type,
-                aggregate_type="feishu_message",
-                aggregate_id=message_id,
-                payload={
-                    "messageId": str(message_id),
-                    "actorId": "document-extraction-worker",
-                    "actorSource": "integration",
-                    "forceNewRun": bool(message is not None and message.version > 1),
-                },
-                correlation_id=f"attachment-analysis:{message_id}",
-            )
+        await self._analysis_gate.request_if_allowed(
+            uow,
+            message_id,
+            actor_id="document-extraction-worker",
+            actor_source="integration",
+            correlation_id=f"attachment-analysis:{message_id}",
+            force_new_run=bool(message is not None and message.version > 1),
         )
 
 

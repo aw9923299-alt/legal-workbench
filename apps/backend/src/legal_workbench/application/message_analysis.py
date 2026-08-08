@@ -8,7 +8,6 @@ from pathlib import Path
 from uuid import UUID, uuid4
 
 from legal_workbench.agents.definitions import (
-    MESSAGE_JUDGEMENT_KEY,
     build_message_judgement_definition,
 )
 from legal_workbench.agents.message_judgement import (
@@ -492,15 +491,8 @@ class AnalyseFeishuMessageHandler:
                             idempotent_replay=True,
                         ),
                     )
-            definition = await uow.agent_definitions.get_active(MESSAGE_JUDGEMENT_KEY)
+            definition = await uow.agent_definitions.get(self._default_definition.id)
             if definition is None:
-                existing_definition = await uow.agent_definitions.get(self._default_definition.id)
-                if existing_definition is not None:
-                    raise MessageAnalysisError(
-                        "AGENT_DEFINITION_DISABLED",
-                        "The configured message judgement AgentDefinition is not active.",
-                        retryable=False,
-                    )
                 definition = self._default_definition
                 await uow.agent_definitions.add(definition)
             try:

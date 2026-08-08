@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import hashlib
 import json
 import os
@@ -11,6 +12,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
+from uuid import UUID
 
 _SQLITE_HEADER = b"SQLite format 3\x00"
 _EXCLUDED_COMPONENTS = {
@@ -48,6 +50,12 @@ _ATTACHMENT_COLUMNS = {
     "size",
     "local_path",
 }
+_SUPPORTED_MESSAGE_SCHEMA_PATHS = {
+    "messages_v1": frozenset({"messages.db"}),
+}
+_SUPPORTED_MESSAGE_SCHEMA_TABLES = frozenset(
+    {"messages", "message_attachments"}
+)
 
 
 def default_feishu_roots() -> tuple[Path, ...]:
@@ -267,9 +275,7 @@ class LocalFeishuConnector:
                     continue
                 try:
                     with self._connect_read_only(path) as connection:
-                        if _MESSAGE_COLUMNS.issubset(
-                            self._table_columns(connection, "messages")
-                        ):
+                        if self._known_schema(root, path, connection) is not None:
                             values.append((root, path))
                 except sqlite3.DatabaseError:
                     continue
@@ -309,13 +315,8 @@ class LocalFeishuConnector:
                             "SELECT count(*) FROM sqlite_master WHERE type = 'table'"
                         ).fetchone()[0]
                     )
-                    if _MESSAGE_COLUMNS.issubset(
-                        self._table_columns(connection, "messages")
-                    ):
-                        known_schema = "messages_v1"
-                    readable_attachment_index = _ATTACHMENT_COLUMNS.issubset(
-                        self._table_columns(connection, "message_attachments")
-                    )
+                    known_schema = self._known_schema(root, path, connection)
+                    readable_attachment_index = known_schema is not None
             except sqlite3.DatabaseError:
                 database_type = "opaque_or_encrypted"
         return LocalDatabaseFinding(
@@ -339,6 +340,38 @@ class LocalFeishuConnector:
         if table not in {"messages", "message_attachments"}:
             return set()
         return {str(row[1]) for row in connection.execute(f"PRAGMA table_info({table})")}
+
+    @classmethod
+    def _known_schema(
+        cls,
+        root: Path,
+        path: Path,
+        connection: sqlite3.Connection,
+    ) -> str | None:
+        try:
+            relative_path = path.relative_to(root).as_posix()
+        except ValueError:
+            return None
+        tables = {
+            str(row[0])
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
+        for version, supported_paths in _SUPPORTED_MESSAGE_SCHEMA_PATHS.items():
+            if relative_path not in supported_paths:
+                continue
+            if tables != _SUPPORTED_MESSAGE_SCHEMA_TABLES:
+                continue
+            if cls._table_columns(connection, "messages") != _MESSAGE_COLUMNS:
+                continue
+            if (
+                cls._table_columns(connection, "message_attachments")
+                != _ATTACHMENT_COLUMNS
+            ):
+                continue
+            return version
+        return None
 
     @staticmethod
     def _json_object(value: object) -> dict[str, object]:
@@ -385,23 +418,80 @@ class LocalFeishuConnector:
         return str(value) if value is not None else None
 
 
+async def _run_host_sync(
+    *,
+    connector: LocalFeishuConnector,
+    authorization_id: UUID,
+    confirmed_account_hash: str | None,
+) -> dict[str, object]:
+    from legal_workbench.application.feishu_handlers import IngestFeishuEventHandler
+    from legal_workbench.application.feishu_local_sync import (
+        LocalFeishuHostSyncService,
+    )
+    from legal_workbench.application.feishu_personal_sync import (
+        LocalMessageIngestionAdapter,
+    )
+    from legal_workbench.application.feishu_scopes import FeishuScopeService
+    from legal_workbench.infrastructure.database import dispose_engine
+    from legal_workbench.infrastructure.unit_of_work import (
+        SqlAlchemyUnitOfWorkFactory,
+    )
+
+    uow_factory = SqlAlchemyUnitOfWorkFactory()
+    try:
+        result = await LocalFeishuHostSyncService(
+            uow_factory,
+            connector=connector,
+            scope_service=FeishuScopeService(uow_factory),
+            ingestion_adapter=LocalMessageIngestionAdapter(
+                IngestFeishuEventHandler(uow_factory)
+            ),
+        ).sync(
+            authorization_id=authorization_id,
+            confirmed_account_hash=confirmed_account_hash,
+        )
+        return result.to_dict()
+    finally:
+        await dispose_engine()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Create a read-only local Feishu client discovery report"
+        description="Discover or sync allowlisted local Feishu data read-only"
     )
     parser.add_argument("--root", type=Path, action="append")
+    parser.add_argument("--sync", action="store_true")
+    parser.add_argument("--authorization-id", type=UUID)
+    parser.add_argument(
+        "--account-id-hash",
+        help="SHA-256 of the explicitly confirmed local Feishu account ID",
+    )
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path("artifacts/feishu-local/discovery.json"),
     )
     args = parser.parse_args()
     connector = LocalFeishuConnector(
         roots=tuple(args.root) if args.root else None,
     )
-    rendered = json.dumps(connector.discover().to_dict(), ensure_ascii=False, indent=2)
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(rendered + "\n", encoding="utf-8")
+    if args.sync:
+        if args.authorization_id is None:
+            parser.error("--authorization-id is required with --sync")
+        payload = asyncio.run(
+            _run_host_sync(
+                connector=connector,
+                authorization_id=args.authorization_id,
+                confirmed_account_hash=args.account_id_hash,
+            )
+        )
+        output = args.output or Path("artifacts/feishu-local/host-sync.json")
+    else:
+        payload = connector.discover().to_dict()
+        output = args.output or Path("artifacts/feishu-local/discovery.json")
+    rendered = json.dumps(payload, ensure_ascii=False, indent=2)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(rendered + "\n", encoding="utf-8")
+    os.chmod(output, 0o600)
 
 
 if __name__ == "__main__":

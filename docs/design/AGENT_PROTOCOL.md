@@ -6,7 +6,7 @@
 
 ### 1.1 实现状态
 
-- **已实现**：持久化 AgentDefinition/AgentRun/AgentRunSource/DraftArtifact，以及 `message_judgement@2.1.0`、严格 Pydantic Schema、CLI 版本/隔离认证健康检查、一次受控修复、状态事件、Worker 租约、Candidate revision、附件片段引用、Celery 调度和 PostgreSQL 恢复。
+- **已实现**：持久化 AgentDefinition/AgentRun/AgentRunSource/DraftArtifact，以及 `message_judgement@2.2.0`、严格 Codex Structured Output Schema、CLI 版本/显式隔离认证健康检查、一次受控修复、状态事件、Worker 租约、Candidate revision、附件片段引用、Celery 调度和 PostgreSQL 恢复。
 - **部分实现**：容器模式使用专用 UID、最小环境变量和工作目录约束；宿主机模式不具备可证明的 OS 级读取白名单。
 - **占位实现**：DraftArtifact 本轮仅建模，未开发通用产物 UI。
 - **尚未实现**：事项归并、任务规划、优先级建议、结果汇总、知识检索和所有专业 Agent。本文中对这些 Agent 的约束是后续设计要求，不代表已上线。
@@ -159,7 +159,7 @@ examples/
 evaluation/
 ```
 
-### 4.1 已激活定义：`message_judgement@2.1.0`
+### 4.1 已激活定义：`message_judgement@2.2.0`
 
 该 Agent 只处理消息法务相关性、消息作用、行动性、建议标题/分类/期限、事实/推断、缺失信息、理由和置信度。`allowedTools=[]`、`allowedKnowledgeScopes=[]`、`requiresHumanReview=true`。
 

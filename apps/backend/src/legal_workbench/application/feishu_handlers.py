@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from hashlib import sha256
 from uuid import UUID, uuid4
 
+from legal_workbench.application.automatic_analysis_gate import AutomaticAnalysisGate
 from legal_workbench.application.commands import IngestFeishuEventCommand
 from legal_workbench.application.feishu_documents import extract_feishu_document_links
 from legal_workbench.application.ports import UnitOfWorkFactory
@@ -106,7 +107,11 @@ def _new_message(
 
 
 def _source_priority(source_channel: str) -> int:
-    return 0 if source_channel == "local_client" else 1
+    return {
+        "local_client": 0,
+        "user_api": 1,
+        "app_event": 2,
+    }.get(source_channel, -1)
 
 
 class IngestFeishuEventHandler:
@@ -294,27 +299,33 @@ class IngestFeishuEventHandler:
                     ]
                     await uow.feishu.add_attachments(attachments)
                 if normalized.should_trigger_analysis:
-                    event_type = (
-                        "FeishuMessageAttachmentsPending"
-                        if attachments
-                        else "FeishuMessageReceived"
-                    )
-                    await uow.outbox_events.add(
-                        OutboxEvent(
-                            id=uuid4(),
-                            event_type=event_type,
-                            aggregate_type="feishu_message",
-                            aggregate_id=message.id,
-                            payload={
-                                "messageId": str(message.id),
-                                "externalMessageId": message.message_id,
-                                "chatId": message.chat_id,
-                                "tenantKey": message.tenant_key,
-                                "forceNewRun": normalized.operation == FeishuMessageOperation.EDIT,
-                            },
-                            correlation_id=command.correlation_id,
+                    if attachments:
+                        await uow.outbox_events.add(
+                            OutboxEvent(
+                                id=uuid4(),
+                                event_type="FeishuMessageAttachmentsPending",
+                                aggregate_type="feishu_message",
+                                aggregate_id=message.id,
+                                payload={
+                                    "messageId": str(message.id),
+                                    "externalMessageId": message.message_id,
+                                    "chatId": message.chat_id,
+                                    "tenantKey": message.tenant_key,
+                                },
+                                correlation_id=command.correlation_id,
+                            )
                         )
-                    )
+                    else:
+                        await AutomaticAnalysisGate().request_if_allowed(
+                            uow,
+                            message.id,
+                            actor_id="feishu-connector",
+                            actor_source="integration",
+                            correlation_id=command.correlation_id,
+                            force_new_run=(
+                                normalized.operation == FeishuMessageOperation.EDIT
+                            ),
+                        )
                 event.status = FeishuEventStatus.PROCESSED
             await uow.audit_events.add(
                 AuditEvent(

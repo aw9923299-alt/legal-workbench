@@ -174,3 +174,88 @@ def test_local_attachment_index_requires_exact_message_association(
 
     assert matched is not None and matched.local_path == attachment
     assert unrelated is None
+
+
+def test_unknown_sqlite_schema_is_refused_without_writes(tmp_path: Path) -> None:
+    root = tmp_path / "LarkData"
+    root.mkdir()
+    database = root / "unknown.db"
+    connection = sqlite3.connect(database)
+    connection.execute("CREATE TABLE unknown_payload (value TEXT)")
+    connection.execute("INSERT INTO unknown_payload VALUES ('opaque')")
+    connection.commit()
+    connection.close()
+    before = hashlib.sha256(database.read_bytes()).hexdigest()
+
+    connector = LocalFeishuConnector(roots=(root,))
+
+    assert connector.read_messages() == ()
+    assert connector.discover().findings[0].known_schema is None
+    assert hashlib.sha256(database.read_bytes()).hexdigest() == before
+
+
+def test_message_shaped_table_at_unknown_path_is_refused(tmp_path: Path) -> None:
+    root = tmp_path / "LarkData"
+    root.mkdir()
+    attachment = root / "downloaded-test.txt"
+    attachment.write_text("safe attachment", encoding="utf-8")
+    cache = root / "cache"
+    cache.mkdir()
+    create_readable_local_database(cache / "messages.db", attachment)
+
+    connector = LocalFeishuConnector(roots=(root,))
+
+    assert connector.read_messages() == ()
+    finding = next(
+        value
+        for value in connector.discover().findings
+        if value.database_type == "sqlite"
+    )
+    assert finding.known_schema is None
+
+
+def test_message_schema_with_extra_sensitive_column_is_refused(tmp_path: Path) -> None:
+    root = tmp_path / "LarkData"
+    root.mkdir()
+    database = root / "messages.db"
+    connection = sqlite3.connect(database)
+    columns = ", ".join(
+        (
+            "account_id TEXT",
+            "chat_id TEXT",
+            "chat_type TEXT",
+            "message_id TEXT",
+            "version TEXT",
+            "sender_id TEXT",
+            "message_type TEXT",
+            "content TEXT",
+            "create_time TEXT",
+            "update_time TEXT",
+            "thread_id TEXT",
+            "root_id TEXT",
+            "parent_id TEXT",
+            "access_token TEXT",
+        )
+    )
+    connection.execute(f"CREATE TABLE messages ({columns})")
+    connection.commit()
+    connection.close()
+
+    connector = LocalFeishuConnector(roots=(root,))
+
+    assert connector.read_messages() == ()
+    assert connector.discover().findings[0].known_schema is None
+
+
+def test_opaque_database_is_reported_but_never_decrypted(tmp_path: Path) -> None:
+    root = tmp_path / "LarkData"
+    root.mkdir()
+    opaque = root / "encrypted.db"
+    opaque.write_bytes(b"not-a-sqlite-header encrypted bytes")
+
+    connector = LocalFeishuConnector(roots=(root,))
+    report = connector.discover()
+
+    assert report.opaque_or_encrypted_databases == 1
+    assert connector.read_messages() == ()
+    assert opaque.read_bytes() == b"not-a-sqlite-header encrypted bytes"

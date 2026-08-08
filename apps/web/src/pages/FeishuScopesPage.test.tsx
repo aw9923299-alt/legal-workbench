@@ -13,6 +13,15 @@ const authorization: FeishuUserAuthorization = {
   displayName: '法务账号',
   scopes: ['offline_access', 'im:message:readonly'],
   missingScopes: [],
+  usable: true,
+  capabilities: [
+    { capability: 'core_identity', label: 'Identity', status: 'ready', grantedScopes: ['offline_access'], missingScopes: [] },
+    { capability: 'message_history', label: 'Messages', status: 'ready', grantedScopes: ['im:message:readonly'], missingScopes: [] },
+    { capability: 'chat_discovery', label: 'Chat discovery', status: 'ready', grantedScopes: ['im:chat:readonly'], missingScopes: [] },
+    { capability: 'document_read', label: 'Documents', status: 'ready', grantedScopes: ['docs:document.content:read'], missingScopes: [] },
+    { capability: 'drive_search', label: 'Drive', status: 'ready', grantedScopes: ['drive:drive.search:readonly'], missingScopes: [] },
+    { capability: 'attachment_read', label: 'Attachments', status: 'partial', grantedScopes: ['im:message:readonly'], missingScopes: [] },
+  ],
   accessExpiresAt: '2026-08-08T12:00:00Z',
   refreshExpiresAt: '2026-09-08T12:00:00Z',
   status: 'connected',
@@ -91,7 +100,7 @@ describe('Feishu personal data sources page', () => {
       { action: 'allow', syncMode: 'all_messages' },
       expect.any(Object),
     ));
-  });
+  }, 10_000);
 
   it('searches and imports a selected docx through the native document pipeline', async () => {
     vi.spyOn(legalApi, 'searchFeishuUserDocuments').mockResolvedValue([{
@@ -130,13 +139,41 @@ describe('Feishu personal data sources page', () => {
   it('shows the exact missing personal message permission', async () => {
     vi.mocked(legalApi.listFeishuUserAuthorizations).mockResolvedValue([{
       ...authorization,
-      status: 'permission_missing',
-      missingScopes: ['im:message.group_msg:get_as_user'],
+      status: 'connected',
+      capabilities: authorization.capabilities.map((capability) => (
+        capability.capability === 'message_history'
+          ? { ...capability, status: 'permission_missing', missingScopes: ['im:message.group_msg:get_as_user'] }
+          : capability
+      )),
     }]);
 
     renderPage();
 
-    expect(await screen.findByText('权限不足')).toBeInTheDocument();
+    expect(await screen.findByText('Messages')).toBeInTheDocument();
     expect(screen.getByText('im:message.group_msg:get_as_user')).toBeInTheDocument();
+  });
+
+  it('shows independent capability degradation without disabling the token', async () => {
+    vi.mocked(legalApi.listFeishuUserAuthorizations).mockResolvedValue([{
+      ...authorization,
+      capabilities: authorization.capabilities.map((capability) => {
+        if (capability.capability === 'document_read') {
+          return { ...capability, status: 'permission_missing', grantedScopes: [], missingScopes: ['docs:document.content:read'] };
+        }
+        if (capability.capability === 'drive_search') {
+          return { ...capability, status: 'permission_missing', grantedScopes: [], missingScopes: ['drive:drive.search:readonly'] };
+        }
+        return capability;
+      }),
+    }]);
+    renderPage();
+
+    expect(await screen.findByText('Messages')).toBeInTheDocument();
+    expect(screen.getByText('Chat discovery')).toBeInTheDocument();
+    expect(screen.getByText('Documents')).toBeInTheDocument();
+    expect(screen.getByText('Drive')).toBeInTheDocument();
+    expect(screen.getByText('Attachments')).toBeInTheDocument();
+    expect(screen.getAllByText('权限不足')).toHaveLength(2);
+    expect(screen.getByText('部分可用')).toBeInTheDocument();
   });
 });

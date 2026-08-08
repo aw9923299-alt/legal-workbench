@@ -18,7 +18,7 @@
 
 ## Codex Runtime
 
-Codex是唯一推理和生成AI。所有业务调用统一经过`CodexCliRuntime`，由 Celery Worker 调用，负责AgentDefinition、提示词版本、单次工作目录、授权来源、工具权限、超时、重试、Schema和审计。当前仅`message_judgement@2.1.0`已实现。启动前检查固定 CLI 版本、隔离 API Key 和运行目录；正文始终作为不可信业务证据，失败输出最多使用同一 ContextSnapshot 修复一次。每条确认事实只能引用授权消息或一个精确附件片段，附件引用包含附件 ID、文件名、页码、段落号和正文哈希。
+Codex是唯一推理和生成AI。所有业务调用统一经过`CodexCliRuntime`，由 Celery Worker 调用，负责AgentDefinition、提示词版本、单次工作目录、授权来源、工具权限、超时、重试、Schema和审计。当前仅`message_judgement@2.2.0`已实现。启动前检查固定 CLI 版本、显式隔离认证目录和运行目录；正文始终作为不可信业务证据，失败输出最多使用同一 ContextSnapshot 修复一次。每条确认事实只能引用授权消息或一个精确附件片段，附件引用包含附件 ID、文件名、页码、段落号和正文哈希。
 
 AgentRun、状态事件、Candidate 修订、租约和失败码全部存 PostgreSQL。Celery Beat 定期扫描丢失队列投递与过期租约并重建 Outbox；Redis 不保存唯一业务事实。
 

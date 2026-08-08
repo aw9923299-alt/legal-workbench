@@ -2052,6 +2052,8 @@ class SqlAlchemyFeishuRepository:
             model = await self._session.get(FeishuAttachmentModel, attachment.id)
         if model is None:
             raise RuntimeError(f"FeishuAttachment {attachment.id} is not tracked")
+        model.mime_type = attachment.mime_type
+        model.size = attachment.size
         model.sha256 = attachment.sha256
         model.local_path = attachment.local_path
         model.download_status = attachment.download_status
@@ -3085,6 +3087,11 @@ class SqlAlchemyFeishuUserAuthorizationRepository:
         model.pending_token_bundle_ref = value.pending_token_bundle_ref
         model.rotation_owner = value.rotation_owner
         model.rotation_expires_at = value.rotation_expires_at
+        model.rotation_phase = value.rotation_phase
+        model.rotation_request_started_at = value.rotation_request_started_at
+        model.rotation_fence = value.rotation_fence
+        model.rotation_result_written_at = value.rotation_result_written_at
+        model.rotation_reauth_reason = value.rotation_reauth_reason
         model.updated_at = value.updated_at
 
     async def list_authorizations(self) -> Sequence[FeishuUserAuthorization]:
@@ -3138,6 +3145,11 @@ class SqlAlchemyFeishuUserAuthorizationRepository:
             pending_token_bundle_ref=value.pending_token_bundle_ref,
             rotation_owner=value.rotation_owner,
             rotation_expires_at=value.rotation_expires_at,
+            rotation_phase=value.rotation_phase,
+            rotation_request_started_at=value.rotation_request_started_at,
+            rotation_fence=value.rotation_fence,
+            rotation_result_written_at=value.rotation_result_written_at,
+            rotation_reauth_reason=value.rotation_reauth_reason,
             created_at=value.created_at,
             updated_at=value.updated_at,
         )
@@ -3165,6 +3177,11 @@ class SqlAlchemyFeishuUserAuthorizationRepository:
             pending_token_bundle_ref=model.pending_token_bundle_ref,
             rotation_owner=model.rotation_owner,
             rotation_expires_at=model.rotation_expires_at,
+            rotation_phase=model.rotation_phase,
+            rotation_request_started_at=model.rotation_request_started_at,
+            rotation_fence=model.rotation_fence,
+            rotation_result_written_at=model.rotation_result_written_at,
+            rotation_reauth_reason=model.rotation_reauth_reason,
             created_at=model.created_at,
             updated_at=model.updated_at,
         )

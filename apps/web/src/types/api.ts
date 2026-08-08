@@ -462,6 +462,28 @@ export type FeishuUserAuthorizationStatus =
   | 'revoked'
   | 'degraded';
 
+export type FeishuCapabilityName =
+  | 'core_identity'
+  | 'message_history'
+  | 'chat_discovery'
+  | 'document_read'
+  | 'drive_search'
+  | 'attachment_read';
+
+export type FeishuCapabilityStatus =
+  | 'ready'
+  | 'partial'
+  | 'permission_missing'
+  | 'unsupported';
+
+export interface FeishuCapabilityProjection {
+  capability: FeishuCapabilityName;
+  label: string;
+  status: FeishuCapabilityStatus;
+  grantedScopes: string[];
+  missingScopes: string[];
+}
+
 export interface FeishuUserAuthorization {
   id: string;
   openId: string;
@@ -472,6 +494,8 @@ export interface FeishuUserAuthorization {
   accessExpiresAt: string;
   refreshExpiresAt: string;
   status: FeishuUserAuthorizationStatus;
+  usable: boolean;
+  capabilities: FeishuCapabilityProjection[];
   lastRefreshedAt: string | null;
   lastErrorCode: string | null;
   createdAt: string;

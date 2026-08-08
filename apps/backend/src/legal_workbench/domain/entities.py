@@ -29,6 +29,7 @@ from legal_workbench.domain.enums import (
     EvaluationRuntimeType,
     FeishuEventStatus,
     FeishuMessageStatus,
+    FeishuTokenRotationPhase,
     FeishuUserAuthorizationStatus,
     IntegrationCheckStatus,
     IntegrationConnectionMode,
@@ -1655,6 +1656,11 @@ class FeishuUserAuthorization:
     pending_token_bundle_ref: str | None = None
     rotation_owner: str | None = None
     rotation_expires_at: datetime | None = None
+    rotation_phase: FeishuTokenRotationPhase = FeishuTokenRotationPhase.IDLE
+    rotation_request_started_at: datetime | None = None
+    rotation_fence: int = 0
+    rotation_result_written_at: datetime | None = None
+    rotation_reauth_reason: str | None = None
     created_at: datetime = field(default_factory=utc_now)
     updated_at: datetime = field(default_factory=utc_now)
 
@@ -1672,6 +1678,14 @@ class FeishuUserAuthorization:
             or self.rotation_expires_at is None
         ):
             raise DomainValidationError("Pending Feishu token generation is invalid.")
+        if self.rotation_fence < 0:
+            raise DomainValidationError("Feishu token rotation fence is invalid.")
+        for field_name, value in (
+            ("rotation request start", self.rotation_request_started_at),
+            ("rotation result write", self.rotation_result_written_at),
+        ):
+            if value is not None:
+                require_aware(value, field_name=field_name)
 
     def rotate(
         self,

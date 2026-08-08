@@ -1,0 +1,71 @@
+{
+  "generated_at": "2026-08-08T16:40:00Z",
+  "real_feishu": true,
+  "results": [
+    {
+      "capability": "oauth_pkce",
+      "status": "passed",
+      "reason": "authorization_status:connected"
+    },
+    {
+      "capability": "refresh_rotation",
+      "status": "passed",
+      "reason": "official_api_executed"
+    },
+    {
+      "capability": "known_p2p_history",
+      "status": "unsupported",
+      "reason": "manual_validation_required:probe_input_missing"
+    },
+    {
+      "capability": "known_group_history",
+      "status": "passed",
+      "reason": "workbench_user_api_manual_and_scheduled_sync_executed"
+    },
+    {
+      "capability": "group_discovery",
+      "status": "passed",
+      "reason": "official_api_executed"
+    },
+    {
+      "capability": "p2p_discovery",
+      "status": "partial",
+      "reason": "no_p2p_enumeration_evidence"
+    },
+    {
+      "capability": "unread_state",
+      "status": "unsupported",
+      "reason": "manual_validation_required:unread_field_not_returned"
+    },
+    {
+      "capability": "personal_attachment",
+      "status": "passed",
+      "reason": "workbench_user_api_downloaded_and_terminal_body_unavailable"
+    },
+    {
+      "capability": "document_search",
+      "status": "unsupported",
+      "reason": "manual_validation_required:probe_input_missing"
+    },
+    {
+      "capability": "document_markdown",
+      "status": "unsupported",
+      "reason": "manual_validation_required:probe_input_missing"
+    },
+    {
+      "capability": "thread_reply",
+      "status": "unsupported",
+      "reason": "manual_validation_required:probe_input_missing"
+    },
+    {
+      "capability": "local_feishu_discovery",
+      "status": "passed",
+      "reason": "read_only_discovery_executed:databases=84:readable_messages=0:opaque=66"
+    },
+    {
+      "capability": "local_api_duplicate_idempotency",
+      "status": "unsupported",
+      "reason": "local_message_schema_unavailable"
+    }
+  ]
+}

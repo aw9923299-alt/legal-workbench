@@ -68,6 +68,25 @@ def test_policy_analyzes_p2p_and_high_value_groups_but_stores_ordinary_groups() 
     assert ordinary.reasons == ("no_priority_signal",)
 
 
+def test_policy_ignores_opaque_attachment_identifiers() -> None:
+    decision = MessageAnalysisPolicy().decide(
+        raw_message={
+            "msg_type": "file",
+            "body": {
+                "content": (
+                    '{"file_key":"file_due_review_reply_deadline",'
+                    '"file_name":"e2e-store-only-attachment.txt"}'
+                )
+            },
+        },
+        scope=scope(scope_type=IntegrationScopeType.GROUP),
+        self_open_id="ou_self",
+    )
+
+    assert decision.disposition == "store_only"
+    assert decision.reasons == ("no_priority_signal",)
+
+
 def test_ingestion_schema_persists_policy_decision_without_invoking_codex() -> None:
     from legal_workbench.infrastructure.database import Base
 

@@ -10,6 +10,9 @@ from legal_workbench.application.commands import IngestFeishuEventCommand
 from legal_workbench.application.feishu_handlers import IngestFeishuEventHandler
 from legal_workbench.application.feishu_operations import FeishuOperationsService
 from legal_workbench.config import FeishuEventSourceMode, get_settings
+from legal_workbench.infrastructure.feishu_personal_runtime import (
+    PersonalSyncRuntimeFactory,
+)
 from legal_workbench.infrastructure.unit_of_work import SqlAlchemyUnitOfWorkFactory
 from legal_workbench.integrations.feishu_event_sources import (
     EventSourceHealth,
@@ -48,6 +51,11 @@ async def run_connector() -> None:
         await stop_requested.wait()
         return
 
+    app_id, app_secret = await PersonalSyncRuntimeFactory(
+        settings=settings,
+        uow_factory=uow_factory,
+    ).resolve_app_credentials()
+
     source: LongConnectionFeishuEventSource
 
     async def ingest(payload: dict[str, object]) -> None:
@@ -73,8 +81,8 @@ async def run_connector() -> None:
             await operations.download_attachments(result.message_id)
 
     sdk = OfficialFeishuSdkConnection(
-        app_id=settings.feishu_app_id or "",
-        app_secret=settings.feishu_app_secret or "",
+        app_id=app_id,
+        app_secret=app_secret,
         encrypt_key=settings.feishu_encrypt_key,
         verification_token=settings.feishu_verification_token,
         sink=ingest,

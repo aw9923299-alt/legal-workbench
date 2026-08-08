@@ -39,12 +39,14 @@ class CodexRuntimeHealthChecker:
         command: Sequence[str] | str,
         expected_version: str | None,
         runs_root: str | Path,
+        auth_home: str | Path | None = None,
         timeout_seconds: float = 5,
     ) -> None:
         parsed = shlex.split(command) if isinstance(command, str) else list(command)
         self._command = parsed
         self._expected_version = (expected_version or "").strip() or None
         self._runs_root = Path(runs_root)
+        self._auth_home = Path(auth_home).resolve() if auth_home else None
         self._timeout = timeout_seconds
 
     async def check(
@@ -94,7 +96,9 @@ class CodexRuntimeHealthChecker:
             )
 
         safe_environment = dict(environment or os.environ)
-        if not (safe_environment.get("OPENAI_API_KEY") or "").strip():
+        if not (safe_environment.get("OPENAI_API_KEY") or "").strip() and (
+            self._auth_home is None
+        ):
             return CodexRuntimeHealth(
                 status=CodexHealthStatus.UNAUTHENTICATED,
                 executable=executable,
@@ -164,11 +168,12 @@ class CodexRuntimeHealthChecker:
     ) -> str:
         health_home = self._runs_root / ".health-home"
         health_home.mkdir(parents=True, exist_ok=True, mode=0o700)
+        codex_home = self._auth_home or health_home
         process_environment = {
             "LANG": "C.UTF-8",
             "PATH": (environment or os.environ).get("PATH", os.defpath),
             "HOME": str(health_home),
-            "CODEX_HOME": str(health_home),
+            "CODEX_HOME": str(codex_home),
         }
         api_key = (environment or os.environ).get("OPENAI_API_KEY")
         if api_key:

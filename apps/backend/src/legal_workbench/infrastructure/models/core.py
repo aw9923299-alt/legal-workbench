@@ -52,6 +52,7 @@ from legal_workbench.domain.enums import (
     EvaluationRuntimeType,
     FeishuEventStatus,
     FeishuMessageStatus,
+    FeishuTokenRotationPhase,
     FeishuUserAuthorizationStatus,
     IntegrationCheckStatus,
     IntegrationConnectionMode,
@@ -920,6 +921,26 @@ class FeishuUserAuthorizationModel(UuidPrimaryKeyMixin, TimestampMixin, Base):
     rotation_expires_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True)
     )
+    rotation_phase: Mapped[FeishuTokenRotationPhase] = mapped_column(
+        enum_type(
+            FeishuTokenRotationPhase,
+            name="feishu_token_rotation_phase",
+            length=24,
+        ),
+        nullable=False,
+        default=FeishuTokenRotationPhase.IDLE,
+        server_default=FeishuTokenRotationPhase.IDLE.value,
+    )
+    rotation_request_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    rotation_fence: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    rotation_result_written_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    rotation_reauth_reason: Mapped[str | None] = mapped_column(String(100))
 
 
 class FeishuSyncCheckpointModel(UuidPrimaryKeyMixin, Base):

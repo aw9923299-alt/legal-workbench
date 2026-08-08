@@ -36,6 +36,8 @@ import { useMemo, useState } from 'react';
 import { QueryState } from '../components/QueryState';
 import { ApiError, createMutationContext, legalApi } from '../services/api';
 import type {
+  FeishuCapabilityName,
+  FeishuCapabilityStatus,
   FeishuDocumentSearchResult,
   FeishuIdentityType,
   FeishuScope,
@@ -71,6 +73,18 @@ const authorizationStatusLabel = {
   revoked: '已撤销',
   degraded: '连接异常',
 };
+const capabilityStatusLabel: Record<FeishuCapabilityStatus, string> = {
+  ready: '已就绪',
+  partial: '部分可用',
+  permission_missing: '权限不足',
+  unsupported: '不支持',
+};
+const capabilityStatusColor: Record<FeishuCapabilityStatus, string> = {
+  ready: 'green',
+  partial: 'gold',
+  permission_missing: 'red',
+  unsupported: 'default',
+};
 
 function readableError(error: unknown): string {
   if (error instanceof ApiError) {
@@ -104,7 +118,15 @@ export default function FeishuScopesPage() {
     queryKey: ['settings', 'feishu-scopes'],
     queryFn: () => legalApi.listFeishuScopes(),
   });
-  const activeAuthorization = authorizations.data?.find((item) => item.status === 'connected');
+  const activeAuthorization = authorizations.data?.find((item) => item.usable);
+  const capabilityReady = (name: FeishuCapabilityName) => {
+    const status = activeAuthorization?.capabilities.find((item) => item.capability === name)?.status;
+    return status === 'ready';
+  };
+  const messageHistoryReady = capabilityReady('message_history');
+  const chatDiscoveryReady = capabilityReady('chat_discovery');
+  const documentReadReady = capabilityReady('document_read');
+  const driveSearchReady = capabilityReady('drive_search');
   const subscriptions = useQuery({
     queryKey: ['settings', 'feishu-folder-subscriptions', activeAuthorization?.id],
     queryFn: () => legalApi.listFeishuFolderSubscriptions(activeAuthorization?.id),
@@ -254,7 +276,7 @@ export default function FeishuScopesPage() {
     {item.status === 'allowed' && <Button size="small" icon={<PauseCircleOutlined />} onClick={() => changeScope.mutate({ scope: item, action: 'pause' })}>暂停</Button>}
     {item.status === 'paused' && <Button size="small" onClick={() => changeScope.mutate({ scope: item, action: 'resume', syncMode: item.identityType === 'user' ? 'all_messages' : 'mentions_only' })}>恢复</Button>}
     {item.status !== 'excluded' && <Button danger size="small" onClick={() => changeScope.mutate({ scope: item, action: 'exclude' })}>排除</Button>}
-    {item.identityType === 'user' && item.status === 'allowed' && <Button size="small" icon={<SyncOutlined />} loading={synchronize.isPending} onClick={() => synchronize.mutate(item)}>立即同步</Button>}
+    {item.identityType === 'user' && item.status === 'allowed' && <Button size="small" icon={<SyncOutlined />} disabled={!messageHistoryReady} loading={synchronize.isPending} onClick={() => synchronize.mutate(item)}>立即同步</Button>}
   </Space>;
 
   return <div className="page feishu-personal-page">
@@ -309,17 +331,25 @@ export default function FeishuScopesPage() {
             <div className="feishu-account-card__main">
               <div className="feishu-source-icon"><UserOutlined /></div>
               <div>
-                <Space wrap><Text strong>{item.displayName ?? item.openId}</Text><Tag color={item.status === 'connected' ? 'green' : 'orange'}>{authorizationStatusLabel[item.status]}</Tag></Space>
+                <Space wrap><Text strong>{item.displayName ?? item.openId}</Text><Tag color={item.usable ? 'green' : 'orange'}>{authorizationStatusLabel[item.status]}</Tag></Space>
                 <Text type="secondary">{item.tenantKey} · Token 版本只以 Secret Reference 保存</Text>
                 <Text type="secondary">访问到期：{new Date(item.accessExpiresAt).toLocaleString()}</Text>
                 {item.missingScopes.length > 0 && <Space wrap size={[4, 4]}>
                   <Text type="danger">缺少权限：</Text>
                   {item.missingScopes.map((scope) => <Tag color="red" key={scope}>{scope}</Tag>)}
                 </Space>}
+                <div className="feishu-capability-grid">
+                  {item.capabilities.map((projection) => <div className="feishu-capability" key={projection.capability}>
+                    <Space size={6}><Text>{projection.label}</Text><Tag color={capabilityStatusColor[projection.status]}>{capabilityStatusLabel[projection.status]}</Tag></Space>
+                    {projection.missingScopes.length > 0 && <Space wrap size={[4, 4]}>
+                      {projection.missingScopes.map((scope) => <Tag key={scope}>{scope}</Tag>)}
+                    </Space>}
+                  </div>)}
+                </div>
               </div>
             </div>
             <Space wrap>
-              {item.status === 'connected' && <Button icon={<SearchOutlined />} loading={discover.isPending} onClick={() => discover.mutate(item.id)}>发现群聊</Button>}
+              {item.usable && <Button icon={<SearchOutlined />} disabled={!chatDiscoveryReady} loading={discover.isPending} onClick={() => discover.mutate(item.id)}>发现群聊</Button>}
               <Button danger icon={<StopOutlined />} loading={revoke.isPending} onClick={() => revoke.mutate(item.id)}>撤销授权</Button>
             </Space>
           </Card>)}
@@ -330,7 +360,7 @@ export default function FeishuScopesPage() {
 
     <div className="feishu-source-stats">
       <Row gutter={[0, 0]}>
-        <Col xs={12} md={6}><Statistic title="User 授权" value={authorizations.data?.filter((item) => item.status === 'connected').length ?? 0} /></Col>
+        <Col xs={12} md={6}><Statistic title="User 授权" value={authorizations.data?.filter((item) => item.usable).length ?? 0} /></Col>
         <Col xs={12} md={6}><Statistic title="消息范围" value={scopes.data?.filter((item) => item.identityType === 'user').length ?? 0} /></Col>
         <Col xs={12} md={6}><Statistic title="已允许" value={scopes.data?.filter((item) => item.identityType === 'user' && item.status === 'allowed').length ?? 0} /></Col>
         <Col xs={12} md={6}><Statistic title="文件夹订阅" value={subscriptions.data?.filter((item) => item.active).length ?? 0} /></Col>
@@ -398,14 +428,25 @@ export default function FeishuScopesPage() {
           <Text type="secondary">手动搜索导入，或订阅明确选择的文件夹；不会默认镜像全部云空间。</Text>
           <Form className="feishu-document-form" form={documentForm} layout="inline" onFinish={(values) => documentSearch.mutate(values)}>
             <Form.Item name="query" rules={[{ required: true }]}><Input prefix={<SearchOutlined />} placeholder="搜索我的飞书文档" /></Form.Item>
-            <Form.Item><Button htmlType="submit" loading={documentSearch.isPending}>搜索</Button></Form.Item>
+            <Form.Item><Button htmlType="submit" disabled={!driveSearchReady} loading={documentSearch.isPending}>搜索</Button></Form.Item>
           </Form>
           {documentResults.length > 0 && <List
             className="feishu-document-results"
             dataSource={documentResults}
             renderItem={(item) => {
               const document = documentIdentity(item);
-              return <List.Item actions={[<Button key="import" size="small" icon={<LinkOutlined />} disabled={document.type !== 'docx'} loading={documentImport.isPending} onClick={() => documentImport.mutate(item)}>导入</Button>]}>
+              return <List.Item actions={[
+                <Button
+                  key="import"
+                  size="small"
+                  icon={<LinkOutlined />}
+                  disabled={document.type !== 'docx' || !documentReadReady}
+                  loading={documentImport.isPending}
+                  onClick={() => documentImport.mutate(item)}
+                >
+                  导入
+                </Button>,
+              ]}>
                 <List.Item.Meta title={document.title} description={`${document.type || '未知类型'} · ${document.token || '无 token'}`} />
               </List.Item>;
             }}
@@ -415,7 +456,7 @@ export default function FeishuScopesPage() {
           <Form form={folderForm} layout="vertical" onFinish={(values) => subscribeFolder.mutate(values)}>
             <Form.Item name="folderToken" label="folder_token" rules={[{ required: true }]}><Input prefix={<FolderOpenOutlined />} placeholder="只填写明确选择的法务文件夹" /></Form.Item>
             <Form.Item name="recursive" valuePropName="checked"><Checkbox>递归同步子文件夹</Checkbox></Form.Item>
-            <Button htmlType="submit" loading={subscribeFolder.isPending}>订阅文件夹</Button>
+            <Button htmlType="submit" disabled={!driveSearchReady} loading={subscribeFolder.isPending}>订阅文件夹</Button>
           </Form>
           {(subscriptions.data?.length ?? 0) > 0 && <List
             className="feishu-folder-list"

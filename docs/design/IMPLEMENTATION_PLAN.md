@@ -128,7 +128,7 @@ Matter 更新页把当前值、消息提取值、AI 建议值和法务最终值�
 
 - AgentDefinition/AgentRun/AgentRunSource/DraftArtifact 模型与版本；
 - 独立运行目录、无工具白名单、受控来源与 Schema/业务校验；
-- ContextSnapshot v2 确定性选取、版本/排序复用键、多维限界、附件片段引用与 `message_judgement@2.1.0`；
+- ContextSnapshot v2 确定性选取、版本/排序复用键、多维限界、附件片段引用与 `message_judgement@2.2.0`；
 - Codex CLI 版本/隔离认证健康检查、Prompt 注入边界和一次 Schema 修复重试；
 - AgentRun 心跳、租约、只追加状态历史、超时、尝试、错误分类、指数退避和死信；
 - Candidate revision 历史及 Redis/Worker 丢失后的 PostgreSQL 定时恢复；
