@@ -261,7 +261,10 @@ def _safe_error_code(exc: Exception) -> str:
 
 
 def _is_attachment_terminal(attachment: MessageAttachment) -> bool:
-    if attachment.download_status == AttachmentDownloadStatus.FAILED:
+    if attachment.download_status in {
+        AttachmentDownloadStatus.FAILED,
+        AttachmentDownloadStatus.METADATA_ONLY,
+    }:
         return True
     return attachment.download_status == AttachmentDownloadStatus.DOWNLOADED and (
         attachment.extraction_status

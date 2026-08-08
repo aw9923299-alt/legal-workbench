@@ -1016,8 +1016,45 @@ class AnalyseFeishuMessageHandler:
             )
         for segment in snapshot.included_segments:
             attachment_value = segment.get("attachmentId")
+            document_value = segment.get("documentId")
+            document_token_value = segment.get("documentToken")
+            title_value = segment.get("title")
             file_name_value = segment.get("fileName")
             content_hash_value = segment.get("contentHash")
+            paragraph_number = _positive_snapshot_integer(
+                segment["paragraphNumber"], field_name="paragraphNumber"
+            )
+            if isinstance(document_value, str) and document_value:
+                if (
+                    not isinstance(document_token_value, str)
+                    or not document_token_value
+                    or not isinstance(content_hash_value, str)
+                    or len(content_hash_value) != 64
+                    or (title_value is not None and not isinstance(title_value, str))
+                ):
+                    raise InvalidStateTransitionError(
+                        "ContextSnapshot contains an invalid document citation."
+                    )
+                title = title_value or document_token_value
+                sources.append(
+                    AgentRunSource(
+                        id=uuid4(),
+                        agent_run_id=run.id,
+                        source_type=AgentRunSourceType.KNOWLEDGE_DOCUMENT,
+                        source_id=f"{document_value}:paragraph:{paragraph_number}",
+                        source_version=f"paragraph:{paragraph_number}",
+                        source_hash=content_hash_value,
+                        display_name=title,
+                        citation_metadata={
+                            "segment": True,
+                            "documentId": document_value,
+                            "documentToken": document_token_value,
+                            "title": title_value,
+                            "paragraphNumber": paragraph_number,
+                        },
+                    )
+                )
+                continue
             if (
                 not isinstance(attachment_value, str)
                 or not attachment_value
@@ -1036,9 +1073,6 @@ class AnalyseFeishuMessageHandler:
                 _positive_snapshot_integer(page_value, field_name="pageNumber")
                 if page_value is not None
                 else None
-            )
-            paragraph_number = _positive_snapshot_integer(
-                segment["paragraphNumber"], field_name="paragraphNumber"
             )
             content_hash = content_hash_value
             locator = (

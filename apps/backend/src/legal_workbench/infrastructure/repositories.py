@@ -1732,6 +1732,8 @@ class SqlAlchemyFeishuRepository:
                 received_at=event.received_at,
                 processed_at=event.processed_at,
                 last_error=event.last_error,
+                source_channel=event.source_channel,
+                provenance=event.provenance,
             )
         )
 
@@ -1781,6 +1783,9 @@ class SqlAlchemyFeishuRepository:
             analysis_policy_version=message.analysis_policy_version,
             analysis_reasons=message.analysis_reasons,
             detected_document_links=message.detected_document_links,
+            source_channel=message.source_channel,
+            source_channels=message.source_channels,
+            provenance=message.provenance,
             version=message.version,
         )
         self._tracked_messages[message.id] = model
@@ -1913,6 +1918,9 @@ class SqlAlchemyFeishuRepository:
         model.analysis_policy_version = message.analysis_policy_version
         model.analysis_reasons = message.analysis_reasons
         model.detected_document_links = message.detected_document_links
+        model.source_channel = message.source_channel
+        model.source_channels = message.source_channels
+        model.provenance = message.provenance
         model.event_id = message.event_id
         model.message_type = message.message_type
         model.content = message.content
@@ -2153,6 +2161,8 @@ class SqlAlchemyFeishuRepository:
             received_at=model.received_at,
             processed_at=model.processed_at,
             last_error=model.last_error,
+            source_channel=model.source_channel,
+            provenance=model.provenance,
         )
 
     @staticmethod
@@ -2192,6 +2202,9 @@ class SqlAlchemyFeishuRepository:
             analysis_policy_version=model.analysis_policy_version,
             analysis_reasons=model.analysis_reasons,
             detected_document_links=model.detected_document_links,
+            source_channel=model.source_channel,
+            source_channels=model.source_channels,
+            provenance=model.provenance,
         )
 
 
@@ -2595,6 +2608,88 @@ class SqlAlchemyDocumentRepository:
             )
         return segments
 
+    async def list_latest_feishu_segments_for_messages(
+        self, message_ids: Sequence[UUID]
+    ) -> Sequence[tuple[FeishuDocument, DocumentSegment]]:
+        if not message_ids:
+            return []
+        latest_version = (
+            select(func.max(DocumentVersionModel.version))
+            .where(
+                DocumentVersionModel.feishu_document_id == FeishuDocumentModel.id
+            )
+            .correlate(FeishuDocumentModel)
+            .scalar_subquery()
+        )
+        statement = (
+            select(
+                FeishuDocumentModel,
+                DocumentSegmentModel,
+                DocumentExtractionModel.created_at,
+            )
+            .join(
+                FeishuMessageDocumentLinkModel,
+                FeishuMessageDocumentLinkModel.feishu_document_id
+                == FeishuDocumentModel.id,
+            )
+            .join(
+                DocumentVersionModel,
+                DocumentVersionModel.feishu_document_id == FeishuDocumentModel.id,
+            )
+            .join(
+                DocumentExtractionModel,
+                DocumentExtractionModel.document_version_id
+                == DocumentVersionModel.id,
+            )
+            .join(
+                DocumentSegmentModel,
+                DocumentSegmentModel.extraction_id == DocumentExtractionModel.id,
+            )
+            .where(
+                FeishuMessageDocumentLinkModel.feishu_message_id.in_(list(message_ids)),
+                DocumentVersionModel.version == latest_version,
+                DocumentExtractionModel.status == DocumentExtractionStatus.SUCCEEDED,
+            )
+            .order_by(
+                FeishuDocumentModel.id,
+                DocumentExtractionModel.created_at.desc(),
+                DocumentSegmentModel.paragraph_number,
+            )
+        )
+        rows = (await self._session.execute(statement)).all()
+        latest_extraction: dict[UUID, UUID] = {}
+        seen_segments: set[UUID] = set()
+        values: list[tuple[FeishuDocument, DocumentSegment]] = []
+        for document_model, segment_model, _created_at in rows:
+            extraction_id = latest_extraction.setdefault(
+                document_model.id, segment_model.extraction_id
+            )
+            if (
+                segment_model.extraction_id != extraction_id
+                or segment_model.id in seen_segments
+            ):
+                continue
+            seen_segments.add(segment_model.id)
+            values.append(
+                (
+                    self._feishu_document_to_domain(document_model),
+                    DocumentSegment(
+                        id=segment_model.id,
+                        extraction_id=segment_model.extraction_id,
+                        attachment_id=segment_model.attachment_id,
+                        page_number=segment_model.page_number,
+                        paragraph_number=segment_model.paragraph_number,
+                        start_offset=segment_model.start_offset,
+                        end_offset=segment_model.end_offset,
+                        content=segment_model.content,
+                        content_hash=segment_model.content_hash,
+                        feishu_document_id=segment_model.feishu_document_id,
+                        created_at=segment_model.created_at,
+                    ),
+                )
+            )
+        return values
+
     @staticmethod
     def _version_to_domain(model: DocumentVersionModel) -> DocumentVersion:
         return DocumentVersion(
@@ -2859,6 +2954,9 @@ class SqlAlchemyFeishuPersonalSyncRepository:
             last_error_code=value.last_error_code,
             last_started_at=value.last_started_at,
             last_succeeded_at=value.last_succeeded_at,
+            lease_owner=value.lease_owner,
+            lease_expires_at=value.lease_expires_at,
+            lease_fence=value.lease_fence,
             updated_at=value.updated_at,
         )
         self._tracked[value.id] = model
@@ -2876,6 +2974,9 @@ class SqlAlchemyFeishuPersonalSyncRepository:
         model.last_error_code = value.last_error_code
         model.last_started_at = value.last_started_at
         model.last_succeeded_at = value.last_succeeded_at
+        model.lease_owner = value.lease_owner
+        model.lease_expires_at = value.lease_expires_at
+        model.lease_fence = value.lease_fence
         model.updated_at = value.updated_at
 
     @staticmethod
@@ -2890,6 +2991,9 @@ class SqlAlchemyFeishuPersonalSyncRepository:
             last_error_code=model.last_error_code,
             last_started_at=model.last_started_at,
             last_succeeded_at=model.last_succeeded_at,
+            lease_owner=model.lease_owner,
+            lease_expires_at=model.lease_expires_at,
+            lease_fence=model.lease_fence,
             updated_at=model.updated_at,
         )
 
@@ -2977,6 +3081,10 @@ class SqlAlchemyFeishuUserAuthorizationRepository:
         model.status = value.status
         model.last_refreshed_at = value.last_refreshed_at
         model.last_error_code = value.last_error_code
+        model.pending_token_version = value.pending_token_version
+        model.pending_token_bundle_ref = value.pending_token_bundle_ref
+        model.rotation_owner = value.rotation_owner
+        model.rotation_expires_at = value.rotation_expires_at
         model.updated_at = value.updated_at
 
     async def list_authorizations(self) -> Sequence[FeishuUserAuthorization]:
@@ -3026,6 +3134,10 @@ class SqlAlchemyFeishuUserAuthorizationRepository:
             status=value.status,
             last_refreshed_at=value.last_refreshed_at,
             last_error_code=value.last_error_code,
+            pending_token_version=value.pending_token_version,
+            pending_token_bundle_ref=value.pending_token_bundle_ref,
+            rotation_owner=value.rotation_owner,
+            rotation_expires_at=value.rotation_expires_at,
             created_at=value.created_at,
             updated_at=value.updated_at,
         )
@@ -3049,6 +3161,10 @@ class SqlAlchemyFeishuUserAuthorizationRepository:
             status=model.status,
             last_refreshed_at=model.last_refreshed_at,
             last_error_code=model.last_error_code,
+            pending_token_version=model.pending_token_version,
+            pending_token_bundle_ref=model.pending_token_bundle_ref,
+            rotation_owner=model.rotation_owner,
+            rotation_expires_at=model.rotation_expires_at,
             created_at=model.created_at,
             updated_at=model.updated_at,
         )

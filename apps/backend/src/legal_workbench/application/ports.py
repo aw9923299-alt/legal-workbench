@@ -357,6 +357,9 @@ class DocumentRepository(Protocol):
     async def list_latest_segments(
         self, attachment_ids: Sequence[UUID]
     ) -> Sequence[DocumentSegment]: ...
+    async def list_latest_feishu_segments_for_messages(
+        self, message_ids: Sequence[UUID]
+    ) -> Sequence[tuple[FeishuDocument, DocumentSegment]]: ...
 
 
 class AttachmentStorageQuotaRepository(Protocol):

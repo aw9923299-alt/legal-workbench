@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import secrets
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Protocol
 from urllib.parse import urlencode
@@ -58,6 +59,22 @@ class OAuthStartResult:
     expires_at: datetime
 
 
+@dataclass(frozen=True, slots=True)
+class _RotationClaim:
+    authorization_id: UUID
+    owner: str
+    generation: int
+    bundle_ref: str
+    refresh_token: str = field(repr=False)
+
+
+@dataclass(frozen=True, slots=True)
+class _RotationPreparation:
+    access_token: str | None = None
+    claim: _RotationClaim | None = None
+    wait_for_owner: bool = False
+
+
 class FeishuOAuthClientProtocol(Protocol):
     async def exchange_code(self, *, code: str, code_verifier: str) -> FeishuOAuthTokens: ...
     async def get_identity(self, *, access_token: str) -> OAuthIdentity: ...
@@ -74,6 +91,7 @@ class FeishuOAuthService:
         app_id: str,
         authorize_url: str = DEFAULT_AUTHORIZE_URL,
         attempt_ttl: timedelta = timedelta(minutes=10),
+        required_scopes: tuple[str, ...] = (),
     ) -> None:
         self._uow_factory = uow_factory
         self._oauth_client = oauth_client
@@ -81,6 +99,7 @@ class FeishuOAuthService:
         self._app_id = app_id.strip()
         self._authorize_url = authorize_url
         self._attempt_ttl = attempt_ttl
+        self._required_scopes = frozenset(required_scopes)
 
     def _authorization_url(
         self,
@@ -284,7 +303,16 @@ class FeishuOAuthService:
                     access_expires_at=tokens.access_expires_at,
                     refresh_expires_at=tokens.refresh_expires_at,
                     token_version=1,
-                    status=FeishuUserAuthorizationStatus.CONNECTED,
+                    status=(
+                        FeishuUserAuthorizationStatus.PERMISSION_MISSING
+                        if self._required_scopes.difference(tokens.scopes)
+                        else FeishuUserAuthorizationStatus.CONNECTED
+                    ),
+                    last_error_code=(
+                        "permission_missing"
+                        if self._required_scopes.difference(tokens.scopes)
+                        else None
+                    ),
                 )
                 await uow.feishu_user_authorizations.add_authorization(authorization)
                 await uow.feishu_user_authorizations.save_oauth_attempt(attempt)
@@ -402,127 +430,247 @@ class FeishuUserTokenProvider:
         oauth_client: FeishuOAuthClientProtocol,
         secret_provider: LocalSecretProvider,
         refresh_skew: timedelta = timedelta(minutes=5),
+        required_scopes: tuple[str, ...] = (),
     ) -> None:
         self._uow_factory = uow_factory
         self._oauth_client = oauth_client
         self._secret_provider = secret_provider
         self._refresh_skew = refresh_skew
+        self._required_scopes = frozenset(required_scopes)
 
     async def get_access_token(
         self, authorization_id: UUID, *, force_refresh: bool = False
     ) -> str:
-        old_access_ref: str | None = None
-        old_refresh_ref: str | None = None
-        new_access_ref: str | None = None
-        new_refresh_ref: str | None = None
-        try:
-            async with self._uow_factory() as uow:
-                authorization = (
-                    await uow.feishu_user_authorizations.get_authorization_for_update(
-                        authorization_id
-                    )
+        waited_for_rotation = False
+        for _attempt in range(200):
+            preparation = await self._prepare_rotation(
+                authorization_id,
+                force_refresh=force_refresh and not waited_for_rotation,
+            )
+            if preparation.access_token is not None:
+                return preparation.access_token
+            if preparation.wait_for_owner:
+                waited_for_rotation = True
+                await asyncio.sleep(0.02)
+                continue
+            claim = preparation.claim
+            if claim is None:
+                raise RuntimeError("Token rotation preparation is invalid.")
+            try:
+                rotated = await self._oauth_client.refresh(
+                    refresh_token=claim.refresh_token
                 )
-                if authorization is None:
-                    raise DomainValidationError("Feishu user authorization was not found.")
-                now = datetime.now(UTC)
-                if authorization.status not in {
-                    FeishuUserAuthorizationStatus.CONNECTED,
-                    FeishuUserAuthorizationStatus.DEGRADED,
-                }:
-                    raise DomainValidationError("Feishu user authorization requires attention.")
-                if (
-                    not force_refresh
-                    and authorization.access_expires_at > now + self._refresh_skew
-                ):
-                    return self._secret_provider.read(authorization.access_token_ref)
-                if authorization.refresh_expires_at <= now:
-                    authorization.status = FeishuUserAuthorizationStatus.EXPIRED
-                    authorization.last_error_code = "refresh_token_expired"
-                    authorization.updated_at = now
-                    await uow.feishu_user_authorizations.save_authorization(authorization)
-                    await uow.commit()
-                    raise DomainValidationError("Feishu user authorization must be renewed.")
+            except Exception as exc:
+                await self._record_rotation_failure(claim, exc)
+                raise
+            self._secret_provider.write_token_generation(
+                claim.bundle_ref,
+                access_token=rotated.access_token,
+                refresh_token=rotated.refresh_token,
+                access_expires_at=rotated.access_expires_at,
+                refresh_expires_at=rotated.refresh_expires_at,
+                scopes=rotated.scopes,
+            )
+            return await self._activate_pending_generation(authorization_id)
+        raise DomainValidationError("Feishu user token rotation is still in progress.")
 
-                old_access_ref = authorization.access_token_ref
-                old_refresh_ref = authorization.refresh_token_ref
-                try:
-                    rotated = await self._oauth_client.refresh(
-                        refresh_token=self._secret_provider.read(old_refresh_ref)
-                    )
-                except Exception as exc:
-                    http_status = getattr(exc, "http_status", None)
-                    error_code = str(getattr(exc, "code", "refresh_failed"))
-                    if http_status in {400, 401}:
-                        authorization.status = (
-                            FeishuUserAuthorizationStatus.REAUTH_REQUIRED
-                        )
-                        prefix = "refresh_rejected"
-                    elif http_status == 403:
-                        authorization.status = (
-                            FeishuUserAuthorizationStatus.PERMISSION_MISSING
-                        )
-                        prefix = "refresh_permission_missing"
-                    else:
-                        authorization.status = FeishuUserAuthorizationStatus.DEGRADED
-                        prefix = "refresh_failed"
-                    authorization.last_error_code = f"{prefix}:{error_code}"[:100]
-                    authorization.updated_at = now
-                    await uow.feishu_user_authorizations.save_authorization(authorization)
-                    await uow.audit_events.add(
-                        AuditEvent(
-                            id=uuid4(),
-                            aggregate_type="feishu_user_authorization",
-                            aggregate_id=authorization.id,
-                            event_type="feishu_user_token_refresh_failed",
-                            actor_id="feishu-user-token-provider",
-                            actor_source="system",
-                            payload={
-                                "status": authorization.status.value,
-                                "errorCode": authorization.last_error_code,
-                            },
-                            correlation_id=(
-                                f"feishu-user-token-refresh:{authorization.id}"
-                            ),
-                        )
-                    )
-                    await uow.commit()
-                    raise
-                next_version = authorization.token_version + 1
-                new_access_ref = f"feishu_uat_{authorization.id.hex}_v{next_version}"
-                new_refresh_ref = f"feishu_urt_{authorization.id.hex}_v{next_version}"
-                self._secret_provider.write(new_access_ref, rotated.access_token)
-                self._secret_provider.write(new_refresh_ref, rotated.refresh_token)
-                authorization.rotate(
-                    access_token_ref=new_access_ref,
-                    refresh_token_ref=new_refresh_ref,
-                    access_expires_at=rotated.access_expires_at,
-                    refresh_expires_at=rotated.refresh_expires_at,
-                    scopes=rotated.scopes,
-                    now=now,
+    async def _prepare_rotation(
+        self, authorization_id: UUID, *, force_refresh: bool
+    ) -> _RotationPreparation:
+        async with self._uow_factory() as uow:
+            authorization = (
+                await uow.feishu_user_authorizations.get_authorization_for_update(
+                    authorization_id
                 )
+            )
+            if authorization is None:
+                raise DomainValidationError("Feishu user authorization was not found.")
+            now = datetime.now(UTC)
+            bundle_ref = authorization.pending_token_bundle_ref
+            if bundle_ref and self._secret_provider.exists(bundle_ref):
+                return _RotationPreparation(
+                    access_token=await self._activate_locked_generation(
+                        uow=uow,
+                        authorization=authorization,
+                        now=now,
+                    )
+                )
+            if authorization.pending_token_version is not None:
+                if (
+                    authorization.rotation_expires_at is not None
+                    and authorization.rotation_expires_at > now
+                ):
+                    return _RotationPreparation(wait_for_owner=True)
+                authorization.status = FeishuUserAuthorizationStatus.REAUTH_REQUIRED
+                authorization.last_error_code = "rotation_result_missing"
+                authorization.updated_at = now
+                authorization.clear_pending_rotation()
                 await uow.feishu_user_authorizations.save_authorization(authorization)
-                await uow.audit_events.add(
-                    AuditEvent(
-                        id=uuid4(),
-                        aggregate_type="feishu_user_authorization",
-                        aggregate_id=authorization.id,
-                        event_type="feishu_user_token_rotated",
-                        actor_id="feishu-user-token-provider",
-                        actor_source="system",
-                        payload={"tokenVersion": authorization.token_version},
-                        correlation_id=f"feishu-user-token-refresh:{authorization.id}",
+                await uow.commit()
+                raise DomainValidationError(
+                    "Feishu token rotation was interrupted; authorization must be renewed."
+                )
+            self._secret_provider.delete(
+                f"feishu_rotation_{authorization.id.hex}_v{authorization.token_version}"
+            )
+            if authorization.status not in {
+                FeishuUserAuthorizationStatus.CONNECTED,
+                FeishuUserAuthorizationStatus.DEGRADED,
+            }:
+                raise DomainValidationError("Feishu user authorization requires attention.")
+            if (
+                not force_refresh
+                and authorization.access_expires_at > now + self._refresh_skew
+            ):
+                return _RotationPreparation(
+                    access_token=self._secret_provider.read(
+                        authorization.access_token_ref
                     )
                 )
+            if authorization.refresh_expires_at <= now:
+                authorization.status = FeishuUserAuthorizationStatus.EXPIRED
+                authorization.last_error_code = "refresh_token_expired"
+                authorization.updated_at = now
+                await uow.feishu_user_authorizations.save_authorization(authorization)
                 await uow.commit()
-                access_token = rotated.access_token
-        except Exception:
-            if new_access_ref is not None:
-                self._secret_provider.delete(new_access_ref)
-            if new_refresh_ref is not None:
-                self._secret_provider.delete(new_refresh_ref)
-            raise
-        if old_access_ref is not None:
+                raise DomainValidationError("Feishu user authorization must be renewed.")
+            owner = uuid4().hex
+            generation = authorization.token_version + 1
+            bundle_ref = f"feishu_rotation_{authorization.id.hex}_v{generation}"
+            authorization.pending_token_version = generation
+            authorization.pending_token_bundle_ref = bundle_ref
+            authorization.rotation_owner = owner
+            authorization.rotation_expires_at = now + timedelta(minutes=2)
+            authorization.updated_at = now
+            refresh_token = self._secret_provider.read(
+                authorization.refresh_token_ref
+            )
+            await uow.feishu_user_authorizations.save_authorization(authorization)
+            await uow.commit()
+            return _RotationPreparation(
+                claim=_RotationClaim(
+                    authorization_id=authorization.id,
+                    owner=owner,
+                    generation=generation,
+                    bundle_ref=bundle_ref,
+                    refresh_token=refresh_token,
+                )
+            )
+
+    async def _activate_pending_generation(self, authorization_id: UUID) -> str:
+        async with self._uow_factory() as uow:
+            authorization = (
+                await uow.feishu_user_authorizations.get_authorization_for_update(
+                    authorization_id
+                )
+            )
+            if authorization is None:
+                raise DomainValidationError("Feishu user authorization was not found.")
+            if authorization.pending_token_bundle_ref is None:
+                return self._secret_provider.read(authorization.access_token_ref)
+            return await self._activate_locked_generation(
+                uow=uow,
+                authorization=authorization,
+                now=datetime.now(UTC),
+            )
+
+    async def _activate_locked_generation(
+        self,
+        *,
+        uow: object,
+        authorization: FeishuUserAuthorization,
+        now: datetime,
+    ) -> str:
+        generation = authorization.pending_token_version
+        bundle_ref = authorization.pending_token_bundle_ref
+        if generation is None or bundle_ref is None:
+            raise DomainValidationError("Pending token generation is incomplete.")
+        if generation != authorization.token_version + 1:
+            raise DomainValidationError("Pending token generation is out of sequence.")
+        bundle = self._secret_provider.read_token_generation(bundle_ref)
+        old_access_ref = authorization.access_token_ref
+        old_refresh_ref = authorization.refresh_token_ref
+        new_access_ref = f"feishu_uat_{authorization.id.hex}_v{generation}"
+        new_refresh_ref = f"feishu_urt_{authorization.id.hex}_v{generation}"
+        self._secret_provider.write(new_access_ref, bundle.access_token)
+        self._secret_provider.write(new_refresh_ref, bundle.refresh_token)
+        authorization.rotate(
+            access_token_ref=new_access_ref,
+            refresh_token_ref=new_refresh_ref,
+            access_expires_at=bundle.access_expires_at,
+            refresh_expires_at=bundle.refresh_expires_at,
+            scopes=bundle.scopes,
+            now=now,
+        )
+        authorization.clear_pending_rotation()
+        if self._required_scopes.difference(bundle.scopes):
+            authorization.status = FeishuUserAuthorizationStatus.PERMISSION_MISSING
+            authorization.last_error_code = "permission_missing"
+        await uow.feishu_user_authorizations.save_authorization(authorization)  # type: ignore[attr-defined]
+        await uow.audit_events.add(  # type: ignore[attr-defined]
+            AuditEvent(
+                id=uuid4(),
+                aggregate_type="feishu_user_authorization",
+                aggregate_id=authorization.id,
+                event_type="feishu_user_token_rotated",
+                actor_id="feishu-user-token-provider",
+                actor_source="system",
+                payload={"tokenVersion": authorization.token_version},
+                correlation_id=f"feishu-user-token-refresh:{authorization.id}",
+            )
+        )
+        await uow.commit()  # type: ignore[attr-defined]
+        self._secret_provider.delete(bundle_ref)
+        if old_access_ref != new_access_ref:
             self._secret_provider.delete(old_access_ref)
-        if old_refresh_ref is not None:
+        if old_refresh_ref != new_refresh_ref:
             self._secret_provider.delete(old_refresh_ref)
-        return access_token
+        return bundle.access_token
+
+    async def _record_rotation_failure(
+        self, claim: _RotationClaim, exc: Exception
+    ) -> None:
+        async with self._uow_factory() as uow:
+            authorization = (
+                await uow.feishu_user_authorizations.get_authorization_for_update(
+                    claim.authorization_id
+                )
+            )
+            if authorization is None:
+                return
+            if (
+                authorization.pending_token_version != claim.generation
+                or authorization.rotation_owner != claim.owner
+            ):
+                return
+            http_status = getattr(exc, "http_status", None)
+            error_code = str(getattr(exc, "code", "refresh_failed"))
+            if http_status in {400, 401}:
+                authorization.status = FeishuUserAuthorizationStatus.REAUTH_REQUIRED
+                prefix = "refresh_rejected"
+            elif http_status == 403:
+                authorization.status = FeishuUserAuthorizationStatus.PERMISSION_MISSING
+                prefix = "refresh_permission_missing"
+            else:
+                authorization.status = FeishuUserAuthorizationStatus.DEGRADED
+                prefix = "refresh_failed"
+            authorization.last_error_code = f"{prefix}:{error_code}"[:100]
+            authorization.updated_at = datetime.now(UTC)
+            authorization.clear_pending_rotation()
+            await uow.feishu_user_authorizations.save_authorization(authorization)
+            await uow.audit_events.add(
+                AuditEvent(
+                    id=uuid4(),
+                    aggregate_type="feishu_user_authorization",
+                    aggregate_id=authorization.id,
+                    event_type="feishu_user_token_refresh_failed",
+                    actor_id="feishu-user-token-provider",
+                    actor_source="system",
+                    payload={
+                        "status": authorization.status.value,
+                        "errorCode": authorization.last_error_code,
+                    },
+                    correlation_id=f"feishu-user-token-refresh:{authorization.id}",
+                )
+            )
+            await uow.commit()

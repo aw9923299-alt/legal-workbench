@@ -245,16 +245,20 @@ export default function MessageDetailPage() {
                     title={file.fileName}
                     description={[
                       file.mimeType ?? '未知类型',
-                      file.size ?? '未知大小',
+                      file.size == null ? '未知大小' : `${file.size} B`,
                       `下载 ${file.downloadStatus}`,
                       `解析 ${file.extractionStatus}`,
-                      file.extractionStatus === 'body_unavailable' ? '正文暂不可解析' : null,
+                      file.downloadStatus === 'metadata_only' ? '附件已检测，正文暂不可读取' : null,
+                      file.extractionStatus === 'body_unavailable' && file.downloadStatus !== 'metadata_only' ? '正文暂不可解析' : null,
                       file.extractionErrorCode,
                     ].filter(Boolean).join(' · ')}
                   />
-                  <Tag color={file.authorizedForAnalysis ? 'green' : 'default'}>
-                    {file.authorizedForAnalysis ? '已授权分析' : '未授权正文'}
-                  </Tag>
+                  <Space size={4}>
+                    {file.downloadStatus === 'metadata_only' && <Tag color="orange">仅元数据</Tag>}
+                    <Tag color={file.authorizedForAnalysis ? 'green' : 'default'}>
+                      {file.authorizedForAnalysis ? '已授权分析' : '未授权正文'}
+                    </Tag>
+                  </Space>
                 </List.Item>
               )}
             />

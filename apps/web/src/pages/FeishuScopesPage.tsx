@@ -312,6 +312,10 @@ export default function FeishuScopesPage() {
                 <Space wrap><Text strong>{item.displayName ?? item.openId}</Text><Tag color={item.status === 'connected' ? 'green' : 'orange'}>{authorizationStatusLabel[item.status]}</Tag></Space>
                 <Text type="secondary">{item.tenantKey} · Token 版本只以 Secret Reference 保存</Text>
                 <Text type="secondary">访问到期：{new Date(item.accessExpiresAt).toLocaleString()}</Text>
+                {item.missingScopes.length > 0 && <Space wrap size={[4, 4]}>
+                  <Text type="danger">缺少权限：</Text>
+                  {item.missingScopes.map((scope) => <Tag color="red" key={scope}>{scope}</Tag>)}
+                </Space>}
               </div>
             </div>
             <Space wrap>

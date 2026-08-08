@@ -26,6 +26,7 @@ from legal_workbench.domain.errors import (
     EntityVersionConflictError,
     IdempotencyConflictError,
 )
+from legal_workbench.integrations.feishu_local_connector import LocalFeishuRecord
 
 
 def _hash_payload(value: dict[str, object]) -> str:
@@ -185,6 +186,9 @@ class FeishuScopeService:
                 chat_id = str(chat.get("chat_id") or "").strip()
                 if not chat_id:
                     continue
+                is_p2p = str(
+                    chat.get("chat_mode") or chat.get("chat_type") or ""
+                ).lower() == "p2p"
                 scope = await self.register_known_chat(
                     chat_id=chat_id,
                     display_name=str(chat.get("name") or "").strip() or None,
@@ -193,12 +197,47 @@ class FeishuScopeService:
                     correlation_id=correlation_id,
                     idempotency_key=f"discover:{authorization_id}:{chat_id}",
                     identity_type=IntegrationIdentityType.USER,
-                    scope_type=IntegrationScopeType.GROUP,
+                    scope_type=(
+                        IntegrationScopeType.P2P
+                        if is_p2p
+                        else IntegrationScopeType.GROUP
+                    ),
                     authorization_id=authorization_id,
                 )
                 discovered.append(scope)
             if page_token is None:
                 break
+        return tuple(discovered)
+
+    async def discover_local_p2p_chats(
+        self,
+        *,
+        authorization_id: UUID,
+        records: tuple[LocalFeishuRecord, ...],
+        actor_id: str,
+        correlation_id: str,
+    ) -> tuple[IntegrationScope, ...]:
+        discovered: list[IntegrationScope] = []
+        for chat_id in sorted(
+            {
+                value.chat_id
+                for value in records
+                if value.chat_type.lower() == "p2p" and value.chat_id
+            }
+        ):
+            discovered.append(
+                await self.register_known_chat(
+                    chat_id=chat_id,
+                    display_name=None,
+                    actor_id=actor_id,
+                    actor_source="feishu-local-discovery",
+                    correlation_id=correlation_id,
+                    idempotency_key=f"local-discover:{authorization_id}:{chat_id}",
+                    identity_type=IntegrationIdentityType.USER,
+                    scope_type=IntegrationScopeType.P2P,
+                    authorization_id=authorization_id,
+                )
+            )
         return tuple(discovered)
 
     async def change_scope(

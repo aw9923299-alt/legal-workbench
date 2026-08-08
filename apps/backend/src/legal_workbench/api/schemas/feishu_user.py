@@ -25,6 +25,7 @@ class FeishuUserAuthorizationResponse(ApiModel):
     tenant_key: str
     display_name: str | None
     scopes: tuple[str, ...]
+    missing_scopes: tuple[str, ...] = ()
     access_expires_at: datetime
     refresh_expires_at: datetime
     status: FeishuUserAuthorizationStatus

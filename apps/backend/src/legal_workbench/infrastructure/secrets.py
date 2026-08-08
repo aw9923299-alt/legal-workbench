@@ -1,13 +1,34 @@
 from __future__ import annotations
 
+import json
 import os
 import re
 import tempfile
+from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 from legal_workbench.domain.errors import DomainValidationError
 
 _REFERENCE_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,79}$")
+
+
+@dataclass(frozen=True, slots=True)
+class TokenGenerationSecret:
+    access_token: str
+    refresh_token: str
+    access_expires_at: datetime
+    refresh_expires_at: datetime
+    scopes: tuple[str, ...]
+
+    def __repr__(self) -> str:
+        return (
+            "TokenGenerationSecret(access_token=<redacted>, "
+            "refresh_token=<redacted>, "
+            f"access_expires_at={self.access_expires_at!r}, "
+            f"refresh_expires_at={self.refresh_expires_at!r}, "
+            f"scopes={self.scopes!r})"
+        )
 
 
 class LocalSecretProvider:
@@ -73,6 +94,61 @@ class LocalSecretProvider:
             raise DomainValidationError(
                 "The configured local secret could not be removed."
             ) from exc
+
+    def write_token_generation(
+        self,
+        reference: str,
+        *,
+        access_token: str,
+        refresh_token: str,
+        access_expires_at: datetime,
+        refresh_expires_at: datetime,
+        scopes: tuple[str, ...],
+    ) -> str:
+        if access_expires_at.tzinfo is None or refresh_expires_at.tzinfo is None:
+            raise DomainValidationError("Token generation expiry must include a timezone.")
+        payload = json.dumps(
+            {
+                "accessToken": access_token,
+                "refreshToken": refresh_token,
+                "accessExpiresAt": access_expires_at.isoformat(),
+                "refreshExpiresAt": refresh_expires_at.isoformat(),
+                "scopes": list(scopes),
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        return self.write(reference, payload)
+
+    def read_token_generation(self, reference: str) -> TokenGenerationSecret:
+        try:
+            payload = json.loads(self.read(reference))
+            if not isinstance(payload, dict):
+                raise ValueError
+            access_token = payload["accessToken"]
+            refresh_token = payload["refreshToken"]
+            scopes = payload["scopes"]
+            if (
+                not isinstance(access_token, str)
+                or not isinstance(refresh_token, str)
+                or not isinstance(scopes, list)
+                or not all(isinstance(value, str) for value in scopes)
+            ):
+                raise ValueError
+            value = TokenGenerationSecret(
+                access_token=access_token,
+                refresh_token=refresh_token,
+                access_expires_at=datetime.fromisoformat(str(payload["accessExpiresAt"])),
+                refresh_expires_at=datetime.fromisoformat(
+                    str(payload["refreshExpiresAt"])
+                ),
+                scopes=tuple(scopes),
+            )
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise DomainValidationError("Token generation secret is invalid.") from exc
+        if value.access_expires_at.tzinfo is None or value.refresh_expires_at.tzinfo is None:
+            raise DomainValidationError("Token generation expiry must include a timezone.")
+        return value
 
     def _path(self, reference: str) -> Path:
         if not _REFERENCE_PATTERN.fullmatch(reference):

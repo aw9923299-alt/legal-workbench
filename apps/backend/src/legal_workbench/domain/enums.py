@@ -339,6 +339,7 @@ class AttachmentDownloadStatus(StrEnum):
     DOWNLOADING = "downloading"
     DOWNLOADED = "downloaded"
     FAILED = "failed"
+    METADATA_ONLY = "metadata_only"
     NOT_REQUESTED = "not_requested"
 
 

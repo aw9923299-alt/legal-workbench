@@ -54,6 +54,8 @@ def _new_message(
     analysis_disposition: str,
     analysis_policy_version: str,
     analysis_reasons: tuple[str, ...],
+    source_channel: str,
+    provenance: dict[str, object],
 ) -> FeishuMessage:
     attachment_payload: list[dict[str, object]] = [
         {
@@ -97,7 +99,14 @@ def _new_message(
             {"documentType": value.document_type, "token": value.token, "url": value.url}
             for value in extract_feishu_document_links(normalized.plain_text)
         ],
+        source_channel=source_channel,
+        source_channels=[source_channel],
+        provenance=provenance,
     )
+
+
+def _source_priority(source_channel: str) -> int:
+    return 0 if source_channel == "local_client" else 1
 
 
 class IngestFeishuEventHandler:
@@ -121,7 +130,7 @@ class IngestFeishuEventHandler:
                         "The Feishu event ID was reused with a different payload.",
                         details={"eventId": command.event_id},
                     )
-                existing_message = (
+                replay_message = (
                     await uow.feishu.get_message(
                         tenant_key=tenant_key,
                         message_id=normalized.external_message_id,
@@ -131,7 +140,7 @@ class IngestFeishuEventHandler:
                 )
                 return FeishuEventIngestedResult(
                     event_id=existing.id,
-                    message_id=existing_message.id if existing_message else None,
+                    message_id=replay_message.id if replay_message else None,
                     duplicate=True,
                 )
 
@@ -145,8 +154,11 @@ class IngestFeishuEventHandler:
                 raw_payload=command.raw_payload,
                 payload_hash=digest,
                 status=FeishuEventStatus.RECEIVED,
+                source_channel=normalized.source_channel,
+                provenance={**normalized.provenance, "payloadHash": digest},
             )
             message: FeishuMessage | None = None
+            existing_message: FeishuMessage | None = None
             message_version: FeishuMessageVersion | None = None
             attachments: list[FeishuAttachment] = []
             if normalized.external_message_id:
@@ -158,8 +170,21 @@ class IngestFeishuEventHandler:
                     tenant_key=tenant_key,
                     message_id=normalized.external_message_id,
                 )
-                if normalized.operation == FeishuMessageOperation.CREATE and existing_message:
+                should_upgrade_source = bool(
+                    normalized.operation == FeishuMessageOperation.CREATE
+                    and existing_message is not None
+                    and _source_priority(normalized.source_channel)
+                    > _source_priority(existing_message.source_channel)
+                )
+                if (
+                    normalized.operation == FeishuMessageOperation.CREATE
+                    and existing_message
+                    and not should_upgrade_source
+                ):
                     event.status = FeishuEventStatus.DUPLICATE
+                    if normalized.source_channel not in existing_message.source_channels:
+                        existing_message.source_channels.append(normalized.source_channel)
+                        await uow.feishu.save_message(existing_message)
                 elif normalized.message is not None and existing_message is None:
                     message = _new_message(
                         event_db_id=event.id,
@@ -169,10 +194,18 @@ class IngestFeishuEventHandler:
                         analysis_disposition=normalized.analysis_disposition,
                         analysis_policy_version=normalized.analysis_policy_version,
                         analysis_reasons=normalized.analysis_reasons,
+                        source_channel=normalized.source_channel,
+                        provenance=normalized.provenance,
                     )
                 elif normalized.message is not None and existing_message is not None:
                     message = existing_message
                     message.event_id = event.id
+                    message.chat_id = normalized.message.chat_id
+                    message.thread_id = normalized.message.thread_id
+                    message.root_id = normalized.message.root_message_id
+                    message.parent_id = normalized.message.parent_message_id
+                    message.sender_id = normalized.message.sender_id
+                    message.sender_type = normalized.message.sender_type
                     message.message_type = normalized.message.message_type
                     message.content = normalized.message.structured_content
                     message.structured_content = normalized.message.structured_content
@@ -206,6 +239,10 @@ class IngestFeishuEventHandler:
                             normalized.message.plain_text
                         )
                     ]
+                    message.source_channel = normalized.source_channel
+                    if normalized.source_channel not in message.source_channels:
+                        message.source_channels.append(normalized.source_channel)
+                    message.provenance = normalized.provenance
                     message.version += 1
                 elif normalized.operation == FeishuMessageOperation.RECALL and existing_message:
                     message = existing_message
@@ -299,6 +336,7 @@ class IngestFeishuEventHandler:
                         "detectedDocumentLinkCount": (
                             len(message.detected_document_links) if message else 0
                         ),
+                        "sourceChannel": normalized.source_channel,
                     },
                     correlation_id=command.correlation_id,
                 )
@@ -306,6 +344,12 @@ class IngestFeishuEventHandler:
             await uow.commit()
         return FeishuEventIngestedResult(
             event_id=event.id,
-            message_id=message.id if message else None,
-            duplicate=False,
+            message_id=(
+                message.id
+                if message is not None
+                else existing_message.id
+                if existing_message is not None
+                else None
+            ),
+            duplicate=event.status == FeishuEventStatus.DUPLICATE,
         )

@@ -59,6 +59,8 @@ class NormalizedFeishuEvent:
     analysis_disposition: str = "analyze"
     analysis_policy_version: str = "legacy-app-event-v1"
     analysis_reasons: tuple[str, ...] = ()
+    source_channel: str = "app_event"
+    provenance: dict[str, object] = field(default_factory=dict)
 
 
 SUPPORTED_MESSAGE_TYPES = {"text", "post", "file", "image"}
@@ -70,6 +72,7 @@ RECALL_EVENT_TYPES = {
     "im.message.recalled_v1",
     "im.message.message_recalled_v1",
 }
+SOURCE_CHANNELS = {"app_event", "user_api", "local_client"}
 
 
 def _as_object(value: object) -> dict[str, object]:
@@ -180,6 +183,19 @@ def normalize_feishu_event(payload: dict[str, object]) -> NormalizedFeishuEvent:
     tenant_key = str(header_object.get("tenant_key") or payload.get("tenant_key") or "").strip()
     app_id = str(header_object.get("app_id") or "").strip() or None
     schema_version = str(payload.get("schema") or "").strip() or None
+    requested_source = str(payload.get("source_channel") or "").strip()
+    source = str(payload.get("source") or "").strip()
+    source_channel = (
+        requested_source
+        if requested_source in SOURCE_CHANNELS
+        else "user_api"
+        if source == "user_history_sync"
+        else "local_client"
+        if source == "local_feishu_connector"
+        else "app_event"
+    )
+    provenance_value = payload.get("provenance")
+    provenance = _as_object(provenance_value) if isinstance(provenance_value, dict) else {}
 
     if event_type in RECALL_EVENT_TYPES:
         external_id = str(
@@ -199,6 +215,8 @@ def normalize_feishu_event(payload: dict[str, object]) -> NormalizedFeishuEvent:
             supported=bool(external_id),
             should_trigger_analysis=False,
             unsupported_reason=None if external_id else "missing_message_id",
+            source_channel=source_channel,
+            provenance=provenance,
         )
 
     message_object = _as_object(event_object.get("message"))
@@ -279,4 +297,6 @@ def normalize_feishu_event(payload: dict[str, object]) -> NormalizedFeishuEvent:
         analysis_disposition=analysis_disposition,
         analysis_policy_version=analysis_policy_version,
         analysis_reasons=analysis_reasons,
+        source_channel=source_channel,
+        provenance=provenance,
     )

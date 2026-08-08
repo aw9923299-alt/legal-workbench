@@ -318,6 +318,12 @@ class DocumentRepository:
         del attachment_ids
         return []
 
+    async def list_latest_feishu_segments_for_messages(
+        self, message_ids: Sequence[UUID]
+    ) -> Sequence[object]:
+        del message_ids
+        return []
+
 
 class FakeUnitOfWork:
     def __init__(self, state: FakeState) -> None:
@@ -486,6 +492,51 @@ async def test_included_attachment_segment_becomes_a_hashed_run_source(tmp_path)
         "fileName": "合同.pdf",
         "pageNumber": 2,
         "paragraphNumber": 3,
+    }
+
+
+@pytest.mark.asyncio
+async def test_included_native_document_segment_becomes_a_hashed_run_source(
+    tmp_path,
+) -> None:  # type: ignore[no-untyped-def]
+    state = FakeState(tmp_path)
+    message = make_message()
+    state.messages[message.id] = message
+    result = await make_handler(state, FakeRuntime(state)).execute(
+        AnalyseFeishuMessageCommand(
+            message_id=message.id,
+            actor_id="system",
+            actor_source="worker",
+            correlation_id="corr-native-document-source",
+        )
+    )
+    run = state.runs[result.agent_run_id]
+    snapshot = state.snapshots[run.context_snapshot_id]
+    snapshot.included_segments = [
+        {
+            "documentId": "22222222-2222-4222-8222-222222222222",
+            "documentToken": "doccnTest",
+            "title": "测试合同",
+            "paragraphNumber": 4,
+            "contentHash": "d" * 64,
+        }
+    ]
+
+    sources = AnalyseFeishuMessageHandler._sources(run, snapshot)
+    source = next(
+        value
+        for value in sources
+        if value.source_type == AgentRunSourceType.KNOWLEDGE_DOCUMENT
+    )
+
+    assert source.source_hash == "d" * 64
+    assert source.source_id.endswith("paragraph:4")
+    assert source.citation_metadata == {
+        "segment": True,
+        "documentId": "22222222-2222-4222-8222-222222222222",
+        "documentToken": "doccnTest",
+        "title": "测试合同",
+        "paragraphNumber": 4,
     }
 
 

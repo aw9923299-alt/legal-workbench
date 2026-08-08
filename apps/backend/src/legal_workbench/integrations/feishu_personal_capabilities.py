@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 from collections.abc import Awaitable
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Literal
 from uuid import UUID
 
 import httpx
@@ -14,6 +16,7 @@ from legal_workbench.application.feishu_user_auth import FeishuUserTokenProvider
 from legal_workbench.config import get_settings
 from legal_workbench.infrastructure.secrets import LocalSecretProvider
 from legal_workbench.infrastructure.unit_of_work import SqlAlchemyUnitOfWorkFactory
+from legal_workbench.integrations.feishu_local_connector import LocalFeishuConnector
 from legal_workbench.integrations.feishu_user_client import FeishuUserClient
 from legal_workbench.integrations.feishu_user_oauth import FeishuOAuthHttpClient
 
@@ -28,6 +31,9 @@ PERSONAL_CAPABILITY_KEYS = (
     "personal_attachment",
     "document_search",
     "document_markdown",
+    "thread_reply",
+    "local_feishu_discovery",
+    "local_api_duplicate_idempotency",
 )
 
 
@@ -35,7 +41,7 @@ class CapabilityResult(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     capability: str
-    status: str
+    status: Literal["passed", "failed", "partial", "unsupported"]
     reason: str
 
 
@@ -47,14 +53,14 @@ class CapabilityReport(BaseModel):
     results: tuple[CapabilityResult, ...]
 
 
-def build_not_executed_report(*, reason: str) -> CapabilityReport:
+def build_unavailable_report(*, reason: str) -> CapabilityReport:
     return CapabilityReport(
         generated_at=datetime.now(UTC),
         real_feishu=False,
         results=tuple(
             CapabilityResult(
                 capability=capability,
-                status="not_executed",
+                status="unsupported",
                 reason=reason,
             )
             for capability in PERSONAL_CAPABILITY_KEYS
@@ -70,6 +76,7 @@ async def run_live_report(
     attachment_message_id: str | None,
     document_query: str | None,
     document_token: str | None,
+    thread_id: str | None,
 ) -> CapabilityReport:
     settings = get_settings()
     uow_factory = SqlAlchemyUnitOfWorkFactory()
@@ -98,14 +105,20 @@ async def run_live_report(
     results: dict[str, CapabilityResult] = {
         key: CapabilityResult(
             capability=key,
-            status="not_executed",
-            reason="required_probe_input_missing",
+            status="unsupported",
+            reason="manual_validation_required:probe_input_missing",
         )
         for key in PERSONAL_CAPABILITY_KEYS
     }
     results["oauth_pkce"] = CapabilityResult(
         capability="oauth_pkce",
-        status="passed" if authorization.status.value == "connected" else "failed",
+        status=(
+            "passed"
+            if authorization.status.value == "connected"
+            else "partial"
+            if authorization.status.value == "permission_missing"
+            else "failed"
+        ),
         reason=f"authorization_status:{authorization.status.value}",
     )
     async with httpx.AsyncClient(
@@ -175,7 +188,7 @@ async def run_live_report(
             p2p_found = any(str(value.get("chat_mode") or "") == "p2p" for value in chats)
             results["p2p_discovery"] = CapabilityResult(
                 capability="p2p_discovery",
-                status="passed" if p2p_found else "officially_limited",
+                status="passed" if p2p_found else "partial",
                 reason="p2p_found_in_chat_list" if p2p_found else "no_p2p_enumeration_evidence",
             )
             unread_visible = any(
@@ -184,8 +197,12 @@ async def run_live_report(
             )
             results["unread_state"] = CapabilityResult(
                 capability="unread_state",
-                status="passed" if unread_visible else "officially_limited",
-                reason="unread_field_visible" if unread_visible else "unread_field_not_returned",
+                status="passed" if unread_visible else "unsupported",
+                reason=(
+                    "unread_field_visible"
+                    if unread_visible
+                    else "manual_validation_required:unread_field_not_returned"
+                ),
             )
         if attachment_message_id:
             attachment = await record(
@@ -195,12 +212,52 @@ async def run_live_report(
                     message_id=attachment_message_id,
                 ),
             )
-            if attachment is not None:
-                results["personal_attachment"] = CapabilityResult(
-                    capability="personal_attachment",
-                    status="metadata_only",
-                    reason="official_user_resource_download_not_available",
+            if isinstance(attachment, dict):
+                body = attachment.get("body")
+                body_object = body if isinstance(body, dict) else {}
+                raw_content = body_object.get("content", attachment.get("content", {}))
+                try:
+                    content = (
+                        json.loads(raw_content)
+                        if isinstance(raw_content, str)
+                        else raw_content
+                    )
+                except json.JSONDecodeError:
+                    content = {}
+                content_object = content if isinstance(content, dict) else {}
+                file_key = str(
+                    content_object.get("file_key")
+                    or content_object.get("image_key")
+                    or ""
+                ).strip()
+                resource_type = (
+                    "image"
+                    if str(attachment.get("msg_type") or attachment.get("message_type"))
+                    == "image"
+                    else "file"
                 )
+                if file_key:
+                    value = await record(
+                        "personal_attachment",
+                        client.download_message_resource(
+                            authorization_id=authorization_id,
+                            message_id=attachment_message_id,
+                            file_key=file_key,
+                            resource_type=resource_type,
+                        ),
+                    )
+                    if value is None:
+                        results["personal_attachment"] = CapabilityResult(
+                            capability="personal_attachment",
+                            status="partial",
+                            reason="metadata_only:resource_unavailable_under_user_identity",
+                        )
+                else:
+                    results["personal_attachment"] = CapabilityResult(
+                        capability="personal_attachment",
+                        status="partial",
+                        reason="message_visible_but_attachment_key_missing",
+                    )
         if document_query:
             await record(
                 "document_search",
@@ -217,6 +274,43 @@ async def run_live_report(
                     document_id=document_token,
                 ),
             )
+        if thread_id:
+            await record(
+                "thread_reply",
+                client.list_thread_messages(
+                    authorization_id=authorization_id,
+                    thread_id=thread_id,
+                    page_token=None,
+                ),
+            )
+    local_report = LocalFeishuConnector().discover()
+    results["local_feishu_discovery"] = CapabilityResult(
+        capability="local_feishu_discovery",
+        status=(
+            "passed"
+            if local_report.client_installed and local_report.roots_readable > 0
+            else "failed"
+        ),
+        reason=(
+            "read_only_discovery_executed:"
+            f"databases={local_report.database_files}:"
+            f"readable_messages={local_report.readable_message_databases}:"
+            f"opaque={local_report.opaque_or_encrypted_databases}"
+        ),
+    )
+    results["local_api_duplicate_idempotency"] = CapabilityResult(
+        capability="local_api_duplicate_idempotency",
+        status=(
+            "partial"
+            if local_report.readable_message_databases > 0
+            else "unsupported"
+        ),
+        reason=(
+            "local_record_selection_required"
+            if local_report.readable_message_databases > 0
+            else "local_message_schema_unavailable"
+        ),
+    )
     return CapabilityReport(
         generated_at=datetime.now(UTC),
         real_feishu=True,
@@ -233,6 +327,7 @@ def main() -> None:
     parser.add_argument("--attachment-message-id")
     parser.add_argument("--document-query")
     parser.add_argument("--document-token")
+    parser.add_argument("--thread-id")
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
     if args.live:
@@ -246,10 +341,13 @@ def main() -> None:
                 attachment_message_id=args.attachment_message_id,
                 document_query=args.document_query,
                 document_token=args.document_token,
+                thread_id=args.thread_id,
             )
         )
     else:
-        report = build_not_executed_report(reason="live_flag_and_real_credentials_required")
+        report = build_unavailable_report(
+            reason="live_flag_and_real_credentials_required"
+        )
     rendered = report.model_dump_json(indent=2)
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)

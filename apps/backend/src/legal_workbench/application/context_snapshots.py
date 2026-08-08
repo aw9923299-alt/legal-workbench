@@ -11,6 +11,7 @@ from legal_workbench.application.ports import UnitOfWorkFactory
 from legal_workbench.domain.entities import (
     ContextSnapshot,
     DocumentSegment,
+    FeishuDocument,
     FeishuMessage,
     MessageAttachment,
 )
@@ -126,6 +127,11 @@ class ContextSnapshotBuilder:
             document_segments = await uow.documents.list_latest_segments(
                 [value.id for value in analysable_attachments]
             )
+            linked_document_segments = (
+                await uow.documents.list_latest_feishu_segments_for_messages(
+                    [message.id for message in selected]
+                )
+            )
             participants = sorted({message.sender_id for message in selected if message.sender_id})
             content, content_metrics = self._build_content(
                 selected,
@@ -142,9 +148,24 @@ class ContextSnapshotBuilder:
                 attachments=attachments,
                 segments=document_segments,
             )
+            (
+                included_document_segments,
+                excluded_document_segments,
+                document_reasons,
+            ) = self._add_feishu_document_segments(
+                content,
+                content_metrics,
+                linked_segments=linked_document_segments,
+                already_included=len(included_segments),
+            )
+            included_segments.extend(included_document_segments)
+            excluded_segments.extend(excluded_document_segments)
+            content["includedSegments"] = included_segments
+            content["excludedSegments"] = excluded_segments
             available_unique_count = len({value.message_id for value in available})
             reasons = list(content_metrics["reasons"])
             reasons.extend(attachment_reasons)
+            reasons.extend(document_reasons)
             if available_unique_count > len(selected):
                 reasons.append("message_count_limit")
             if len(all_attachment_ids) > len(attachment_ids):
@@ -171,6 +192,15 @@ class ContextSnapshotBuilder:
                         }
                         for value in attachments
                     ]
+                    + [
+                        {
+                            "documentId": str(document.id),
+                            "documentToken": document.document_token,
+                            "contentHash": segment.content_hash,
+                            "paragraphNumber": segment.paragraph_number,
+                        }
+                        for document, segment in linked_document_segments
+                    ]
                 ).encode("utf-8")
             ).hexdigest()
             thread_metadata: dict[str, object] = {
@@ -184,6 +214,20 @@ class ContextSnapshotBuilder:
                 "allowedMessageIds": [message.message_id for message in selected],
                 "allowedAttachmentIds": [str(value.id) for value in analysable_attachments],
                 "allowedAttachmentFileKeys": attachment_ids,
+                "allowedFeishuDocumentIds": sorted(
+                    {
+                        value
+                        for segment in included_document_segments
+                        if isinstance((value := segment.get("documentId")), str)
+                    }
+                ),
+                "allowedFeishuDocumentTokens": sorted(
+                    {
+                        value
+                        for segment in included_document_segments
+                        if isinstance((value := segment.get("documentToken")), str)
+                    }
+                ),
                 "databaseAccess": False,
                 "networkAccess": False,
                 "repositoryAccess": False,
@@ -349,6 +393,68 @@ class ContextSnapshotBuilder:
         content["excludedSegments"] = excluded
         content["truncated"] = bool(metrics["reasons"] or reasons)
         content["truncationReason"] = ",".join(sorted(set([*metrics["reasons"], *reasons]))) or None
+        content["originalSize"] = metrics["originalSize"]
+        content["includedSize"] = metrics["includedSize"]
+        return included, excluded, reasons
+
+    def _add_feishu_document_segments(
+        self,
+        content: dict[str, object],
+        metrics: _ContentMetrics,
+        *,
+        linked_segments: Sequence[tuple[FeishuDocument, DocumentSegment]],
+        already_included: int,
+    ) -> tuple[list[dict[str, object]], list[dict[str, object]], list[str]]:
+        remaining = max(self._max_text_characters - metrics["includedSize"], 0)
+        included: list[dict[str, object]] = []
+        excluded: list[dict[str, object]] = []
+        rendered: list[dict[str, object]] = []
+        reasons: list[str] = []
+        for document, segment in sorted(
+            linked_segments,
+            key=lambda value: (
+                value[0].document_token,
+                value[1].paragraph_number,
+            ),
+        ):
+            citation: dict[str, object] = {
+                "documentId": str(document.id),
+                "documentToken": document.document_token,
+                "title": document.title,
+                "paragraphNumber": segment.paragraph_number,
+                "contentHash": segment.content_hash,
+            }
+            metrics["originalSize"] += len(segment.content)
+            reason: str | None = None
+            if len(segment.content) > self._max_single_attachment_segment_characters:
+                reason = "document_segment_character_limit"
+            elif already_included + len(included) >= self._max_attachment_segments:
+                reason = "document_segment_count_limit"
+            elif len(segment.content) > remaining:
+                reason = "document_character_limit"
+            if reason is not None:
+                excluded.append({**citation, "reason": reason})
+                reasons.append(reason)
+                continue
+            included.append(citation)
+            rendered.append(
+                {
+                    **citation,
+                    "content": segment.content,
+                    "untrustedInput": True,
+                }
+            )
+            remaining -= len(segment.content)
+            metrics["includedSize"] += len(segment.content)
+        content["documentSegments"] = rendered
+        prior_reasons = str(content.get("truncationReason") or "").split(",")
+        combined_reasons = sorted(
+            {value for value in [*prior_reasons, *metrics["reasons"], *reasons] if value}
+        )
+        content["truncated"] = bool(combined_reasons)
+        content["truncationReason"] = (
+            ",".join(combined_reasons) or None
+        )
         content["originalSize"] = metrics["originalSize"]
         content["includedSize"] = metrics["includedSize"]
         return included, excluded, reasons

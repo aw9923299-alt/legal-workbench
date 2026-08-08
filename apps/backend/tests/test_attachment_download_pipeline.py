@@ -14,6 +14,7 @@ from legal_workbench.domain.enums import (
     DocumentExtractionStatus,
 )
 from legal_workbench.integrations.feishu_client import FeishuApiError
+from legal_workbench.integrations.feishu_local_connector import LocalFeishuAttachment
 
 
 class _Client:
@@ -220,3 +221,67 @@ async def test_download_failure_does_not_store_sensitive_response(tmp_path) -> N
 
     assert state.attachment.download_error == "FEISHU_ATTACHMENT_DOWNLOAD_FAILED"
     assert "secret" not in (state.attachment.download_error or "")
+
+
+@pytest.mark.asyncio
+async def test_personal_resource_unavailable_keeps_text_analysis_ready(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    state = _State()
+    state.message.plain_text = "请今天审核合同,附件供参考"
+
+    await FeishuOperationsService(
+        settings=_settings(str(tmp_path / "attachments")),
+        uow_factory=state.factory,
+        client=_Client(error=FeishuApiError("user token not supported")),  # type: ignore[arg-type]
+        unavailable_under_user_identity=True,
+    ).download_attachments(state.message.id)
+
+    assert state.attachment.download_status == AttachmentDownloadStatus.METADATA_ONLY
+    assert state.attachment.download_error == "resource_unavailable_under_user_identity"
+    assert state.attachment.extraction_status == DocumentExtractionStatus.BODY_UNAVAILABLE
+    assert (
+        state.attachment.extraction_error_code
+        == "resource_unavailable_under_user_identity"
+    )
+    assert [value.event_type for value in state.outbox] == [
+        "FeishuMessageAnalysisRequested"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_local_attachment_is_copied_then_enters_existing_extraction_pipeline(
+    tmp_path: Path,
+) -> None:
+    state = _State()
+    client_cache = tmp_path / "lark-client-cache"
+    client_cache.mkdir()
+    cached = client_cache / "downloaded-test.txt"
+    cached.write_text("local cached attachment", encoding="utf-8")
+    target_root = tmp_path / "workbench-attachments"
+
+    await FeishuOperationsService(
+        settings=_settings(str(target_root)),
+        uow_factory=state.factory,
+        client=_Client(),  # type: ignore[arg-type]
+    ).materialize_local_attachment(
+        state.message.id,
+        LocalFeishuAttachment(
+            message_id=state.message.message_id,
+            file_key=state.attachment.file_key,
+            file_name="downloaded-test.txt",
+            mime_type="text/plain",
+            size=cached.stat().st_size,
+            local_path=cached,
+        ),
+    )
+
+    attachment = state.attachment
+    assert attachment.download_status == AttachmentDownloadStatus.DOWNLOADED
+    assert attachment.extraction_status == DocumentExtractionStatus.PENDING
+    assert attachment.local_path is not None
+    copied = Path(attachment.local_path)
+    assert copied.is_relative_to(target_root)
+    assert copied.read_text(encoding="utf-8") == "local cached attachment"
+    assert copied != cached
+    assert [value.event_type for value in state.outbox] == [
+        "DocumentExtractionRequested"
+    ]

@@ -468,6 +468,7 @@ export interface FeishuUserAuthorization {
   tenantKey: string;
   displayName: string | null;
   scopes: string[];
+  missingScopes: string[];
   accessExpiresAt: string;
   refreshExpiresAt: string;
   status: FeishuUserAuthorizationStatus;

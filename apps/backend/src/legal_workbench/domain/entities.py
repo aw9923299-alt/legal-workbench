@@ -1587,6 +1587,8 @@ class FeishuRawEvent:
     received_at: datetime = field(default_factory=utc_now)
     processed_at: datetime | None = None
     last_error: str | None = None
+    source_channel: str = "app_event"
+    provenance: dict[str, object] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -1649,6 +1651,10 @@ class FeishuUserAuthorization:
     status: FeishuUserAuthorizationStatus
     last_refreshed_at: datetime | None = None
     last_error_code: str | None = None
+    pending_token_version: int | None = None
+    pending_token_bundle_ref: str | None = None
+    rotation_owner: str | None = None
+    rotation_expires_at: datetime | None = None
     created_at: datetime = field(default_factory=utc_now)
     updated_at: datetime = field(default_factory=utc_now)
 
@@ -1659,6 +1665,13 @@ class FeishuUserAuthorization:
             raise DomainValidationError("Feishu user identity is required.")
         if not self.access_token_ref or not self.refresh_token_ref or self.token_version < 1:
             raise DomainValidationError("Feishu user token references are invalid.")
+        if self.pending_token_version is not None and (
+            self.pending_token_version <= self.token_version
+            or not self.pending_token_bundle_ref
+            or not self.rotation_owner
+            or self.rotation_expires_at is None
+        ):
+            raise DomainValidationError("Pending Feishu token generation is invalid.")
 
     def rotate(
         self,
@@ -1684,6 +1697,12 @@ class FeishuUserAuthorization:
         self.last_error_code = None
         self.updated_at = changed_at
 
+    def clear_pending_rotation(self) -> None:
+        self.pending_token_version = None
+        self.pending_token_bundle_ref = None
+        self.rotation_owner = None
+        self.rotation_expires_at = None
+
 
 @dataclass(slots=True)
 class FeishuSyncCheckpoint:
@@ -1696,23 +1715,92 @@ class FeishuSyncCheckpoint:
     last_error_code: str | None = None
     last_started_at: datetime | None = None
     last_succeeded_at: datetime | None = None
+    lease_owner: str | None = None
+    lease_expires_at: datetime | None = None
+    lease_fence: int = 0
     updated_at: datetime = field(default_factory=utc_now)
 
-    def succeed(self, *, watermark: datetime, now: datetime | None = None) -> None:
+    def claim(
+        self,
+        *,
+        owner: str,
+        expires_at: datetime,
+        now: datetime,
+    ) -> int:
+        require_aware(expires_at, field_name="Sync lease expiry")
+        require_aware(now, field_name="Sync lease claim time")
+        if (
+            self.lease_owner is not None
+            and self.lease_expires_at is not None
+            and self.lease_expires_at > now
+        ):
+            raise DomainValidationError("sync_lease_active")
+        self.lease_owner = owner
+        self.lease_expires_at = expires_at
+        self.lease_fence += 1
+        self.last_started_at = now
+        self.updated_at = now
+        return self.lease_fence
+
+    def renew(
+        self,
+        *,
+        owner: str,
+        fence: int,
+        page_token: str | None,
+        expires_at: datetime,
+        now: datetime,
+    ) -> None:
+        self._require_lease(owner=owner, fence=fence, now=now)
+        require_aware(expires_at, field_name="Sync lease expiry")
+        self.page_token = page_token
+        self.lease_expires_at = expires_at
+        self.updated_at = now
+
+    def succeed(
+        self,
+        *,
+        owner: str,
+        fence: int,
+        watermark: datetime,
+        now: datetime,
+    ) -> None:
+        self._require_lease(owner=owner, fence=fence, now=now)
         require_aware(watermark, field_name="Sync checkpoint watermark")
-        changed_at = now or utc_now()
         self.watermark = watermark
         self.page_token = None
         self.consecutive_failures = 0
         self.last_error_code = None
-        self.last_succeeded_at = changed_at
-        self.updated_at = changed_at
+        self.last_succeeded_at = now
+        self.lease_owner = None
+        self.lease_expires_at = None
+        self.updated_at = now
 
-    def fail(self, *, error_code: str, now: datetime | None = None) -> None:
-        changed_at = now or utc_now()
+    def fail(
+        self,
+        *,
+        owner: str,
+        fence: int,
+        error_code: str,
+        now: datetime,
+    ) -> None:
+        self._require_lease(owner=owner, fence=fence, now=now)
         self.consecutive_failures += 1
         self.last_error_code = error_code
-        self.updated_at = changed_at
+        self.page_token = None
+        self.lease_owner = None
+        self.lease_expires_at = None
+        self.updated_at = now
+
+    def _require_lease(self, *, owner: str, fence: int, now: datetime) -> None:
+        require_aware(now, field_name="Sync lease check time")
+        if (
+            self.lease_owner != owner
+            or self.lease_fence != fence
+            or self.lease_expires_at is None
+            or self.lease_expires_at <= now
+        ):
+            raise DomainValidationError("sync_lease_lost")
 
 
 @dataclass(frozen=True, slots=True)
@@ -1963,6 +2051,9 @@ class FeishuMessage:
     analysis_policy_version: str = "legacy-app-event-v1"
     analysis_reasons: list[str] = field(default_factory=list)
     detected_document_links: list[dict[str, str]] = field(default_factory=list)
+    source_channel: str = "app_event"
+    source_channels: list[str] = field(default_factory=lambda: ["app_event"])
+    provenance: dict[str, object] = field(default_factory=dict)
 
     _TRANSITIONS: ClassVar[dict[FeishuMessageStatus, set[FeishuMessageStatus]]] = {
         FeishuMessageStatus.RECEIVED: {FeishuMessageStatus.QUEUED_FOR_ANALYSIS},
