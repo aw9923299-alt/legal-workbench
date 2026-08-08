@@ -183,7 +183,7 @@ npm run build
 
 部分实现：
 
-- 飞书开关关闭时真实入口 fail closed；长连接缺少 App ID/Secret、Webhook 缺少 Verification Token 时拒绝启动。当前环境未提供真实凭证，长连接与远端时间窗补偿仅通过 Fake/自动化测试验证；Webhook 加密载荷仍明确拒绝；
+- 飞书开关关闭时真实入口 fail closed；长连接缺少 App ID/Secret、Webhook 缺少 Verification Token 时拒绝启动。当前 Mac 已通过现有官方用户身份实测 P2P/群/Thread/文档读取并将一条非敏感测试消息写入 PostgreSQL；工作台自身 App Secret/redirect 尚未配置，因此 OAuth/Refresh 闭环仍不得写成通过。Webhook 加密载荷仍明确拒绝；
 - 容器 Worker 以专用 UID、最小环境变量和无知识目录挂载运行 Codex；主机模式仍依赖 Codex 自身只读沙箱，不声称是完整 OS 级隔离。
 - `CODEX_CLI_VERSION` 是唯一部署版本来源；当前宿主 CLI 与新构建 Worker 镜像均为 `0.146.0`。隔离 Worker 仍未配置 Codex 认证，因此真实 Codex 推理未执行，11 类消息仅通过 Fake Runtime + 真实 PostgreSQL 验证。
 - `infra/launchd` 已提供登录后/每 5 分钟自检和每日 03:15 备份模板；模板尚未写入当前用户的 `~/Library/LaunchAgents`，安装前必须替换绝对路径并确认 `.env` 已含 `CODEX_CLI_VERSION=0.146.0`。
