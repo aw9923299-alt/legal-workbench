@@ -13,6 +13,7 @@ from legal_workbench.domain.entities import (
     DocumentExtraction,
     DocumentSegment,
     DocumentVersion,
+    FeishuMessage,
     MessageAttachment,
     OutboxEvent,
 )
@@ -190,9 +191,8 @@ class _AttachmentRepository:
             if value.feishu_message_id == message_id
         )
 
-    async def get_message_by_id(self, message_id: UUID) -> None:
-        del message_id
-        return None
+    async def get_message_by_id(self, message_id: UUID) -> FeishuMessage | None:
+        return self._state.messages.get(message_id)
 
 
 class _OutboxRepository:
@@ -301,6 +301,7 @@ class _ExtractionUnitOfWork:
 class _ExtractionState:
     def __init__(self) -> None:
         self.attachments: dict[UUID, MessageAttachment] = {}
+        self.messages: dict[UUID, FeishuMessage] = {}
         self.versions: dict[UUID, DocumentVersion] = {}
         self.extractions: dict[UUID, DocumentExtraction] = {}
         self.segments: list[DocumentSegment] = []
@@ -310,6 +311,33 @@ class _ExtractionState:
 
     def factory(self) -> _ExtractionUnitOfWork:
         return _ExtractionUnitOfWork(self)
+
+    def add_attachment(
+        self,
+        attachment: MessageAttachment,
+        *,
+        disposition: str = "analyze",
+    ) -> None:
+        self.attachments[attachment.id] = attachment
+        self.messages[attachment.feishu_message_id] = FeishuMessage(
+            id=attachment.feishu_message_id,
+            event_id=uuid4(),
+            tenant_key="tenant-test",
+            message_id="om-extraction-test",
+            chat_id="oc-extraction-test",
+            thread_id=None,
+            root_id=None,
+            parent_id=None,
+            sender_id="ou-test",
+            sender_type="user",
+            message_type="file",
+            content={},
+            mentions=[],
+            create_time=None,
+            update_time=None,
+            raw_message={},
+            analysis_disposition=disposition,
+        )
 
 
 class _RecordingRunner:
@@ -361,7 +389,7 @@ async def test_extraction_process_runs_outside_database_transaction(
     document.write_text("第一段。", encoding="utf-8")
     state = _ExtractionState()
     attachment = _downloaded_attachment(document)
-    state.attachments[attachment.id] = attachment
+    state.add_attachment(attachment)
     runner = _RecordingRunner(
         state,
         ExtractedDocument(
@@ -401,7 +429,7 @@ async def test_extraction_timeout_is_persisted_without_segments(tmp_path: Path) 
     document.write_text("第一段。", encoding="utf-8")
     state = _ExtractionState()
     attachment = _downloaded_attachment(document)
-    state.attachments[attachment.id] = attachment
+    state.add_attachment(attachment)
     runner = _RecordingRunner(
         state,
         error=ExtractionProcessTimeoutError("timed out"),
@@ -415,6 +443,46 @@ async def test_extraction_timeout_is_persisted_without_segments(tmp_path: Path) 
     assert state.segments == []
 
 
+@pytest.mark.parametrize(
+    ("result_status", "error_code"),
+    [
+        (DocumentExtractionStatus.SUCCEEDED, None),
+        (DocumentExtractionStatus.BODY_UNAVAILABLE, "DOCUMENT_BODY_UNAVAILABLE"),
+        (DocumentExtractionStatus.FAILED, "DOCUMENT_EXTRACTION_FAILED"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_store_only_terminal_extraction_never_requests_analysis(
+    tmp_path: Path,
+    result_status: DocumentExtractionStatus,
+    error_code: str | None,
+) -> None:
+    root = tmp_path / "attachments"
+    root.mkdir()
+    document = root / "sample.txt"
+    document.write_text("第一段。", encoding="utf-8")
+    state = _ExtractionState()
+    attachment = _downloaded_attachment(document)
+    state.add_attachment(attachment, disposition="store_only")
+    runner = _RecordingRunner(
+        state,
+        ExtractedDocument(
+            status=result_status,
+            segments=(),
+            page_count=None,
+            character_count=0,
+            error_code=error_code,
+        ),
+    )
+
+    extraction = await DocumentExtractionService(state.factory, runner).execute(
+        attachment.id
+    )
+
+    assert extraction.status == result_status
+    assert state.outbox_events == []
+
+
 @pytest.mark.asyncio
 async def test_terminal_extraction_delivery_is_idempotent(tmp_path: Path) -> None:
     root = tmp_path / "attachments"
@@ -423,7 +491,7 @@ async def test_terminal_extraction_delivery_is_idempotent(tmp_path: Path) -> Non
     document.write_text("第一段。", encoding="utf-8")
     state = _ExtractionState()
     attachment = _downloaded_attachment(document)
-    state.attachments[attachment.id] = attachment
+    state.add_attachment(attachment)
     runner = _RecordingRunner(
         state,
         ExtractedDocument(

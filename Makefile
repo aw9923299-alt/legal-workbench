@@ -1,4 +1,4 @@
-.PHONY: setup-web setup-backend web-dev backend-dev test lint compose-up compose-down compose-logs migrate ops-start ops-stop ops-wake-check ops-backup ops-diagnostics ops-cleanup
+.PHONY: setup-web setup-backend web-dev backend-dev test lint compose-up compose-down compose-logs migrate feishu-local-sync ops-start ops-stop ops-wake-check ops-backup ops-diagnostics ops-cleanup
 
 PYTHON := .venv/bin/python
 
@@ -25,6 +25,9 @@ lint:
 
 migrate:
 	$(PYTHON) -m alembic -c apps/backend/alembic.ini upgrade head
+
+feishu-local-sync:
+	PYTHONPATH=apps/backend/src $(PYTHON) -m legal_workbench.integrations.feishu_local_connector --sync --authorization-id "$(AUTHORIZATION_ID)" --account-id-hash "$(ACCOUNT_ID_HASH)"
 
 compose-up:
 	docker compose up -d --build

@@ -77,7 +77,7 @@ async def test_fake_evaluation_suite_persists_to_postgresql() -> None:
             ).scalar_one()
 
         assert report.run.status == EvaluationRunStatus.COMPLETED
-        assert persisted == ("completed", "fake", "2.1.0", "11", 11, 11, 8)
+        assert persisted == ("completed", "fake", "2.2.0", "11", 11, 11, 8)
         assert audit_count == 2
     finally:
         await engine.dispose()

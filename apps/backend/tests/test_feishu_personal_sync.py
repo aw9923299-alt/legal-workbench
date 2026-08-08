@@ -173,7 +173,9 @@ async def test_user_message_adapter_always_uses_unified_ingestion_handler() -> N
     )
 
     command = handler.commands[0]
-    assert command.event_id == "uat:tenant-personal:om-user-1:1786150000000"
+    assert command.event_id == (
+        "uat:tenant-personal:om-user-1:1786150000000:feishu-personal-analysis-v2"
+    )
     assert command.raw_payload["source"] == "user_history_sync"
     assert command.raw_payload["source_channel"] == "user_api"
     assert command.raw_payload["analysis_disposition"] == "store_only"
@@ -256,6 +258,34 @@ async def test_message_document_link_is_imported_through_native_document_pipelin
             "source_message_id": UUID("00000000-0000-0000-0000-000000000206"),
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_missing_document_capability_does_not_fail_message_checkpoint() -> None:
+    now = datetime(2026, 8, 8, 8, 0, tzinfo=UTC)
+    repository = CheckpointRepository()
+    linked_message = raw_message("om-doc-metadata-only", 1786176000000)
+    linked_message["body"] = {
+        "content": '{"text":"请看 https://acme.feishu.cn/docx/doccnNoPermission"}'
+    }
+    service = PersonalMessageSyncService(
+        lambda: UnitOfWork(repository),
+        user_client=UserClient(
+            [UserMessagePage(items=(linked_message,), next_page_token=None)]
+        ),
+        ingestion_adapter=UserMessageIngestionAdapter(CapturingHandler()),
+        document_sync=None,
+        clock=lambda: now,
+    )
+
+    result = await service.sync_scope(
+        scope=allowed_scope(),
+        tenant_key="tenant-personal",
+    )
+
+    assert result.ingested_count == 1
+    assert repository.value is not None
+    assert repository.value.watermark == now
 
 
 @pytest.mark.asyncio

@@ -1,0 +1,64 @@
+{
+  "generated_at": "2026-08-08T16:40:00Z",
+  "identity_source": "workbench_oauth_pkce",
+  "oauth": {
+    "status": "passed",
+    "authorization_status": "connected",
+    "cli_token_used": false
+  },
+  "refresh": {
+    "status": "passed",
+    "generation_before": 1,
+    "generation_after": 2,
+    "rotation_phase": "activated",
+    "user_api_after_rotation": "passed"
+  },
+  "capabilities": {
+    "identity": "ready",
+    "messages": "ready",
+    "chat_discovery": "ready",
+    "documents": "ready",
+    "drive": "partial",
+    "attachments": "partial"
+  },
+  "sync": {
+    "manual": "passed",
+    "scheduled": "passed",
+    "scheduled_scope_count": 1,
+    "scheduled_failed_scope_count": 0,
+    "runtime_factory": "shared"
+  },
+  "real_codex": {
+    "status": "passed",
+    "runtime": "CodexCliRuntime",
+    "runtime_version": "0.146.0",
+    "agent_run_status": "completed",
+    "agent_definition_version": "2.2.0",
+    "candidate_status": "pending_confirmation",
+    "candidate_api_query": "passed",
+    "candidate_confirmed": false,
+    "matter_created": false,
+    "work_item_created": false
+  },
+  "store_only_attachment": {
+    "status": "passed",
+    "source": "real_feishu_user_api",
+    "download_status": "downloaded",
+    "extraction_status": "body_unavailable",
+    "analysis_outbox_count": 0,
+    "context_snapshot_count": 0,
+    "agent_run_count": 0,
+    "candidate_count": 0
+  },
+  "local_connector": {
+    "status": "supported_but_no_readable_local_records",
+    "readable_records": 0,
+    "decryption_attempted": false
+  },
+  "secret_leak_scan": {
+    "status": "passed",
+    "postgres_match_count": 0,
+    "redis_match_count": 0,
+    "workspace_match_count": 0
+  }
+}

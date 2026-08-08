@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import TracebackType
+from typing import cast
 from uuid import UUID, uuid4
 
 import pytest
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from legal_workbench.application.feishu_operations import FeishuOperationsService
 from legal_workbench.config import Settings
@@ -13,6 +15,8 @@ from legal_workbench.domain.enums import (
     AttachmentDownloadStatus,
     DocumentExtractionStatus,
 )
+from legal_workbench.infrastructure.models import FeishuAttachmentModel
+from legal_workbench.infrastructure.repositories import SqlAlchemyFeishuRepository
 from legal_workbench.integrations.feishu_client import FeishuApiError
 from legal_workbench.integrations.feishu_local_connector import LocalFeishuAttachment
 
@@ -192,6 +196,32 @@ async def test_download_uses_safe_path_and_enqueues_extraction(tmp_path) -> None
 
 
 @pytest.mark.asyncio
+async def test_repository_persists_downloaded_attachment_mime_type_and_size() -> None:
+    state = _State()
+    attachment = state.attachment
+    attachment.mime_type = "text/plain"
+    attachment.size = 42
+    model = FeishuAttachmentModel(
+        id=attachment.id,
+        feishu_message_id=attachment.feishu_message_id,
+        message_version_id=attachment.message_version_id,
+        file_key=attachment.file_key,
+        file_name=attachment.file_name,
+        mime_type=None,
+        size=None,
+        download_status=attachment.download_status,
+        extraction_status=attachment.extraction_status,
+    )
+    repository = SqlAlchemyFeishuRepository(cast(AsyncSession, object()))
+    repository._tracked_attachments[attachment.id] = model
+
+    await repository.save_attachment(attachment)
+
+    assert model.mime_type == "text/plain"
+    assert model.size == 42
+
+
+@pytest.mark.asyncio
 async def test_quota_failure_persists_code_without_external_error_text(tmp_path) -> None:  # type: ignore[no-untyped-def]
     state = _State()
     state.quota_available = False
@@ -207,6 +237,22 @@ async def test_quota_failure_persists_code_without_external_error_text(tmp_path)
     assert [value.event_type for value in state.outbox] == [
         "FeishuMessageAnalysisRequested"
     ]
+
+
+@pytest.mark.asyncio
+async def test_store_only_download_failure_never_requests_analysis(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    state = _State()
+    state.message.analysis_disposition = "store_only"
+    state.quota_available = False
+
+    await FeishuOperationsService(
+        settings=_settings(str(tmp_path / "attachments")),
+        uow_factory=state.factory,
+        client=_Client(),  # type: ignore[arg-type]
+    ).download_attachments(state.message.id)
+
+    assert state.attachment.download_status == AttachmentDownloadStatus.FAILED
+    assert state.outbox == []
 
 
 @pytest.mark.asyncio
@@ -248,6 +294,62 @@ async def test_personal_resource_unavailable_keeps_text_analysis_ready(tmp_path)
 
 
 @pytest.mark.asyncio
+async def test_store_only_metadata_fallback_never_requests_analysis(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    state = _State()
+    state.message.analysis_disposition = "store_only"
+
+    await FeishuOperationsService(
+        settings=_settings(str(tmp_path / "attachments")),
+        uow_factory=state.factory,
+        client=_Client(error=FeishuApiError("user token not supported")),  # type: ignore[arg-type]
+        unavailable_under_user_identity=True,
+    ).download_attachments(state.message.id)
+
+    assert state.attachment.download_status == AttachmentDownloadStatus.METADATA_ONLY
+    assert state.attachment.extraction_status == DocumentExtractionStatus.BODY_UNAVAILABLE
+    assert state.outbox == []
+
+
+@pytest.mark.asyncio
+async def test_missing_attachment_capability_goes_directly_to_metadata_only(
+    tmp_path: Path,
+) -> None:
+    state = _State()
+    state.message.analysis_disposition = "store_only"
+    client = _Client(error=AssertionError("download must not be attempted"))
+
+    await FeishuOperationsService(
+        settings=_settings(str(tmp_path / "attachments")),
+        uow_factory=state.factory,
+        client=client,  # type: ignore[arg-type]
+        force_metadata_only_reason="attachment_read_permission_missing",
+    ).download_attachments(state.message.id)
+
+    assert state.attachment.download_status == AttachmentDownloadStatus.METADATA_ONLY
+    assert state.attachment.extraction_status == DocumentExtractionStatus.BODY_UNAVAILABLE
+    assert state.attachment.download_error == "attachment_read_permission_missing"
+    assert state.outbox == []
+
+
+@pytest.mark.asyncio
+async def test_missing_attachment_capability_still_gates_analyze_message(
+    tmp_path: Path,
+) -> None:
+    state = _State()
+
+    await FeishuOperationsService(
+        settings=_settings(str(tmp_path / "attachments")),
+        uow_factory=state.factory,
+        client=_Client(error=AssertionError("download must not be attempted")),  # type: ignore[arg-type]
+        force_metadata_only_reason="attachment_read_permission_missing",
+    ).download_attachments(state.message.id)
+
+    assert [value.event_type for value in state.outbox] == [
+        "FeishuMessageAnalysisRequested"
+    ]
+
+
+@pytest.mark.asyncio
 async def test_local_attachment_is_copied_then_enters_existing_extraction_pipeline(
     tmp_path: Path,
 ) -> None:
@@ -282,6 +384,38 @@ async def test_local_attachment_is_copied_then_enters_existing_extraction_pipeli
     assert copied.is_relative_to(target_root)
     assert copied.read_text(encoding="utf-8") == "local cached attachment"
     assert copied != cached
+    assert [value.event_type for value in state.outbox] == [
+        "DocumentExtractionRequested"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_store_only_local_materialization_only_requests_extraction(
+    tmp_path: Path,
+) -> None:
+    state = _State()
+    state.message.analysis_disposition = "store_only"
+    client_cache = tmp_path / "lark-client-cache"
+    client_cache.mkdir()
+    cached = client_cache / "downloaded-test.txt"
+    cached.write_text("local cached attachment", encoding="utf-8")
+
+    await FeishuOperationsService(
+        settings=_settings(str(tmp_path / "workbench-attachments")),
+        uow_factory=state.factory,
+        client=_Client(),  # type: ignore[arg-type]
+    ).materialize_local_attachment(
+        state.message.id,
+        LocalFeishuAttachment(
+            message_id=state.message.message_id,
+            file_key=state.attachment.file_key,
+            file_name="downloaded-test.txt",
+            mime_type="text/plain",
+            size=cached.stat().st_size,
+            local_path=cached,
+        ),
+    )
+
     assert [value.event_type for value in state.outbox] == [
         "DocumentExtractionRequested"
     ]

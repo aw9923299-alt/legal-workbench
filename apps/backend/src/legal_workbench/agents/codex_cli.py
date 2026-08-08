@@ -15,6 +15,7 @@ from legal_workbench.agents.codex_health import (
     CodexHealthStatus,
     CodexRuntimeHealthChecker,
 )
+from legal_workbench.agents.definitions import build_message_judgement_definition
 from legal_workbench.agents.message_judgement import (
     MessageJudgementInput,
     MessageJudgementResult,
@@ -66,6 +67,11 @@ class CodexCliRuntime:
         self._command = configured
         self._verify_health = command is None
         self._expected_version = settings.codex_expected_version
+        self._auth_home = (
+            Path(settings.codex_auth_home).resolve()
+            if settings.codex_auth_home
+            else None
+        )
         self._runtime_version: str | None = None
         self._stdout_limit = stdout_limit_bytes
         self._stderr_limit = stderr_limit_bytes
@@ -87,6 +93,7 @@ class CodexCliRuntime:
                 command=self._command,
                 expected_version=self._expected_version,
                 runs_root=self._runs_root,
+                auth_home=self._auth_home,
             ).check()
             if health.status != CodexHealthStatus.AVAILABLE:
                 code = {
@@ -97,9 +104,13 @@ class CodexCliRuntime:
                 }[health.status]
                 raise AgentRuntimeError(code, health.detail, retryable=False)
             self._runtime_version = health.detected_version
-        if definition.input_schema != MessageJudgementInput.model_json_schema(
-            by_alias=True
-        ) or definition.output_schema != MessageJudgementResult.model_json_schema(by_alias=True):
+        runtime_contract = build_message_judgement_definition(
+            timeout_seconds=definition.timeout_seconds
+        )
+        if (
+            definition.input_schema != MessageJudgementInput.model_json_schema(by_alias=True)
+            or definition.output_schema != runtime_contract.output_schema
+        ):
             raise AgentRuntimeError(
                 "AGENT_DEFINITION_DISABLED",
                 "Agent schemas do not match the runtime contract for this version.",
@@ -231,8 +242,6 @@ class CodexCliRuntime:
             "--disable",
             "workspace_dependencies",
             "-c",
-            "include_apply_patch_tool=false",
-            "-c",
             'web_search="disabled"',
             "--skip-git-repo-check",
             "--sandbox",
@@ -301,7 +310,7 @@ class CodexCliRuntime:
             process = await asyncio.create_subprocess_exec(
                 *command,
                 cwd=run_dir,
-                env=self._environment(run_dir),
+                env=self._environment(run_dir, auth_home=self._auth_home),
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
@@ -489,13 +498,18 @@ class CodexCliRuntime:
         os.setuid(self._run_uid)
 
     @staticmethod
-    def _environment(run_dir: Path) -> dict[str, str]:
+    def _environment(
+        run_dir: Path,
+        *,
+        auth_home: Path | None = None,
+    ) -> dict[str, str]:
         empty_home = str(run_dir / "empty_home")
         environment = {
             "HOME": empty_home,
-            "CODEX_HOME": empty_home,
+            "CODEX_HOME": str(auth_home or empty_home),
             "TMPDIR": str(run_dir),
             "LANG": "C.UTF-8",
+            "PATH": os.environ.get("PATH", os.defpath),
         }
         for name in ("OPENAI_API_KEY", "SSL_CERT_FILE"):
             value = os.environ.get(name)

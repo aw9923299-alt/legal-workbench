@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
+from typing import Any
 from uuid import NAMESPACE_URL, uuid5
 
 from legal_workbench.agents.message_judgement import (
@@ -12,7 +14,7 @@ from legal_workbench.domain.entities import AgentDefinition
 from legal_workbench.domain.enums import AgentDefinitionStatus
 
 MESSAGE_JUDGEMENT_KEY = "message_judgement"
-MESSAGE_JUDGEMENT_VERSION = "2.1.0"
+MESSAGE_JUDGEMENT_VERSION = "2.2.0"
 
 MESSAGE_JUDGEMENT_PROMPT = """你是法务工作台的消息研判 Agent。
 只分析系统提示末尾 authorized_context_json 中明确授权的本次飞书上下文。
@@ -39,6 +41,30 @@ MESSAGE_JUDGEMENT_PROMPT = """你是法务工作台的消息研判 Agent。
 """
 
 
+def _codex_output_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    """Normalize Pydantic JSON Schema to Codex strict structured-output rules."""
+
+    normalized = deepcopy(schema)
+
+    def visit(value: object) -> None:
+        if isinstance(value, list):
+            for item in value:
+                visit(item)
+            return
+        if not isinstance(value, dict):
+            return
+        value.pop("default", None)
+        properties = value.get("properties")
+        if isinstance(properties, dict):
+            value["required"] = list(properties)
+            value["additionalProperties"] = False
+        for item in value.values():
+            visit(item)
+
+    visit(normalized)
+    return normalized
+
+
 def build_message_judgement_definition(*, timeout_seconds: int = 120) -> AgentDefinition:
     definition_id = uuid5(
         NAMESPACE_URL, f"legal-workbench:{MESSAGE_JUDGEMENT_KEY}:{MESSAGE_JUDGEMENT_VERSION}"
@@ -52,7 +78,9 @@ def build_message_judgement_definition(*, timeout_seconds: int = 120) -> AgentDe
         status=AgentDefinitionStatus.ACTIVE,
         prompt_template=MESSAGE_JUDGEMENT_PROMPT,
         input_schema=MessageJudgementInput.model_json_schema(by_alias=True),
-        output_schema=MessageJudgementResult.model_json_schema(by_alias=True),
+        output_schema=_codex_output_schema(
+            MessageJudgementResult.model_json_schema(by_alias=True)
+        ),
         allowed_tools=[],
         allowed_knowledge_scopes=[],
         timeout_seconds=timeout_seconds,

@@ -51,6 +51,9 @@ class FeishuRepository:
             None,
         )
 
+    async def get_message_by_id(self, message_id: object) -> FeishuMessage | None:
+        return next((value for value in self.messages if value.id == message_id), None)
+
     async def add_message(self, value: FeishuMessage) -> None:
         self.messages.append(value)
 
@@ -95,6 +98,9 @@ def command(*, event_id: str, source_channel: str, text: str) -> IngestFeishuEve
     payload: dict[str, object] = {
         "schema": "2.0",
         "source_channel": source_channel,
+        "analysis_disposition": "store_only",
+        "analysis_policy_version": "feishu-personal-analysis-v2",
+        "analysis_reasons": ["no_priority_signal"],
         "provenance": {"connector": source_channel, "contentHash": text},
         "header": {
             "event_id": event_id,
@@ -157,3 +163,30 @@ async def test_official_source_upgrades_local_record_without_duplicate_message()
         "user_api",
         "local_client",
     ]
+
+
+@pytest.mark.asyncio
+async def test_app_event_has_priority_over_user_api_and_local_client() -> None:
+    repository = FeishuRepository()
+    handler = IngestFeishuEventHandler(lambda: UnitOfWork(repository))
+
+    await handler.execute(
+        command(event_id="local:priority:1", source_channel="local_client", text="缓存")
+    )
+    await handler.execute(
+        command(event_id="user:priority:1", source_channel="user_api", text="用户接口")
+    )
+    app = await handler.execute(
+        command(event_id="app:priority:1", source_channel="app_event", text="应用事件")
+    )
+    later_user = await handler.execute(
+        command(event_id="user:priority:2", source_channel="user_api", text="迟到接口")
+    )
+
+    assert len(repository.messages) == 1
+    message = repository.messages[0]
+    assert message.id == app.message_id == later_user.message_id
+    assert message.plain_text == "应用事件"
+    assert message.source_channel == "app_event"
+    assert message.source_channels == ["local_client", "user_api", "app_event"]
+    assert later_user.duplicate is True

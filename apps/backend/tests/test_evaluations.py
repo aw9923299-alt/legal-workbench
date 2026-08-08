@@ -248,7 +248,7 @@ async def test_fake_suite_persists_cases_results_metrics_and_audit() -> None:
     replay = await service.run(command)
 
     assert report.run.status == EvaluationRunStatus.COMPLETED
-    assert report.run.agent_definition_version == "2.1.0"
+    assert report.run.agent_definition_version == "2.2.0"
     assert report.run.metrics["case_count"] == 11
     assert report.run.metrics["legal_relevance_accuracy"] == 1.0
     assert report.run.metrics["irrelevant_candidate_false_positive_rate"] == 0.0

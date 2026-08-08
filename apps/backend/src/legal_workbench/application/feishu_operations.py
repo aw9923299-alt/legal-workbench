@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Protocol, cast
 from uuid import UUID, uuid4
 
+from legal_workbench.application.automatic_analysis_gate import AutomaticAnalysisGate
 from legal_workbench.application.commands import IngestFeishuEventCommand
 from legal_workbench.application.feishu_handlers import IngestFeishuEventHandler
 from legal_workbench.application.idempotency import request_hash, require_matching_replay
@@ -119,11 +120,15 @@ class FeishuOperationsService:
         uow_factory: UnitOfWorkFactory,
         client: MessageResourceClient | None = None,
         unavailable_under_user_identity: bool = False,
+        force_metadata_only_reason: str | None = None,
+        analysis_gate: AutomaticAnalysisGate | None = None,
     ) -> None:
         self._settings = settings
         self._uow_factory = uow_factory
         self._client = client or FeishuApiClient(settings)
         self._unavailable_under_user_identity = unavailable_under_user_identity
+        self._force_metadata_only_reason = force_metadata_only_reason
+        self._analysis_gate = analysis_gate or AutomaticAnalysisGate()
 
     async def get_connection(self) -> IntegrationConnection:
         mode = _connection_mode(self._settings)
@@ -329,6 +334,21 @@ class FeishuOperationsService:
             message = await uow.feishu.get_message_by_id(message_id)
             attachments = list(await uow.feishu.list_pending_attachments(message_id))
         if message is None:
+            return
+        if self._force_metadata_only_reason is not None:
+            now = datetime.now(UTC)
+            async with self._uow_factory() as uow:
+                for attachment in attachments:
+                    attachment.download_status = AttachmentDownloadStatus.METADATA_ONLY
+                    attachment.download_error = self._force_metadata_only_reason
+                    attachment.extraction_status = (
+                        DocumentExtractionStatus.BODY_UNAVAILABLE
+                    )
+                    attachment.extraction_error_code = self._force_metadata_only_reason
+                    attachment.updated_at = now
+                    await uow.feishu.save_attachment(attachment)
+                await uow.commit()
+            await self._request_analysis_after_download_failures(message_id)
             return
         for attachment in attachments:
             reservation_token: UUID | None = None
@@ -542,26 +562,14 @@ class FeishuOperationsService:
                 for value in attachments
             ):
                 return
-            if await uow.outbox_events.exists_pending(
-                event_type="FeishuMessageAnalysisRequested",
-                aggregate_id=message_id,
-            ):
-                return
             message = await uow.feishu.get_message_by_id(message_id)
-            await uow.outbox_events.add(
-                OutboxEvent(
-                    id=uuid4(),
-                    event_type="FeishuMessageAnalysisRequested",
-                    aggregate_type="feishu_message",
-                    aggregate_id=message_id,
-                    payload={
-                        "messageId": str(message_id),
-                        "actorId": "feishu-connector",
-                        "actorSource": "integration",
-                        "forceNewRun": bool(message is not None and message.version > 1),
-                    },
-                    correlation_id=f"attachment-analysis:{message_id}",
-                )
+            await self._analysis_gate.request_if_allowed(
+                uow,
+                message_id,
+                actor_id="feishu-connector",
+                actor_source="integration",
+                correlation_id=f"attachment-analysis:{message_id}",
+                force_new_run=bool(message is not None and message.version > 1),
             )
             await uow.commit()
 

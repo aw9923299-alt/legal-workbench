@@ -1,12 +1,9 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from dataclasses import dataclass
-from datetime import timedelta
 from typing import Annotated
 from uuid import UUID
 
-import httpx
 from fastapi import APIRouter, Depends, Query
 
 from legal_workbench.api.auth import RequestActor
@@ -18,6 +15,7 @@ from legal_workbench.api.dependencies import (
     get_uow_factory,
 )
 from legal_workbench.api.schemas.feishu_user import (
+    FeishuCapabilityResponse,
     FeishuUserAuthorizationResponse,
     FeishuUserDisconnectResponse,
     FeishuUserOAuthCallbackResponse,
@@ -27,84 +25,56 @@ from legal_workbench.api.schemas.feishu_user import (
     StartFeishuUserAuthorizationResponse,
     SubscribeFeishuFolderRequest,
 )
-from legal_workbench.application.feishu_documents import (
-    FeishuDocumentSyncService,
-    FeishuFolderSubscriptionService,
-    FeishuFolderSyncService,
-)
-from legal_workbench.application.feishu_handlers import IngestFeishuEventHandler
-from legal_workbench.application.feishu_operations import FeishuOperationsService
-from legal_workbench.application.feishu_personal_sync import (
-    PersonalMessageSyncService,
-    PersonalSyncResult,
-    UserMessageIngestionAdapter,
+from legal_workbench.application.feishu_capabilities import (
+    CAPABILITY_LABELS,
+    INITIAL_OAUTH_SCOPES,
+    FeishuCapability,
+    authorization_is_usable,
+    project_capabilities,
 )
 from legal_workbench.application.feishu_scopes import FeishuScopeService
-from legal_workbench.application.feishu_user_auth import (
-    FeishuOAuthService,
-    FeishuUserTokenProvider,
-)
 from legal_workbench.config import Settings, get_settings
 from legal_workbench.domain.entities import FeishuDocumentSubscription
-from legal_workbench.domain.errors import DomainValidationError, EntityNotFoundError
-from legal_workbench.infrastructure.secrets import LocalSecretProvider
+from legal_workbench.infrastructure.feishu_personal_runtime import (
+    PersonalSyncRuntime,
+    PersonalSyncRuntimeFactory,
+)
 from legal_workbench.infrastructure.unit_of_work import SqlAlchemyUnitOfWorkFactory
 from legal_workbench.integrations.feishu_local_connector import LocalFeishuConnector
-from legal_workbench.integrations.feishu_user_client import FeishuUserClient
-from legal_workbench.integrations.feishu_user_oauth import FeishuOAuthHttpClient
 
 router = APIRouter(prefix="/integrations/feishu-user", tags=["feishu-user"])
-
-USER_SCOPES = (
-    "offline_access",
-    "contact:user.base:readonly",
-    "im:message:readonly",
-    "im:message:get_as_user",
-    "im:message.p2p_msg:get_as_user",
-    "im:message.group_msg:get_as_user",
-    "im:chat:read",
-    "im:chat:readonly",
-    "drive:drive.search:readonly",
-    "drive:drive.metadata:readonly",
-    "drive:drive:readonly",
-    "docs:document.content:read",
+oauth_callback_router = APIRouter(
+    prefix="/integrations/feishu-user",
+    tags=["feishu-user"],
 )
 
-
-@dataclass(slots=True)
-class FeishuUserRuntime:
-    oauth: FeishuOAuthService
-    user_client: FeishuUserClient
-
-
-@dataclass(slots=True)
-class _AuthorizedUserResourceClient:
-    user_client: FeishuUserClient
-    authorization_id: UUID
-
-    async def download_message_resource(
-        self,
-        *,
-        message_id: str,
-        file_key: str,
-        resource_type: str,
-    ) -> tuple[bytes, str, int]:
-        return await self.user_client.download_message_resource(
-            authorization_id=self.authorization_id,
-            message_id=message_id,
-            file_key=file_key,
-            resource_type=resource_type,
-        )
+USER_SCOPES = INITIAL_OAUTH_SCOPES
 
 
 def _authorization_response(value: object) -> FeishuUserAuthorizationResponse:
     response = FeishuUserAuthorizationResponse.model_validate(value)
-    granted = set(response.scopes)
+    projections = project_capabilities(response.scopes)
+    usable = authorization_is_usable(projections)
+    status = response.status
+    if status.value == "permission_missing" and usable:
+        status = type(response.status).CONNECTED
     return response.model_copy(
         update={
-            "missing_scopes": tuple(
-                scope for scope in USER_SCOPES if scope not in granted
-            )
+            "status": status,
+            "missing_scopes": projections[
+                FeishuCapability.CORE_IDENTITY
+            ].missing_scopes,
+            "capabilities": tuple(
+                FeishuCapabilityResponse(
+                    capability=capability,
+                    label=CAPABILITY_LABELS[capability],
+                    status=projection.status,
+                    granted_scopes=projection.granted_scopes,
+                    missing_scopes=projection.missing_scopes,
+                )
+                for capability, projection in projections.items()
+            ),
+            "usable": usable,
         }
     )
 
@@ -124,76 +94,21 @@ def _folder_subscription_payload(
     }
 
 
-def _folder_subscription_service(
-    *,
-    uow_factory: SqlAlchemyUnitOfWorkFactory,
-    user_client: FeishuUserClient,
-) -> FeishuFolderSubscriptionService:
-    document_sync = FeishuDocumentSyncService(uow_factory, client=user_client)
-    return FeishuFolderSubscriptionService(
-        uow_factory,
-        folder_sync=FeishuFolderSyncService(
-            client=user_client,
-            document_sync=document_sync,
-        ),
-    )
-
-
 async def get_feishu_user_runtime(
     settings: Annotated[Settings, Depends(get_settings)],
     uow_factory: Annotated[SqlAlchemyUnitOfWorkFactory, Depends(get_uow_factory)],
-) -> AsyncIterator[FeishuUserRuntime]:
-    secret_provider = LocalSecretProvider(settings.setup_secret_root)
-    async with uow_factory() as uow:
-        app_id_setting = await uow.setup.get_setting("feishu.app_id")
-        credential = await uow.setup.get_credential(
-            provider="feishu", credential_kind="app_secret"
-        )
-    app_id = (
-        str(app_id_setting.value)
-        if app_id_setting is not None
-        else str(settings.feishu_app_id or "")
-    ).strip()
-    app_secret = str(settings.feishu_app_secret or "").strip()
-    if not app_secret and credential and credential.secret_ref:
-        app_secret = secret_provider.read(credential.secret_ref)
-    if not app_id or not app_secret:
-        raise DomainValidationError(
-            "Configure the existing Feishu App ID and App Secret before User OAuth."
-        )
-    timeout = httpx.Timeout(settings.feishu_request_timeout_seconds)
-    async with httpx.AsyncClient(timeout=timeout) as http_client:
-        oauth_client = FeishuOAuthHttpClient(
-            app_id=app_id,
-            app_secret=app_secret,
-            http_client=http_client,
-            base_url=settings.feishu_api_base_url.removesuffix("/open-apis"),
-        )
-        token_provider = FeishuUserTokenProvider(
-            uow_factory,
-            oauth_client=oauth_client,
-            secret_provider=secret_provider,
-            required_scopes=USER_SCOPES,
-        )
-        yield FeishuUserRuntime(
-            oauth=FeishuOAuthService(
-                uow_factory,
-                oauth_client=oauth_client,
-                secret_provider=secret_provider,
-                app_id=app_id,
-                required_scopes=USER_SCOPES,
-            ),
-            user_client=FeishuUserClient(
-                token_provider=token_provider,
-                http_client=http_client,
-                base_url=settings.feishu_api_base_url,
-            ),
-        )
+) -> AsyncIterator[PersonalSyncRuntime]:
+    factory = PersonalSyncRuntimeFactory(
+        settings=settings,
+        uow_factory=uow_factory,
+    )
+    async with factory.open() as runtime:
+        yield runtime
 
 
 @router.get("/status", response_model=list[FeishuUserAuthorizationResponse])
 async def feishu_user_status(
-    runtime: Annotated[FeishuUserRuntime, Depends(get_feishu_user_runtime)],
+    runtime: Annotated[PersonalSyncRuntime, Depends(get_feishu_user_runtime)],
 ) -> list[FeishuUserAuthorizationResponse]:
     return [
         _authorization_response(value)
@@ -207,7 +122,7 @@ async def authorize_feishu_user(
     actor: Annotated[RequestActor, Depends(get_request_actor)],
     idempotency_key: Annotated[str, Depends(get_idempotency_key)],
     correlation_id: Annotated[str, Depends(get_correlation_id)],
-    runtime: Annotated[FeishuUserRuntime, Depends(get_feishu_user_runtime)],
+    runtime: Annotated[PersonalSyncRuntime, Depends(get_feishu_user_runtime)],
 ) -> StartFeishuUserAuthorizationResponse:
     result = await runtime.oauth.start_authorization(
         redirect_uri=body.redirect_uri,
@@ -219,11 +134,11 @@ async def authorize_feishu_user(
     return StartFeishuUserAuthorizationResponse.model_validate(result)
 
 
-@router.get("/callback", response_model=FeishuUserOAuthCallbackResponse)
+@oauth_callback_router.get("/callback", response_model=FeishuUserOAuthCallbackResponse)
 async def complete_feishu_user_authorization(
     state: Annotated[str, Query(min_length=1)],
     code: Annotated[str, Query(min_length=1)],
-    runtime: Annotated[FeishuUserRuntime, Depends(get_feishu_user_runtime)],
+    runtime: Annotated[PersonalSyncRuntime, Depends(get_feishu_user_runtime)],
 ) -> FeishuUserOAuthCallbackResponse:
     authorization = await runtime.oauth.complete_authorization(state=state, code=code)
     return FeishuUserOAuthCallbackResponse(
@@ -240,7 +155,7 @@ async def revoke_feishu_user(
     actor: Annotated[RequestActor, Depends(get_request_actor)],
     idempotency_key: Annotated[str, Depends(get_idempotency_key)],
     correlation_id: Annotated[str, Depends(get_correlation_id)],
-    runtime: Annotated[FeishuUserRuntime, Depends(get_feishu_user_runtime)],
+    runtime: Annotated[PersonalSyncRuntime, Depends(get_feishu_user_runtime)],
 ) -> FeishuUserDisconnectResponse:
     value = await runtime.oauth.disconnect(
         authorization_id,
@@ -260,9 +175,13 @@ async def discover_feishu_user_scopes(
     actor: Annotated[RequestActor, Depends(get_request_actor)],
     _idempotency_key: Annotated[str, Depends(get_idempotency_key)],
     correlation_id: Annotated[str, Depends(get_correlation_id)],
-    runtime: Annotated[FeishuUserRuntime, Depends(get_feishu_user_runtime)],
+    runtime: Annotated[PersonalSyncRuntime, Depends(get_feishu_user_runtime)],
     uow_factory: Annotated[SqlAlchemyUnitOfWorkFactory, Depends(get_uow_factory)],
 ) -> list[dict[str, object]]:
+    await runtime.ensure_capability(
+        authorization_id,
+        FeishuCapability.CHAT_DISCOVERY,
+    )
     service = FeishuScopeService(uow_factory)
     official_scopes = await service.discover_user_groups(
         authorization_id=authorization_id,
@@ -295,47 +214,9 @@ async def discover_feishu_user_scopes(
 async def sync_feishu_user_scope(
     scope_id: UUID,
     _idempotency_key: Annotated[str, Depends(get_idempotency_key)],
-    runtime: Annotated[FeishuUserRuntime, Depends(get_feishu_user_runtime)],
-    uow_factory: Annotated[SqlAlchemyUnitOfWorkFactory, Depends(get_uow_factory)],
-    settings: Annotated[Settings, Depends(get_settings)],
+    runtime: Annotated[PersonalSyncRuntime, Depends(get_feishu_user_runtime)],
 ) -> dict[str, object]:
-    async with uow_factory() as uow:
-        scope = await uow.setup.get_scope(scope_id)
-        if scope is None:
-            raise EntityNotFoundError("Feishu scope was not found.")
-        if scope.authorization_id is None:
-            raise DomainValidationError("Feishu scope is not bound to a user authorization.")
-        authorization = await uow.feishu_user_authorizations.get_authorization(
-            scope.authorization_id
-        )
-        if authorization is None:
-            raise EntityNotFoundError("Feishu user authorization was not found.")
-    service = PersonalMessageSyncService(
-        uow_factory,
-        user_client=runtime.user_client,
-        ingestion_adapter=UserMessageIngestionAdapter(
-            IngestFeishuEventHandler(uow_factory)
-        ),
-        overlap=timedelta(minutes=settings.feishu_user_sync_overlap_minutes),
-        document_sync=FeishuDocumentSyncService(
-            uow_factory,
-            client=runtime.user_client,
-        ),
-        attachment_sync=FeishuOperationsService(
-            settings=settings,
-            uow_factory=uow_factory,
-            client=_AuthorizedUserResourceClient(
-                user_client=runtime.user_client,
-                authorization_id=scope.authorization_id,
-            ),
-            unavailable_under_user_identity=True,
-        ),
-    )
-    result: PersonalSyncResult = await service.sync_scope(
-        scope=scope,
-        tenant_key=authorization.tenant_key,
-        authorization_open_id=authorization.open_id,
-    )
+    result = await runtime.sync_scope(scope_id)
     return {
         "scopeId": str(result.scope_id),
         "ingestedCount": result.ingested_count,
@@ -347,8 +228,12 @@ async def sync_feishu_user_scope(
 @router.post("/documents/search", response_model=list[dict[str, object]])
 async def search_feishu_user_documents(
     body: SearchFeishuDocumentsRequest,
-    runtime: Annotated[FeishuUserRuntime, Depends(get_feishu_user_runtime)],
+    runtime: Annotated[PersonalSyncRuntime, Depends(get_feishu_user_runtime)],
 ) -> list[dict[str, object]]:
+    await runtime.ensure_capability(
+        body.authorization_id,
+        FeishuCapability.DRIVE_SEARCH,
+    )
     values, _next_page = await runtime.user_client.search_documents(
         authorization_id=body.authorization_id,
         query=body.query,
@@ -363,13 +248,13 @@ async def import_feishu_user_document(
     actor: Annotated[RequestActor, Depends(get_request_actor)],
     idempotency_key: Annotated[str, Depends(get_idempotency_key)],
     correlation_id: Annotated[str, Depends(get_correlation_id)],
-    runtime: Annotated[FeishuUserRuntime, Depends(get_feishu_user_runtime)],
-    uow_factory: Annotated[SqlAlchemyUnitOfWorkFactory, Depends(get_uow_factory)],
+    runtime: Annotated[PersonalSyncRuntime, Depends(get_feishu_user_runtime)],
 ) -> dict[str, object]:
-    result = await FeishuDocumentSyncService(
-        uow_factory,
-        client=runtime.user_client,
-    ).sync_document(
+    await runtime.ensure_capability(
+        body.authorization_id,
+        FeishuCapability.DOCUMENT_READ,
+    )
+    result = await runtime.document_sync.sync_document(
         authorization_id=body.authorization_id,
         document_token=document_token,
         document_type=body.document_type,
@@ -389,14 +274,12 @@ async def import_feishu_user_document(
 
 @router.get("/folders/subscriptions", response_model=list[dict[str, object]])
 async def list_feishu_folder_subscriptions(
-    runtime: Annotated[FeishuUserRuntime, Depends(get_feishu_user_runtime)],
-    uow_factory: Annotated[SqlAlchemyUnitOfWorkFactory, Depends(get_uow_factory)],
+    runtime: Annotated[PersonalSyncRuntime, Depends(get_feishu_user_runtime)],
     authorization_id: Annotated[UUID | None, Query()] = None,
 ) -> list[dict[str, object]]:
-    values = await _folder_subscription_service(
-        uow_factory=uow_factory,
-        user_client=runtime.user_client,
-    ).list_subscriptions(authorization_id=authorization_id)
+    values = await runtime.folder_service.list_subscriptions(
+        authorization_id=authorization_id
+    )
     return [_folder_subscription_payload(value) for value in values]
 
 
@@ -407,13 +290,13 @@ async def subscribe_feishu_folder(
     actor: Annotated[RequestActor, Depends(get_request_actor)],
     idempotency_key: Annotated[str, Depends(get_idempotency_key)],
     correlation_id: Annotated[str, Depends(get_correlation_id)],
-    runtime: Annotated[FeishuUserRuntime, Depends(get_feishu_user_runtime)],
-    uow_factory: Annotated[SqlAlchemyUnitOfWorkFactory, Depends(get_uow_factory)],
+    runtime: Annotated[PersonalSyncRuntime, Depends(get_feishu_user_runtime)],
 ) -> dict[str, object]:
-    value = await _folder_subscription_service(
-        uow_factory=uow_factory,
-        user_client=runtime.user_client,
-    ).subscribe(
+    await runtime.ensure_capability(
+        body.authorization_id,
+        FeishuCapability.DRIVE_SEARCH,
+    )
+    value = await runtime.folder_service.subscribe(
         authorization_id=body.authorization_id,
         folder_token=folder_token,
         recursive=body.recursive,
@@ -432,13 +315,9 @@ async def unsubscribe_feishu_folder(
     expected_version: Annotated[int, Depends(get_if_match_version)],
     idempotency_key: Annotated[str, Depends(get_idempotency_key)],
     correlation_id: Annotated[str, Depends(get_correlation_id)],
-    runtime: Annotated[FeishuUserRuntime, Depends(get_feishu_user_runtime)],
-    uow_factory: Annotated[SqlAlchemyUnitOfWorkFactory, Depends(get_uow_factory)],
+    runtime: Annotated[PersonalSyncRuntime, Depends(get_feishu_user_runtime)],
 ) -> dict[str, object]:
-    value = await _folder_subscription_service(
-        uow_factory=uow_factory,
-        user_client=runtime.user_client,
-    ).unsubscribe(
+    value = await runtime.folder_service.unsubscribe(
         authorization_id=authorization_id,
         folder_token=folder_token,
         expected_version=expected_version,

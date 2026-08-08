@@ -33,7 +33,7 @@ pnpm-debug.log*
 __pycache__/
 *.py[cod]
 *.egg-info/
-.venv/
+.venv
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
@@ -51,6 +51,13 @@ data/backups/*
 !data/backups/.gitkeep
 data/local-secrets/*
 !data/local-secrets/.gitkeep
+data/codex-auth/*
+!data/codex-auth/.gitkeep
+data/document-extractions/*
+!data/document-extractions/.gitkeep
+data/feishu-attachments/*
+!data/feishu-attachments/.gitkeep
+data/e2e-store-only-attachment.txt
 postgres_data/
 redis_data/
 *.tsbuildinfo

@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from legal_workbench.domain.entities import IntegrationScope
 from legal_workbench.domain.enums import IntegrationScopeType
 
-POLICY_VERSION = "feishu-personal-analysis-v1"
+POLICY_VERSION = "feishu-personal-analysis-v2"
 _TASK_OR_DEADLINE = re.compile(
     r"(请|麻烦|需要|务必|完成|处理|审核|审查|起草|回复|提交|截止|到期|"
     r"今天|明天|本周|下周|\d{1,2}[月/-]\d{1,2}[日号]?|"
@@ -31,10 +31,22 @@ def _message_text(raw_message: dict[str, object]) -> str:
             parsed = json.loads(content)
         except json.JSONDecodeError:
             return content
-        if isinstance(parsed, dict):
-            return str(parsed.get("text") or parsed)
-        return str(parsed)
-    return str(content or "")
+        return " ".join(_explicit_text_values(parsed))
+    return " ".join(_explicit_text_values(content))
+
+
+def _explicit_text_values(value: object) -> list[str]:
+    if isinstance(value, list):
+        return [text for item in value for text in _explicit_text_values(item)]
+    if not isinstance(value, dict):
+        return []
+    values: list[str] = []
+    for key, item in value.items():
+        if key in {"text", "title"} and isinstance(item, str):
+            values.append(item)
+        elif isinstance(item, (dict, list)):
+            values.extend(_explicit_text_values(item))
+    return values
 
 
 def _mentions_self(raw_message: dict[str, object], self_open_id: str) -> bool:

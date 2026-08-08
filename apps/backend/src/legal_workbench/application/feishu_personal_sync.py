@@ -9,7 +9,10 @@ from uuid import UUID, uuid4
 
 from legal_workbench.application.commands import IngestFeishuEventCommand
 from legal_workbench.application.feishu_documents import extract_feishu_document_links
-from legal_workbench.application.message_analysis_policy import MessageAnalysisPolicy
+from legal_workbench.application.message_analysis_policy import (
+    POLICY_VERSION,
+    MessageAnalysisPolicy,
+)
 from legal_workbench.application.ports import UnitOfWorkFactory
 from legal_workbench.application.results import FeishuEventIngestedResult
 from legal_workbench.domain.entities import FeishuSyncCheckpoint, IntegrationScope
@@ -108,7 +111,7 @@ class UserMessageIngestionAdapter:
         tenant_key: str,
         authorization_open_id: str,
         analysis_disposition: str,
-        analysis_policy_version: str = "feishu-personal-analysis-v1",
+        analysis_policy_version: str = POLICY_VERSION,
         analysis_reasons: tuple[str, ...] = (),
         correlation_id: str,
     ) -> FeishuEventIngestedResult:
@@ -128,7 +131,9 @@ class UserMessageIngestionAdapter:
         event_type = (
             "im.message.message_edited_v1" if is_edit else "im.message.receive_v1"
         )
-        event_id = f"uat:{tenant_key}:{message_id}:{timestamp}"
+        event_id = (
+            f"uat:{tenant_key}:{message_id}:{timestamp}:{analysis_policy_version}"
+        )
         payload: dict[str, object] = {
             "schema": "2.0",
             "source": "user_history_sync",
@@ -190,14 +195,15 @@ class LocalMessageIngestionAdapter:
     ) -> FeishuEventIngestedResult:
         account_hash = hashlib.sha256(record.account_id.encode("utf-8")).hexdigest()[:16]
         event_id = (
-            f"local:{account_hash}:{record.chat_id}:{record.message_id}:{record.version}"
+            f"local:{account_hash}:{record.chat_id}:{record.message_id}:"
+            f"{record.version}:{POLICY_VERSION}"
         )
         payload: dict[str, object] = {
             "schema": "2.0-local",
             "source": "local_feishu_connector",
             "source_channel": "local_client",
             "analysis_disposition": analysis_disposition,
-            "analysis_policy_version": "feishu-personal-analysis-v1",
+            "analysis_policy_version": POLICY_VERSION,
             "provenance": {
                 "connector": "local_feishu",
                 "databasePathHash": record.database_path_hash,

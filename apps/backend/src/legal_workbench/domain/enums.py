@@ -410,6 +410,14 @@ class FeishuUserAuthorizationStatus(StrEnum):
     DEGRADED = "degraded"
 
 
+class FeishuTokenRotationPhase(StrEnum):
+    IDLE = "idle"
+    CLAIMED = "claimed"
+    REQUEST_STARTED = "request_started"
+    RESULT_DURABLE = "result_durable"
+    ACTIVATED = "activated"
+
+
 class IntegrationIdentityType(StrEnum):
     APP = "app"
     USER = "user"

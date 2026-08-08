@@ -452,6 +452,51 @@ async def test_valid_output_commits_before_runtime_and_creates_candidate(tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_current_builtin_definition_wins_over_stale_active_schema(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    state = FakeState(tmp_path)
+    message = make_message()
+    state.messages[message.id] = message
+    current = build_message_judgement_definition()
+    stale = build_message_judgement_definition()
+    stale.id = uuid4()
+    stale.version = "1.0.0"
+    stale.input_schema = {"type": "object"}
+    state.definitions = {stale.id: stale, current.id: current}
+
+    result = await make_handler(state, FakeRuntime(state)).execute(
+        AnalyseFeishuMessageCommand(
+            message_id=message.id,
+            actor_id="system",
+            actor_source="worker",
+            correlation_id="corr-current-definition",
+        )
+    )
+
+    assert state.runs[result.agent_run_id].agent_definition_id == current.id
+
+
+@pytest.mark.asyncio
+async def test_explicit_manual_analysis_can_override_store_only(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    state = FakeState(tmp_path)
+    message = make_message()
+    message.analysis_disposition = "store_only"
+    state.messages[message.id] = message
+
+    result = await make_handler(state, FakeRuntime(state)).execute(
+        AnalyseFeishuMessageCommand(
+            message_id=message.id,
+            actor_id="legal-reviewer",
+            actor_source="user",
+            correlation_id="corr-manual-store-only",
+            force_new_run=True,
+        )
+    )
+
+    assert result.status == AgentRunStatus.COMPLETED
+    assert result.candidate_id is not None
+
+
+@pytest.mark.asyncio
 async def test_included_attachment_segment_becomes_a_hashed_run_source(tmp_path) -> None:  # type: ignore[no-untyped-def]
     state = FakeState(tmp_path)
     message = make_message()

@@ -57,6 +57,7 @@ def get_setup_service(
             command=settings.codex_command,
             expected_version=settings.codex_expected_version,
             runs_root=settings.codex_runs_root,
+            auth_home=settings.codex_auth_home,
         ),
         basic_services_probe=_basic_services,
     )

@@ -73,6 +73,7 @@ class Settings(BaseSettings):
 
     knowledge_root: str = "/data/knowledge"
     codex_runs_root: str = "/data/codex-runs"
+    codex_auth_home: str | None = None
     setup_secret_root: str = "/data/local-secrets"
     operations_state_root: str = "/data/operations"
     backup_root: str = "/data/backups"
@@ -146,16 +147,12 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_security_boundaries(self) -> Self:
-        if self.enable_real_feishu:
-            if self.feishu_event_source == FeishuEventSourceMode.LONG_CONNECTION and not (
-                (self.feishu_app_id or "").strip() and (self.feishu_app_secret or "").strip()
-            ):
-                raise ValueError("Real Feishu long_connection mode requires app credentials.")
-            if (
-                self.feishu_event_source == FeishuEventSourceMode.WEBHOOK
-                and not (self.feishu_verification_token or "").strip()
-            ):
-                raise ValueError("Real Feishu webhook mode requires a verification token.")
+        if (
+            self.enable_real_feishu
+            and self.feishu_event_source == FeishuEventSourceMode.WEBHOOK
+            and not (self.feishu_verification_token or "").strip()
+        ):
+            raise ValueError("Real Feishu webhook mode requires a verification token.")
         if self.environment not in {
             RuntimeEnvironment.LOCAL,
             RuntimeEnvironment.DEVELOPMENT,

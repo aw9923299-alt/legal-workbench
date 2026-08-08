@@ -6,6 +6,10 @@ from uuid import UUID
 from pydantic import Field
 
 from legal_workbench.api.schemas.base import ApiModel
+from legal_workbench.application.feishu_capabilities import (
+    FeishuCapability,
+    FeishuCapabilityStatus,
+)
 from legal_workbench.domain.enums import FeishuUserAuthorizationStatus
 
 
@@ -19,6 +23,14 @@ class StartFeishuUserAuthorizationResponse(ApiModel):
     expires_at: datetime
 
 
+class FeishuCapabilityResponse(ApiModel):
+    capability: FeishuCapability
+    label: str
+    status: FeishuCapabilityStatus
+    granted_scopes: tuple[str, ...] = ()
+    missing_scopes: tuple[str, ...] = ()
+
+
 class FeishuUserAuthorizationResponse(ApiModel):
     id: UUID
     open_id: str
@@ -26,6 +38,8 @@ class FeishuUserAuthorizationResponse(ApiModel):
     display_name: str | None
     scopes: tuple[str, ...]
     missing_scopes: tuple[str, ...] = ()
+    capabilities: tuple[FeishuCapabilityResponse, ...] = ()
+    usable: bool = False
     access_expires_at: datetime
     refresh_expires_at: datetime
     status: FeishuUserAuthorizationStatus

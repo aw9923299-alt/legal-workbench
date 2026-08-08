@@ -8,6 +8,7 @@
   "scripts": {
     "dev": "npm run dev --workspace @legal-workbench/web",
     "typecheck": "npm run typecheck --workspace @legal-workbench/web",
+    "test": "npm run test --workspace @legal-workbench/web",
     "build": "npm run build --workspace @legal-workbench/web",
     "preview": "npm run preview --workspace @legal-workbench/web",
     "backend:dev": ".venv/bin/python -m uvicorn legal_workbench.main:app --app-dir apps/backend/src --reload --host 127.0.0.1 --port 8000",

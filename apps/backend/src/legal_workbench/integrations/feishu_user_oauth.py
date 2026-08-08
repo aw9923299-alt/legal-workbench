@@ -32,7 +32,13 @@ class FeishuOAuthHttpClient:
         self._http_client = http_client
         self._base_url = base_url.rstrip("/")
 
-    async def exchange_code(self, *, code: str, code_verifier: str) -> FeishuOAuthTokens:
+    async def exchange_code(
+        self,
+        *,
+        code: str,
+        code_verifier: str,
+        redirect_uri: str,
+    ) -> FeishuOAuthTokens:
         payload = await self._post_token(
             {
                 "grant_type": "authorization_code",
@@ -40,6 +46,7 @@ class FeishuOAuthHttpClient:
                 "client_secret": self._app_secret,
                 "code": code,
                 "code_verifier": code_verifier,
+                "redirect_uri": redirect_uri,
             }
         )
         return self._parse_tokens(payload)
@@ -109,7 +116,10 @@ class FeishuOAuthHttpClient:
             access_token = str(data["access_token"])
             refresh_token = str(data["refresh_token"])
             expires_in = int(data["expires_in"])
-            refresh_expires_in = int(data["refresh_expires_in"])
+            raw_refresh_expires_in = data.get("refresh_token_expires_in")
+            if raw_refresh_expires_in is None:
+                raw_refresh_expires_in = data["refresh_expires_in"]
+            refresh_expires_in = int(raw_refresh_expires_in)
         except (KeyError, TypeError, ValueError) as exc:
             raise FeishuUserApiError(code="invalid_response", http_status=200) from exc
         raw_scope = data.get("scope", "")

@@ -1,0 +1,21 @@
+{
+  "status": "supported_but_no_readable_local_records",
+  "records_discovered": 0,
+  "scopes_discovered": 0,
+  "ingested": 0,
+  "duplicates": 0,
+  "skipped": 0,
+  "generated_at": "2026-08-08T17:00:17.654968+00:00",
+  "source_channel": "local_client",
+  "discovery": {
+    "client_installed": true,
+    "roots_checked": 3,
+    "roots_readable": 3,
+    "database_files": 84,
+    "readable_message_databases": 0,
+    "readable_attachment_indexes": 0,
+    "opaque_or_encrypted_databases": 66,
+    "credential_locations_excluded": true,
+    "read_only": true
+  }
+}

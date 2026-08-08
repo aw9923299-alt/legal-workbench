@@ -39,6 +39,18 @@ def test_real_feishu_requires_verification_configuration() -> None:
         )
 
 
+def test_real_feishu_personal_sync_allows_local_secret_credentials() -> None:
+    settings = Settings(
+        enable_real_feishu=True,
+        feishu_event_source="long_connection",
+        feishu_app_id=None,
+        feishu_app_secret=None,
+        _env_file=None,
+    )
+
+    assert settings.enable_real_feishu is True
+
+
 def test_encrypt_key_alone_does_not_replace_webhook_verification_token() -> None:
     with pytest.raises(ValidationError, match="verification token"):
         Settings(

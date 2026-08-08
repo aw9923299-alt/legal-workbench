@@ -391,7 +391,7 @@ OutboxHandler = Callable[[OutboxDispatcher, ClaimedOutboxEvent], Awaitable[None]
 
 OUTBOX_HANDLERS: dict[str, OutboxHandler] = {
     "CommunicationSendRequested": _handle_communication_send,
-    "FeishuMessageReceived": _handle_feishu_message,
+    "FeishuMessageReceived": _handle_internal_notification,
     "FeishuMessageAnalysisRequested": _handle_feishu_message,
     "FeishuMessageAttachmentsPending": _handle_internal_notification,
     "DocumentExtractionRequested": _handle_document_extraction,

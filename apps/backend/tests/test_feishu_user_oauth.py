@@ -13,7 +13,12 @@ from uuid import UUID
 import httpx
 import pytest
 
-from legal_workbench.api.routes.feishu_user import USER_SCOPES
+from legal_workbench.api.routes.feishu_user import USER_SCOPES, _authorization_response
+from legal_workbench.application.feishu_capabilities import (
+    CORE_IDENTITY_SCOPES,
+    FeishuCapability,
+    FeishuCapabilityStatus,
+)
 from legal_workbench.application.feishu_user_auth import (
     FeishuOAuthService,
     FeishuOAuthTokens,
@@ -27,7 +32,10 @@ from legal_workbench.domain.entities import (
     FeishuUserAuthorization,
     IdempotencyRecord,
 )
-from legal_workbench.domain.enums import FeishuUserAuthorizationStatus
+from legal_workbench.domain.enums import (
+    FeishuTokenRotationPhase,
+    FeishuUserAuthorizationStatus,
+)
 from legal_workbench.domain.errors import DomainValidationError
 from legal_workbench.infrastructure.database import Base
 from legal_workbench.infrastructure.secrets import LocalSecretProvider
@@ -119,7 +127,10 @@ class OAuthClient:
         self.exchange_verifier: str | None = None
         self.refresh_calls = 0
 
-    async def exchange_code(self, *, code: str, code_verifier: str) -> FeishuOAuthTokens:
+    async def exchange_code(
+        self, *, code: str, code_verifier: str, redirect_uri: str
+    ) -> FeishuOAuthTokens:
+        assert redirect_uri == "http://localhost/callback"
         self.exchange_verifier = code_verifier
         return FeishuOAuthTokens(
             access_token="initial-access-token",
@@ -151,7 +162,47 @@ class OAuthClient:
         )
 
 
-def test_user_oauth_request_covers_personal_history_and_document_reads(
+class InjectedRotationCrash(RuntimeError):
+    pass
+
+
+class CrashAt:
+    def __init__(self, stage: str) -> None:
+        self.stage = stage
+        self.triggered = False
+
+    def __call__(self, stage: str) -> None:
+        if stage == self.stage and not self.triggered:
+            self.triggered = True
+            raise InjectedRotationCrash(stage)
+
+
+def expired_authorization(
+    repository: FakeAuthorizationRepository,
+    secrets: LocalSecretProvider,
+    *,
+    value_id: UUID,
+) -> tuple[str, str]:
+    access_ref = secrets.write(f"feishu_uat_{value_id.hex}_v1", "old-access-token")
+    refresh_ref = secrets.write(f"feishu_urt_{value_id.hex}_v1", "old-refresh-token")
+    repository.authorizations[value_id] = FeishuUserAuthorization(
+        id=value_id,
+        open_id="ou_personal",
+        union_id="on_personal",
+        tenant_key="tenant-personal",
+        display_name="Legal User",
+        scopes=("offline_access", "im:message"),
+        access_token_ref=access_ref,
+        refresh_token_ref=refresh_ref,
+        access_expires_at=datetime.now(UTC) - timedelta(seconds=1),
+        refresh_expires_at=datetime.now(UTC) + timedelta(days=20),
+        token_version=1,
+        status=FeishuUserAuthorizationStatus.CONNECTED,
+    )
+    return access_ref, refresh_ref
+
+
+def test_user_oauth_request_uses_minimum_personal_message_sync_scopes(
     tmp_path: Path,
 ) -> None:
     repository = FakeAuthorizationRepository()
@@ -171,17 +222,22 @@ def test_user_oauth_request_covers_personal_history_and_document_reads(
     )
 
     granted = set(parse_qs(urlparse(result.authorization_url).query)["scope"][0].split())
-    assert granted >= {
+    assert granted == {
         "offline_access",
+        "contact:user.base:readonly",
         "im:message:readonly",
         "im:message.p2p_msg:get_as_user",
         "im:message.group_msg:get_as_user",
         "im:chat:read",
-        "im:chat:readonly",
-        "drive:drive.search:readonly",
-        "drive:drive.metadata:readonly",
-        "docs:document.content:read",
     }
+    assert granted.isdisjoint(
+        {
+            "im:chat:readonly",
+            "drive:drive.search:readonly",
+            "drive:drive.metadata:readonly",
+            "docs:document.content:read",
+        }
+    )
 
 
 def test_pkce_challenge_is_s256_and_authorization_url_contains_no_secret(
@@ -261,6 +317,47 @@ async def test_oauth_callback_persists_only_versioned_secret_references(
 
 
 @pytest.mark.asyncio
+async def test_oauth_callback_does_not_hold_database_transaction_during_http(
+    tmp_path: Path,
+) -> None:
+    repository = FakeAuthorizationRepository()
+
+    class TransactionBoundaryOAuthClient(OAuthClient):
+        async def exchange_code(
+            self, *, code: str, code_verifier: str, redirect_uri: str
+        ) -> FeishuOAuthTokens:
+            assert not repository.lock.locked()
+            return await super().exchange_code(
+                code=code,
+                code_verifier=code_verifier,
+                redirect_uri=redirect_uri,
+            )
+
+        async def get_identity(self, *, access_token: str) -> OAuthIdentity:
+            assert not repository.lock.locked()
+            return await super().get_identity(access_token=access_token)
+
+    service = FeishuOAuthService(
+        lambda: FakeUnitOfWork(repository),
+        oauth_client=TransactionBoundaryOAuthClient(),
+        secret_provider=LocalSecretProvider(tmp_path / "secrets"),
+        app_id="cli_test_app",
+    )
+    started = await service.start_authorization(
+        redirect_uri="http://localhost/callback",
+        requested_by="legal-user",
+        scopes=("offline_access", "im:message"),
+    )
+
+    authorization = await service.complete_authorization(
+        state=started.state,
+        code="single-use-code",
+    )
+
+    assert authorization.status == FeishuUserAuthorizationStatus.CONNECTED
+
+
+@pytest.mark.asyncio
 async def test_oauth_callback_marks_missing_granted_scope_without_storing_token_body(
     tmp_path: Path,
 ) -> None:
@@ -273,9 +370,10 @@ async def test_oauth_callback_marks_missing_granted_scope_without_storing_token_
 
     class PartiallyGrantedOAuthClient(OAuthClient):
         async def exchange_code(
-            self, *, code: str, code_verifier: str
+            self, *, code: str, code_verifier: str, redirect_uri: str
         ) -> FeishuOAuthTokens:
             del code
+            assert redirect_uri == "http://localhost/callback"
             self.exchange_verifier = code_verifier
             return FeishuOAuthTokens(
                 access_token="partial-access-token",
@@ -324,6 +422,83 @@ async def test_oauth_callback_marks_missing_granted_scope_without_storing_token_
     assert "partial-refresh-token" not in persisted
 
 
+def test_authorization_api_projects_optional_capability_gaps_without_disabling_token(
+    tmp_path: Path,
+) -> None:
+    secrets = LocalSecretProvider(tmp_path / "secrets")
+    value_id = UUID("00000000-0000-0000-0000-000000000110")
+    authorization = FeishuUserAuthorization(
+        id=value_id,
+        open_id="ou_capabilities",
+        union_id=None,
+        tenant_key="tenant-personal",
+        display_name="Legal User",
+        scopes=(*CORE_IDENTITY_SCOPES, "im:message:readonly"),
+        access_token_ref=secrets.write("api_access_ref", "api-access-token"),
+        refresh_token_ref=secrets.write("api_refresh_ref", "api-refresh-token"),
+        access_expires_at=datetime.now(UTC) + timedelta(hours=1),
+        refresh_expires_at=datetime.now(UTC) + timedelta(days=1),
+        token_version=1,
+        status=FeishuUserAuthorizationStatus.PERMISSION_MISSING,
+        last_error_code="permission_missing",
+    )
+
+    response = _authorization_response(authorization)
+    capabilities = {item.capability: item for item in response.capabilities}
+
+    assert response.usable is True
+    assert response.status == FeishuUserAuthorizationStatus.CONNECTED
+    assert response.missing_scopes == ()
+    assert capabilities[FeishuCapability.MESSAGE_HISTORY].status == FeishuCapabilityStatus.PARTIAL
+    assert (
+        capabilities[FeishuCapability.DOCUMENT_READ].status
+        == FeishuCapabilityStatus.PERMISSION_MISSING
+    )
+    assert (
+        capabilities[FeishuCapability.DRIVE_SEARCH].status
+        == FeishuCapabilityStatus.PERMISSION_MISSING
+    )
+
+
+@pytest.mark.asyncio
+async def test_optional_scope_gap_does_not_make_existing_token_unusable(
+    tmp_path: Path,
+) -> None:
+    repository = FakeAuthorizationRepository()
+    secrets = LocalSecretProvider(tmp_path / "secrets")
+    value_id = UUID("00000000-0000-0000-0000-000000000111")
+    access_ref = secrets.write(f"feishu_uat_{value_id.hex}_v1", "usable-access")
+    refresh_ref = secrets.write(f"feishu_urt_{value_id.hex}_v1", "usable-refresh")
+    repository.authorizations[value_id] = FeishuUserAuthorization(
+        id=value_id,
+        open_id="ou_legacy_permission_status",
+        union_id=None,
+        tenant_key="tenant-personal",
+        display_name=None,
+        scopes=CORE_IDENTITY_SCOPES,
+        access_token_ref=access_ref,
+        refresh_token_ref=refresh_ref,
+        access_expires_at=datetime.now(UTC) + timedelta(hours=1),
+        refresh_expires_at=datetime.now(UTC) + timedelta(days=1),
+        token_version=1,
+        status=FeishuUserAuthorizationStatus.PERMISSION_MISSING,
+        last_error_code="permission_missing",
+    )
+    client = OAuthClient()
+
+    token = await FeishuUserTokenProvider(
+        lambda: FakeUnitOfWork(repository),
+        oauth_client=client,
+        secret_provider=secrets,
+        required_scopes=CORE_IDENTITY_SCOPES,
+    ).get_access_token(value_id)
+
+    assert token == "usable-access"
+    assert repository.authorizations[value_id].status == FeishuUserAuthorizationStatus.CONNECTED
+    assert repository.authorizations[value_id].last_error_code is None
+    assert client.refresh_calls == 0
+
+
 @pytest.mark.asyncio
 async def test_concurrent_refresh_rotates_pair_once_and_removes_old_secrets(
     tmp_path: Path,
@@ -367,6 +542,251 @@ async def test_concurrent_refresh_rotates_pair_once_and_removes_old_secrets(
     assert secrets.read(saved.refresh_token_ref) == "rotated-refresh-token"
     assert not secrets.exists(old_access_ref)
     assert not secrets.exists(old_refresh_ref)
+
+
+@pytest.mark.asyncio
+async def test_refresh_crash_before_request_started_can_retry_old_refresh_token(
+    tmp_path: Path,
+) -> None:
+    repository = FakeAuthorizationRepository()
+    secrets = LocalSecretProvider(tmp_path / "secrets")
+    value_id = UUID("00000000-0000-0000-0000-000000000201")
+    expired_authorization(repository, secrets, value_id=value_id)
+    client = OAuthClient()
+
+    with pytest.raises(InjectedRotationCrash, match="before_request_started"):
+        await FeishuUserTokenProvider(
+            lambda: FakeUnitOfWork(repository),
+            oauth_client=client,
+            secret_provider=secrets,
+            fault_injector=CrashAt("before_request_started"),
+        ).get_access_token(value_id)
+
+    saved = repository.authorizations[value_id]
+    assert saved.rotation_phase == FeishuTokenRotationPhase.CLAIMED
+    assert saved.rotation_request_started_at is None
+    assert client.refresh_calls == 0
+    saved.rotation_expires_at = datetime.now(UTC) - timedelta(seconds=1)
+
+    token = await FeishuUserTokenProvider(
+        lambda: FakeUnitOfWork(repository),
+        oauth_client=client,
+        secret_provider=secrets,
+    ).get_access_token(value_id)
+
+    assert token == "rotated-access-token"
+    assert client.refresh_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_refresh_crash_after_request_started_fails_closed(
+    tmp_path: Path,
+) -> None:
+    repository = FakeAuthorizationRepository()
+    secrets = LocalSecretProvider(tmp_path / "secrets")
+    value_id = UUID("00000000-0000-0000-0000-000000000202")
+    expired_authorization(repository, secrets, value_id=value_id)
+    client = OAuthClient()
+
+    with pytest.raises(InjectedRotationCrash, match="after_request_started"):
+        await FeishuUserTokenProvider(
+            lambda: FakeUnitOfWork(repository),
+            oauth_client=client,
+            secret_provider=secrets,
+            fault_injector=CrashAt("after_request_started"),
+        ).get_access_token(value_id)
+
+    saved = repository.authorizations[value_id]
+    assert saved.status == FeishuUserAuthorizationStatus.REAUTH_REQUIRED
+    assert saved.rotation_phase == FeishuTokenRotationPhase.REQUEST_STARTED
+    assert saved.rotation_request_started_at is not None
+    assert saved.rotation_reauth_reason == "refresh_outcome_uncertain"
+    assert client.refresh_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_refresh_crash_after_http_success_before_bundle_fails_closed(
+    tmp_path: Path,
+) -> None:
+    repository = FakeAuthorizationRepository()
+    secrets = LocalSecretProvider(tmp_path / "secrets")
+    value_id = UUID("00000000-0000-0000-0000-000000000203")
+    expired_authorization(repository, secrets, value_id=value_id)
+    client = OAuthClient()
+
+    with pytest.raises(InjectedRotationCrash, match="after_http_success_before_bundle"):
+        await FeishuUserTokenProvider(
+            lambda: FakeUnitOfWork(repository),
+            oauth_client=client,
+            secret_provider=secrets,
+            fault_injector=CrashAt("after_http_success_before_bundle"),
+        ).get_access_token(value_id)
+
+    saved = repository.authorizations[value_id]
+    assert saved.status == FeishuUserAuthorizationStatus.REAUTH_REQUIRED
+    assert saved.rotation_reauth_reason == "refresh_outcome_uncertain"
+    assert client.refresh_calls == 1
+    assert not secrets.exists(f"feishu_rotation_{value_id.hex}_v2")
+
+
+@pytest.mark.asyncio
+async def test_refresh_crash_after_bundle_fsync_recovers_without_second_http(
+    tmp_path: Path,
+) -> None:
+    repository = FakeAuthorizationRepository()
+    secrets = LocalSecretProvider(tmp_path / "secrets")
+    value_id = UUID("00000000-0000-0000-0000-000000000204")
+    expired_authorization(repository, secrets, value_id=value_id)
+    client = OAuthClient()
+
+    with pytest.raises(InjectedRotationCrash, match="after_bundle_fsync"):
+        await FeishuUserTokenProvider(
+            lambda: FakeUnitOfWork(repository),
+            oauth_client=client,
+            secret_provider=secrets,
+            fault_injector=CrashAt("after_bundle_fsync"),
+        ).get_access_token(value_id)
+
+    assert secrets.exists(f"feishu_rotation_{value_id.hex}_v2")
+    token = await FeishuUserTokenProvider(
+        lambda: FakeUnitOfWork(repository),
+        oauth_client=client,
+        secret_provider=secrets,
+    ).get_access_token(value_id)
+
+    assert token == "rotated-access-token"
+    assert client.refresh_calls == 1
+    assert repository.authorizations[value_id].token_version == 2
+
+
+@pytest.mark.asyncio
+async def test_refresh_crash_before_activation_commit_recovers_durable_result(
+    tmp_path: Path,
+) -> None:
+    repository = FakeAuthorizationRepository()
+    secrets = LocalSecretProvider(tmp_path / "secrets")
+    value_id = UUID("00000000-0000-0000-0000-000000000205")
+    expired_authorization(repository, secrets, value_id=value_id)
+    client = OAuthClient()
+
+    with pytest.raises(InjectedRotationCrash, match="before_activation_commit"):
+        await FeishuUserTokenProvider(
+            lambda: FakeUnitOfWork(repository),
+            oauth_client=client,
+            secret_provider=secrets,
+            fault_injector=CrashAt("before_activation_commit"),
+        ).get_access_token(value_id)
+
+    saved = repository.authorizations[value_id]
+    assert saved.rotation_phase == FeishuTokenRotationPhase.RESULT_DURABLE
+    assert saved.rotation_result_written_at is not None
+    assert saved.token_version == 1
+
+    token = await FeishuUserTokenProvider(
+        lambda: FakeUnitOfWork(repository),
+        oauth_client=client,
+        secret_provider=secrets,
+    ).get_access_token(value_id)
+    assert token == "rotated-access-token"
+    assert client.refresh_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_refresh_crash_after_activation_commit_keeps_new_generation_active(
+    tmp_path: Path,
+) -> None:
+    repository = FakeAuthorizationRepository()
+    secrets = LocalSecretProvider(tmp_path / "secrets")
+    value_id = UUID("00000000-0000-0000-0000-000000000206")
+    expired_authorization(repository, secrets, value_id=value_id)
+    client = OAuthClient()
+
+    with pytest.raises(InjectedRotationCrash, match="after_activation_commit"):
+        await FeishuUserTokenProvider(
+            lambda: FakeUnitOfWork(repository),
+            oauth_client=client,
+            secret_provider=secrets,
+            fault_injector=CrashAt("after_activation_commit"),
+        ).get_access_token(value_id)
+
+    saved = repository.authorizations[value_id]
+    assert saved.token_version == 2
+    assert saved.status == FeishuUserAuthorizationStatus.CONNECTED
+    assert saved.rotation_phase == FeishuTokenRotationPhase.ACTIVATED
+    assert await FeishuUserTokenProvider(
+        lambda: FakeUnitOfWork(repository),
+        oauth_client=client,
+        secret_provider=secrets,
+    ).get_access_token(value_id) == "rotated-access-token"
+    assert client.refresh_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_refresh_crash_during_orphan_cleanup_is_recoverable(
+    tmp_path: Path,
+) -> None:
+    repository = FakeAuthorizationRepository()
+    secrets = LocalSecretProvider(tmp_path / "secrets")
+    value_id = UUID("00000000-0000-0000-0000-000000000207")
+    old_access_ref, old_refresh_ref = expired_authorization(
+        repository, secrets, value_id=value_id
+    )
+    client = OAuthClient()
+
+    with pytest.raises(InjectedRotationCrash, match="during_orphan_cleanup"):
+        await FeishuUserTokenProvider(
+            lambda: FakeUnitOfWork(repository),
+            oauth_client=client,
+            secret_provider=secrets,
+            fault_injector=CrashAt("during_orphan_cleanup"),
+        ).get_access_token(value_id)
+
+    assert repository.authorizations[value_id].token_version == 2
+    assert secrets.exists(old_access_ref)
+    assert secrets.exists(old_refresh_ref)
+
+    assert await FeishuUserTokenProvider(
+        lambda: FakeUnitOfWork(repository),
+        oauth_client=client,
+        secret_provider=secrets,
+    ).get_access_token(value_id) == "rotated-access-token"
+    assert not secrets.exists(old_access_ref)
+    assert not secrets.exists(old_refresh_ref)
+
+
+@pytest.mark.asyncio
+async def test_stale_rotation_owner_cannot_activate_durable_generation(
+    tmp_path: Path,
+) -> None:
+    repository = FakeAuthorizationRepository()
+    secrets = LocalSecretProvider(tmp_path / "secrets")
+    value_id = UUID("00000000-0000-0000-0000-000000000208")
+    expired_authorization(repository, secrets, value_id=value_id)
+    client = OAuthClient()
+
+    def steal_fence(stage: str) -> None:
+        if stage == "before_activation_commit":
+            saved = repository.authorizations[value_id]
+            saved.rotation_owner = "replacement-owner"
+            saved.rotation_fence += 1
+
+    with pytest.raises(DomainValidationError, match="fenced"):
+        await FeishuUserTokenProvider(
+            lambda: FakeUnitOfWork(repository),
+            oauth_client=client,
+            secret_provider=secrets,
+            fault_injector=steal_fence,
+        ).get_access_token(value_id)
+
+    saved = repository.authorizations[value_id]
+    assert saved.token_version == 1
+    assert secrets.exists(f"feishu_rotation_{value_id.hex}_v2")
+    assert await FeishuUserTokenProvider(
+        lambda: FakeUnitOfWork(repository),
+        oauth_client=client,
+        secret_provider=secrets,
+    ).get_access_token(value_id) == "rotated-access-token"
+    assert client.refresh_calls == 1
 
 
 @pytest.mark.asyncio
@@ -503,6 +923,11 @@ def test_token_generation_bundle_and_database_metadata_do_not_expose_token_body(
         "pending_token_bundle_ref",
         "rotation_owner",
         "rotation_expires_at",
+        "rotation_phase",
+        "rotation_request_started_at",
+        "rotation_fence",
+        "rotation_result_written_at",
+        "rotation_reauth_reason",
     } <= set(authorization.c.keys())
     assert "pending_access_token" not in authorization.c
     assert "pending_refresh_token" not in authorization.c
@@ -651,7 +1076,7 @@ async def test_oauth_http_client_supports_rotation_and_redacts_error_payload() -
                         "access_token": "http-access-token",
                         "refresh_token": "http-refresh-token",
                         "expires_in": 7200,
-                        "refresh_expires_in": 2592000,
+                        "refresh_token_expires_in": 2592000,
                         "scope": "offline_access im:message",
                     },
                 },
@@ -668,7 +1093,11 @@ async def test_oauth_http_client_supports_rotation_and_redacts_error_payload() -
             http_client=http_client,
             base_url="https://open.feishu.test",
         )
-        tokens = await client.exchange_code(code="oauth-code", code_verifier="verifier")
+        tokens = await client.exchange_code(
+            code="oauth-code",
+            code_verifier="verifier",
+            redirect_uri="http://localhost/callback",
+        )
         assert tokens.access_token == "http-access-token"
         assert tokens.refresh_token == "http-refresh-token"
         with pytest.raises(FeishuUserApiError) as captured:
@@ -678,3 +1107,6 @@ async def test_oauth_http_client_supports_rotation_and_redacts_error_payload() -
     assert "sensitive-refresh-token" not in str(captured.value)
     assert "sensitive-app-secret" not in str(captured.value)
     assert requests[0].headers["content-type"].startswith("application/json")
+    assert json.loads(requests[0].content)["redirect_uri"] == (
+        "http://localhost/callback"
+    )

@@ -137,6 +137,27 @@ def make_run(tmp_path: Path, context: AgentExecutionContext) -> AgentRun:
     )
 
 
+def test_codex_output_schema_requires_every_object_property() -> None:
+    schema = build_message_judgement_definition().output_schema
+
+    def assert_strict(value: object) -> None:
+        if isinstance(value, list):
+            for item in value:
+                assert_strict(item)
+            return
+        if not isinstance(value, dict):
+            return
+        assert "default" not in value
+        properties = value.get("properties")
+        if isinstance(properties, dict):
+            assert value.get("required") == list(properties)
+            assert value.get("additionalProperties") is False
+        for item in value.values():
+            assert_strict(item)
+
+    assert_strict(schema)
+
+
 def test_runtime_environment_never_inherits_external_codex_home(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -151,6 +172,21 @@ def test_runtime_environment_never_inherits_external_codex_home(
     assert environment["CODEX_HOME"] == str(run_dir / "empty_home")
     assert environment["CODEX_HOME"] != str(external_codex_home)
     assert environment["OPENAI_API_KEY"] == "test-api-key"
+    assert environment["PATH"]
+
+
+def test_runtime_uses_only_explicit_isolated_codex_auth_home(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "ambient-home"))
+    run_dir = tmp_path / "run"
+    auth_home = tmp_path / "workbench-auth"
+
+    environment = CodexCliRuntime._environment(run_dir, auth_home=auth_home)
+
+    assert environment["HOME"] == str(run_dir / "empty_home")
+    assert environment["CODEX_HOME"] == str(auth_home)
+    assert environment["CODEX_HOME"] != str(tmp_path / "ambient-home")
 
 
 @pytest.mark.asyncio
@@ -239,6 +275,33 @@ async def test_codex_health_distinguishes_version_and_authentication(tmp_path: P
     assert unauthenticated.status == CodexHealthStatus.UNAUTHENTICATED
     assert available.status == CodexHealthStatus.AVAILABLE
     assert "secret" not in repr(available)
+
+
+@pytest.mark.asyncio
+async def test_codex_health_accepts_explicit_isolated_login_home(tmp_path: Path) -> None:
+    auth_home = tmp_path / "workbench-auth"
+    auth_home.mkdir()
+    fake = tmp_path / "codex-health-auth-home"
+    fake.write_text(
+        "#!/bin/sh\n"
+        "if [ \"$1\" = \"--version\" ]; then echo 'codex-cli 1.2.3'; exit 0; fi\n"
+        "if [ \"$1\" = \"login\" ]; then "
+        f"test \"$CODEX_HOME\" = \"{auth_home}\" || exit 4; "
+        "echo 'Logged in using ChatGPT'; exit 0; fi\n"
+        "exit 2\n",
+        encoding="utf-8",
+    )
+    fake.chmod(0o700)
+
+    result = await CodexRuntimeHealthChecker(
+        command=[str(fake)],
+        expected_version="1.2.3",
+        runs_root=tmp_path / "runs",
+        auth_home=auth_home,
+    ).check(environment={})
+
+    assert result.status == CodexHealthStatus.AVAILABLE
+    assert result.authentication == "authenticated"
 
 
 @pytest.mark.asyncio
