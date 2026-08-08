@@ -1,0 +1,4 @@
+interface:
+  display_name: "浏览器视觉验收"
+  short_description: "用真实浏览器统一执行桌面、平板与移动端视觉验收并保留证据"
+  default_prompt: "Use $browser-visual-qa to inspect this rendered Legal Workbench route and issue an evidence-based release recommendation."

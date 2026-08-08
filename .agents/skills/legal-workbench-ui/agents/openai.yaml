@@ -1,0 +1,4 @@
+interface:
+  display_name: "法务工作台 UI 规范"
+  short_description: "统一法务工作台的企业级界面审美、信息层级与交付验收门槛"
+  default_prompt: "Use $legal-workbench-ui to review this Legal Workbench interface and propose one implementation-ready direction."

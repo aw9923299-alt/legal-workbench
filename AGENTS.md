@@ -103,3 +103,16 @@ python -m pytest apps/backend/tests
 - 不绕过审核门禁；
 - 更新相关设计和API文档；
 - 不提交密钥、真实聊天、合同或个人敏感信息。
+
+## Figma-led product redesign
+
+For any system-wide interface redesign or major page upgrade:
+
+1. Use the `legal-workbench-ui` skill.
+2. Use Figma MCP as the design source and design workspace.
+3. Use Playwright MCP to inspect the real rendered application.
+4. Capture before evidence before implementation.
+5. Preserve existing Ant Design components and project tokens.
+6. Do not introduce a parallel UI framework.
+7. Do not present mock, AI-generated or unverified information as live business fact.
+8. Complete browser and functional verification before claiming completion.

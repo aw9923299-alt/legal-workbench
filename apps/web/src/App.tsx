@@ -72,6 +72,17 @@ function CandidateRoute() {
 
 function RouteContent() {
   const navigate = useNavigate();
+  const location = useLocation();
+  const matterKeyword = new URLSearchParams(location.search).get('q') ?? '';
+
+  const updateMatterKeyword = (keyword: string) => {
+    const query = new URLSearchParams(location.search);
+    if (keyword.trim()) query.set('q', keyword.trim());
+    else query.delete('q');
+    query.delete('page');
+    navigate(`/matters${query.size ? `?${query.toString()}` : ''}`, { replace: true });
+  };
+
   return <Routes>
     <Route path="/" element={<Navigate replace to="/dashboard" />} />
     <Route path="/dashboard" element={<DashboardPage />} />
@@ -83,11 +94,11 @@ function RouteContent() {
     <Route path="/system" element={<SystemStatusPage />} />
     <Route path="/setup" element={<SetupPage />} />
     <Route path="/settings/feishu-scopes" element={<FeishuScopesPage />} />
-    <Route path="/matters" element={<TaskCenterPage onOpenMatter={(id) => navigate(`/matters/${id}`)} />} />
+    <Route path="/matters" element={<TaskCenterPage keyword={matterKeyword} onKeywordChange={updateMatterKeyword} onOpenMatter={(id) => navigate(`/matters/${id}`)} />} />
     <Route path="/matters/:matterId" element={<MatterDetailRoute />} />
     <Route path="/matter-update-proposals/:proposalId" element={<MatterUpdateProposalPage />} />
     <Route path="/reviews" element={<ReviewCenterPage />} />
-    <Route path="/library" element={<LibraryPage />} />
+    <Route path="/library" element={<LibraryPage onBrowseCategory={(category) => navigate(`/matters?category=${encodeURIComponent(category)}`)} />} />
     <Route path="/security" element={<SecurityPage />} />
     <Route path="*" element={<div className="page placeholder-page"><h2>页面不存在</h2><Button onClick={() => navigate('/inbox')}>返回收件箱</Button></div>} />
   </Routes>;
