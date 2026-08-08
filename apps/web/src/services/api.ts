@@ -29,6 +29,13 @@ import type {
   DeferredFeishuCompensation,
   FeishuScope,
   FeishuScopeSyncMode,
+  FeishuIdentityType,
+  FeishuScopeType,
+  FeishuUserAuthorization,
+  FeishuUserAuthorizationStart,
+  FeishuDocumentSearchResult,
+  FeishuDocumentImportResult,
+  FeishuFolderSubscription,
 } from '../types/api';
 
 export const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? '/api/v1';
@@ -457,6 +464,10 @@ export const legalApi = {
   registerFeishuScope(input: {
     chatId: string;
     displayName?: string;
+    identityType?: FeishuIdentityType;
+    scopeType?: FeishuScopeType;
+    authorizationId?: string;
+    backfillDays?: number;
   }, mutation?: MutationContext): Promise<FeishuScope> {
     return request('/settings/feishu-scopes', {
       method: 'POST', body: JSON.stringify(input),
@@ -486,6 +497,87 @@ export const legalApi = {
   ): Promise<DeferredFeishuCompensation> {
     return request(`/settings/feishu-scopes/${scopeId}/compensate`, {
       method: 'POST', headers: { 'If-Match': String(version) },
+    }, { write: true, mutation });
+  },
+
+  listFeishuUserAuthorizations(): Promise<FeishuUserAuthorization[]> {
+    return request('/integrations/feishu-user/status');
+  },
+
+  startFeishuUserAuthorization(
+    redirectUri: string,
+    mutation?: MutationContext,
+  ): Promise<FeishuUserAuthorizationStart> {
+    return request('/integrations/feishu-user/authorize', {
+      method: 'POST', body: JSON.stringify({ redirectUri }),
+    }, { write: true, mutation });
+  },
+
+  revokeFeishuUserAuthorization(
+    authorizationId: string,
+    mutation?: MutationContext,
+  ): Promise<{ authorizationId: string; status: string }> {
+    return request(`/integrations/feishu-user/${authorizationId}/revoke`, {
+      method: 'POST',
+    }, { write: true, mutation });
+  },
+
+  discoverFeishuUserScopes(
+    authorizationId: string,
+    mutation?: MutationContext,
+  ): Promise<Array<Record<string, unknown>>> {
+    return request(`/integrations/feishu-user/${authorizationId}/discover`, {
+      method: 'POST',
+    }, { write: true, mutation });
+  },
+
+  syncFeishuUserScope(
+    scopeId: string,
+    mutation?: MutationContext,
+  ): Promise<{ scopeId: string; ingestedCount: number; startedAt: string; completedAt: string }> {
+    return request(`/integrations/feishu-user/scopes/${scopeId}/sync`, {
+      method: 'POST',
+    }, { write: true, mutation });
+  },
+
+  searchFeishuUserDocuments(
+    authorizationId: string,
+    query: string,
+  ): Promise<FeishuDocumentSearchResult[]> {
+    return request('/integrations/feishu-user/documents/search', {
+      method: 'POST', body: JSON.stringify({ authorizationId, query }),
+    });
+  },
+
+  importFeishuUserDocument(
+    documentToken: string,
+    input: {
+      authorizationId: string;
+      documentType: 'docx' | 'wiki';
+      title?: string;
+      sourceUrl: string;
+    },
+    mutation?: MutationContext,
+  ): Promise<FeishuDocumentImportResult> {
+    return request(`/integrations/feishu-user/documents/${documentToken}/import`, {
+      method: 'POST', body: JSON.stringify(input),
+    }, { write: true, mutation });
+  },
+
+  listFeishuFolderSubscriptions(
+    authorizationId?: string,
+  ): Promise<FeishuFolderSubscription[]> {
+    const query = authorizationId ? `?authorization_id=${encodeURIComponent(authorizationId)}` : '';
+    return request(`/integrations/feishu-user/folders/subscriptions${query}`);
+  },
+
+  subscribeFeishuFolder(
+    folderToken: string,
+    input: { authorizationId: string; recursive: boolean },
+    mutation?: MutationContext,
+  ): Promise<FeishuFolderSubscription> {
+    return request(`/integrations/feishu-user/folders/${encodeURIComponent(folderToken)}/subscribe`, {
+      method: 'POST', body: JSON.stringify(input),
     }, { write: true, mutation });
   },
 

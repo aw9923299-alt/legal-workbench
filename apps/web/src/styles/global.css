@@ -397,6 +397,33 @@ button { cursor: pointer; }
 .boundary-gap-row:last-child { border-bottom: 0; }
 .boundary-gap-row p { margin: 5px 0 0; color: #657083; line-height: 1.55; }
 .boundary-gap-row .ant-tag { flex: none; margin: 0; }
+.feishu-personal-page { max-width: 1540px; }
+.feishu-account-section { margin-top: 14px; padding: 18px; border: 1px solid #d8dee8; border-radius: 6px; background: #fff; box-shadow: 0 1px 2px rgba(23,36,58,.035); }
+.section-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 14px; }
+.section-heading h4 { margin: 0 0 2px !important; }
+.feishu-account-grid { display: grid; gap: 10px; }
+.feishu-account-card .ant-card-body { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 14px 16px; }
+.feishu-account-card__main { display: flex; align-items: center; min-width: 0; gap: 12px; }
+.feishu-account-card__main > div:last-child { display: grid; min-width: 0; gap: 3px; }
+.feishu-source-icon { width: 38px; height: 38px; display: grid; flex: none; place-items: center; border-radius: 50%; color: #315f8f; background: #edf4fa; font-size: 17px; }
+.feishu-empty-card { background: #f7f8fa; box-shadow: none; }
+.feishu-source-stats { margin: 14px 0; overflow: hidden; border: 1px solid #d8dee8; border-radius: 6px; background: #fff; }
+.feishu-source-stats .ant-col { padding: 14px 18px; border-right: 1px solid #e4e8ee; }
+.feishu-source-stats .ant-col:last-child { border-right: 0; }
+.feishu-source-stats .ant-statistic-title { color: #657083; font-size: 12px; }
+.feishu-source-stats .ant-statistic-content { color: #17243a; font-size: 23px; }
+.feishu-source-card { min-height: 100%; }
+.feishu-source-card > .ant-card-body { padding: 16px 18px 18px; }
+.feishu-scope-form { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); align-items: end; gap: 8px; }
+.feishu-scope-form .ant-form-item { min-width: 0; margin-bottom: 0; }
+.feishu-scope-form .ant-input-number { width: 100%; }
+.feishu-document-form { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; margin-top: 14px; }
+.feishu-document-form .ant-form-item { margin: 0; }
+.feishu-document-form .ant-input-affix-wrapper { width: 100%; }
+.feishu-document-results { margin-top: 10px; border: 1px solid #e4e8ee; border-radius: 5px; }
+.feishu-document-results .ant-list-item, .feishu-folder-list .ant-list-item { padding-inline: 12px; }
+.feishu-folder-list { margin-top: 14px; }
+.feishu-scope-mobile-list { display: none; }
 
 @media (max-width: 1320px) {
   .dashboard-support-grid { grid-template-columns: repeat(2, minmax(0,1fr)); }
@@ -432,6 +459,9 @@ button { cursor: pointer; }
   .matter-result-count { grid-column: 1 / -1; }
   .boundary-capability-grid { grid-template-columns: 1fr; }
   .boundary-capability-card .ant-card-body { min-height: auto; }
+  .feishu-scope-form { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .feishu-source-stats .ant-col:nth-child(2) { border-right: 0; }
+  .feishu-source-stats .ant-col:nth-child(-n+2) { border-bottom: 1px solid #e4e8ee; }
 }
 
 @media (max-width: 1000px) {
@@ -518,6 +548,28 @@ button { cursor: pointer; }
   .review-detail-drawer .ant-drawer-close, .agent-detail-drawer .ant-drawer-close { min-width: 44px; min-height: 44px; }
   .review-detail-footer { align-items: stretch; flex-direction: column; }
   .review-detail-footer .ant-btn { width: 100%; }
+  .feishu-account-section { padding: 14px; }
+  .section-heading { align-items: stretch; flex-direction: column; }
+  .section-heading > .ant-btn { min-height: 44px; }
+  .feishu-account-card .ant-card-body { align-items: stretch; flex-direction: column; }
+  .feishu-account-card .ant-card-body > .ant-space { width: 100%; }
+  .feishu-account-card .ant-card-body > .ant-space .ant-btn { min-height: 44px; }
+  .feishu-source-stats .ant-col { padding: 11px 13px; }
+  .feishu-scope-form { grid-template-columns: 1fr; }
+  .feishu-scope-form .ant-btn { min-height: 44px; }
+  .feishu-document-form { grid-template-columns: 1fr; }
+  .feishu-document-form .ant-btn { width: 100%; min-height: 44px; }
+  .feishu-scope-table { display: none; }
+  .feishu-scope-mobile-list { display: grid; gap: 10px; }
+  .feishu-scope-mobile-card { display: grid; gap: 12px; padding: 14px; border: 1px solid #d8dee8; border-radius: 6px; background: #fff; }
+  .feishu-scope-mobile-card__heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+  .feishu-scope-mobile-card__heading > div { display: grid; min-width: 0; gap: 4px; }
+  .feishu-scope-mobile-card__heading .ant-typography code { overflow-wrap: anywhere; }
+  .feishu-scope-mobile-card dl { display: grid; gap: 7px; margin: 0; }
+  .feishu-scope-mobile-card dl div { display: grid; grid-template-columns: 86px minmax(0, 1fr); gap: 8px; }
+  .feishu-scope-mobile-card dt { color: #657083; font-size: 12px; }
+  .feishu-scope-mobile-card dd { min-width: 0; margin: 0; color: #29364a; font-size: 13px; overflow-wrap: anywhere; }
+  .feishu-scope-mobile-card__actions .ant-btn { min-height: 44px; }
   .agent-run-detail .ant-descriptions-view { overflow-x: auto; }
   .mobile-nav-drawer .ant-menu { border-inline-end: 0; }
   .mobile-nav-drawer .ant-menu-item-group-title { padding: 14px 16px 5px; color: #657083; font-size: 12px; font-weight: 600; }

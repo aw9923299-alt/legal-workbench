@@ -426,6 +426,8 @@ export interface CodexCheckRequested {
 
 export type FeishuScopeStatus = 'unapproved' | 'allowed' | 'excluded' | 'paused';
 export type FeishuScopeSyncMode = 'mentions_only' | 'all_messages' | 'disabled';
+export type FeishuIdentityType = 'app' | 'user';
+export type FeishuScopeType = 'group' | 'p2p';
 
 export interface FeishuScope {
   id: string;
@@ -434,6 +436,11 @@ export interface FeishuScope {
   displayName: string | null;
   status: FeishuScopeStatus;
   syncMode: FeishuScopeSyncMode;
+  identityType: FeishuIdentityType;
+  scopeType: FeishuScopeType;
+  authorizationId: string | null;
+  backfillDays: number;
+  highValueLegal: boolean;
   lastMessageAt: string | null;
   lastErrorCode: string | null;
   lastErrorMessage: string | null;
@@ -444,6 +451,65 @@ export interface FeishuScope {
   version: number;
   createdAt: string;
   updatedAt: string;
+}
+
+export type FeishuUserAuthorizationStatus =
+  | 'connected'
+  | 'refreshing'
+  | 'reauth_required'
+  | 'expired'
+  | 'permission_missing'
+  | 'revoked'
+  | 'degraded';
+
+export interface FeishuUserAuthorization {
+  id: string;
+  openId: string;
+  tenantKey: string;
+  displayName: string | null;
+  scopes: string[];
+  accessExpiresAt: string;
+  refreshExpiresAt: string;
+  status: FeishuUserAuthorizationStatus;
+  lastRefreshedAt: string | null;
+  lastErrorCode: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface FeishuUserAuthorizationStart {
+  authorizationUrl: string;
+  state: string;
+  expiresAt: string;
+}
+
+export interface FeishuDocumentSearchResult {
+  token?: string;
+  objToken?: string;
+  docToken?: string;
+  type?: string;
+  docType?: string;
+  title?: string;
+  name?: string;
+  url?: string;
+}
+
+export interface FeishuDocumentImportResult {
+  documentId: string;
+  documentVersionId: string;
+  createdVersion: boolean;
+  segmentCount: number;
+}
+
+export interface FeishuFolderSubscription {
+  id: string;
+  authorizationId: string;
+  folderToken: string;
+  recursive: boolean;
+  active: boolean;
+  version: number;
+  lastSyncedAt: string | null;
+  lastErrorCode: string | null;
 }
 
 export interface DeferredFeishuCompensation {
