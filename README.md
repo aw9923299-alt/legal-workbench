@@ -2,7 +2,7 @@
 
 运行在本地 Mac 上的法务智能工作系统。系统从经过授权的飞书消息中发现工作，由受控的 Codex Agent 完成消息研判、事项归并、任务规划、专业分析、回复草拟、日报和复盘；所有发送给其他人员的内容必须经过法务审核。
 
-> 当前已实现 `FeishuEvent → FeishuMessage → Outbox → ContextSnapshot → AgentRun → MessageCandidate → 人工创建/关联 Matter` 受控闭环，以及官方 SDK 长连接/Webhook 双入口、断线重连、消息版本与附件元数据、时间窗补偿、运行中心、系统状态和 SSE/轮询恢复。真实飞书与真实 Codex 均需显式开启并提供可用凭证；知识解析和专业 Agent 尚未实现。
+> 当前已实现 `FeishuEvent → FeishuMessage → 附件正文提取 → ContextSnapshot → AgentRun → MessageCandidate → 人工创建/关联 Matter 或提交 MatterUpdateProposal → 人工逐字段审核 → WorkItem` 受控闭环，以及官方 SDK 长连接/Webhook 双入口、断线重连、消息版本、时间窗补偿、运行中心、系统状态和 SSE/轮询恢复。PDF/DOCX/TXT/Markdown 可受控解析，图片和扫描 PDF 明确显示正文不可用。真实飞书与真实 Codex 均需显式开启并提供可用凭证；通用知识库解析和专业 Agent 尚未实现。
 
 ## 核心闭环
 
@@ -72,7 +72,10 @@ legal-workbench/
 │     └─ tests/
 ├─ data/
 │  ├─ knowledge/              本地知识目录挂载点
-│  └─ codex-runs/             Codex 隔离运行目录
+│  ├─ codex-runs/             Codex 隔离运行目录
+│  ├─ operations/             脱敏运维状态与滚动日志
+│  ├─ backups/                PostgreSQL 私有逻辑备份
+│  └─ local-secrets/          本地私有集成 Secret
 ├─ infra/
 │  ├─ docker/
 │  └─ launchd/
@@ -154,11 +157,14 @@ npm run build
 - Codex CLI 统一 Runtime：独立运行目录、授权 JSON stdin、禁用 Shell/代码模式/网络搜索、输入输出审计、超时终止、心跳、输出大小限制和错误分类；
 - Codex 启动前检查二进制、固定版本、隔离认证和运行目录；输出失败只允许使用同一快照做一次 Schema 修复重试；
 - ContextSnapshot 记录 Builder/选择策略/消息与附件版本以及多维截断指标；AgentRun 状态事件和 Candidate 分析修订只追加保存；
+- 附件以 `message_attachments → document_versions → document_extractions → document_segments` 保存；解析在无应用凭证的隔离子进程中执行，正文授权、片段限界和附件事实引用均可审计；
 - Celery Beat 以 PostgreSQL advisory lock 扫描丢失的 queued 投递和过期 Worker 租约，重建 Outbox 或进入 `dead_letter`，Redis 清空不丢业务事实；
 - 合法结果自动建立待人工确认 Candidate；无关消息不建 Candidate，任何置信度均不自动建立 Matter；
 - Candidate确认创建Matter和初始WorkItem的事务闭环；
-- 前端接入Candidate、Matter、WorkItem、优先级、期限、依赖和审核接口；
+- 前端接入Candidate、Matter、WorkItem、优先级、期限、依赖和审核接口；Matter 更新审核稳定区分当前值、消息提取值、AI 建议值和法务最终值，409 冲突刷新后保留法务草稿；
 - PriorityConfirmation、Deadline和WorkItemDependency模型；
+- WorkItem 完整生命周期、依赖解决、领域状态机、乐观锁、审计和幂等操作页；操作后同步刷新 Matter、WorkItem 和今日工作台；
+- 今日工作台使用 PostgreSQL 业务事实和实时健康快照生成八类队列；硬期限、逾期、风险、人工优先级、等待时长和创建时间确定排序，AI 优先级仅作提示；
 - ReviewPackage、ReviewRecord、Communication及所有外发人工审核门禁；
 - Outbox并发领取、指数退避、重试、死信和重新入队；
 - Outbox Handler 显式注册，未知事件会失败、重试并最终死信；
@@ -169,19 +175,22 @@ npm run build
 - 收件箱与 Agent 详情页展示来源、状态、版本、置信度、理由、事实/推断、期限和缺失信息。
 - AI 收件箱、消息详情、Agent 运行中心和系统状态页使用真实 FastAPI 数据；支持状态/分类/时间/群聊筛选、Candidate 人工动作、运行重试/取消、补偿同步、遗留任务恢复和死信重新入队；
 - SSE 推送系统健康、消息、AgentRun、Candidate 和 Outbox 变化，断开后按指数退避重连并回退到有限频率轮询；
+- AI 质量评估使用 11 类合成非敏感版本化 Fixture，持久化 EvaluationCase/Run/Result，并确定性汇总相关性、分类、期限、角色、事实引用、推断误报、缺失信息、Schema、耗时、失败和重试指标；Fake 只验证评估管线，只有显式真实 Runner 结果才代表模型质量；
+- `/setup` 九步向导从 PostgreSQL 和实时探针恢复基础服务、飞书凭证掩码/授权范围、Codex CLI/版本/认证/冒烟状态；本地 SecretProvider 使用 `0700/0600` 和原子替换，Codex 验证与冒烟只排队给隔离 Worker；
+- `/settings/feishu-scopes` 使用 PostgreSQL 真实范围数据；未知群默认 `unapproved/disabled`，允许、排除、暂停、恢复和延后补偿都使用 Actor、版本锁、幂等键与审计；
+- `scripts/legal_workbench_ops.py` 提供安全启动/停止、睡眠唤醒自检、PostgreSQL 每日自定义格式备份、Codex 运行目录保留、脱敏诊断包和滚动运维日志；系统状态页展示磁盘、附件配额、最近备份、最近唤醒和 PostgreSQL 待恢复任务；
 - Agent stdout/stderr 常见凭证格式脱敏，运行目录只返回受控逻辑路径；所有新增写操作继续要求后端 Actor、Idempotency-Key、Correlation ID 和审计。
 
 部分实现：
 
 - 飞书开关关闭时真实入口 fail closed；长连接缺少 App ID/Secret、Webhook 缺少 Verification Token 时拒绝启动。当前环境未提供真实凭证，长连接与远端时间窗补偿仅通过 Fake/自动化测试验证；Webhook 加密载荷仍明确拒绝；
 - 容器 Worker 以专用 UID、最小环境变量和无知识目录挂载运行 Codex；主机模式仍依赖 Codex 自身只读沙箱，不声称是完整 OS 级隔离。
-- 当前宿主 CLI 为 `0.146.0-alpha.9.2`，与容器固定版本 `0.145.0-alpha.9` 不匹配，且隔离 Worker 未配置 API Key；因此真实 Codex 推理未执行，11 类消息仅通过 Fake Runtime + 真实 PostgreSQL 验证。
+- `CODEX_CLI_VERSION` 是唯一部署版本来源；当前宿主 CLI 与新构建 Worker 镜像均为 `0.146.0`。隔离 Worker 仍未配置 Codex 认证，因此真实 Codex 推理未执行，11 类消息仅通过 Fake Runtime + 真实 PostgreSQL 验证。
+- `infra/launchd` 已提供登录后/每 5 分钟自检和每日 03:15 备份模板；模板尚未写入当前用户的 `~/Library/LaunchAgents`，安装前必须替换绝对路径并确认 `.env` 已含 `CODEX_CLI_VERSION=0.146.0`。
 - 当前 Registry 最新 `react-router-dom@7.18.2` 仍命中 RSC Action CSRF 公告 `GHSA-qwww-vcr4-c8h2`；本项目不启用 RSC/Server Actions，但在上游发布可安装修复版本前，`npm audit` 仍会报告 2 个 high，详见 `QA_REPORT.md`。
 
 ## 当前开发顺序
 
-1. 在测试飞书应用上验证长连接、撤回和按群聊时间窗补偿，并评审加密 Webhook；
-2. 在容器内使用真实凭证执行 Codex 安全冒烟与故障注入测试；
-3. 完成生产会话签发、权限策略、代理级出网限制和备份恢复演练；
-4. 对消息查询和 SSE 做分页、事件游标与压力测试，并对前端大包做路由级分包；
-5. 上述核心闭环通过真实集成验收后，再单独规划知识检索和专业 Agent，不在本轮范围内扩展。
+1. 经用户确认后安装 launchd 模板，并执行一次真实 Mac 睡眠/唤醒与备份恢复演练；
+2. 在专用 Runner 认证可用时执行真实 Codex 安全冒烟与真实评估；
+3. 真实飞书测试消息和官方长连接验收按用户要求后置，恢复时单独执行且人工确认个人未读状态。

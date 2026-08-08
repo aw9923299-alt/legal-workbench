@@ -12,6 +12,7 @@ from legal_workbench.domain.enums import (
     DependencyType,
     Priority,
     PriorityConfirmationStatus,
+    WorkItemStatus,
 )
 
 
@@ -96,6 +97,7 @@ class DependencyResponse(ApiModel):
     external_party_id: str | None
     description: str | None
     satisfied_at: datetime | None
+    satisfied_by: str | None
     waived_by: str | None
     waived_at: datetime | None
     version: int
@@ -103,4 +105,47 @@ class DependencyResponse(ApiModel):
 
 class DependencyCreatedResponse(ApiModel):
     dependency_id: UUID
+    work_item_version: int
+    idempotent_replay: bool
+
+
+class WorkItemActionRequest(ApiModel):
+    reason: str | None = Field(default=None, max_length=4000)
+    waiting_party_id: str | None = Field(default=None, max_length=160)
+    blocker_owner_id: str | None = Field(default=None, max_length=160)
+
+
+class ChangeWorkItemOwnerRequest(ApiModel):
+    owner_id: str = Field(min_length=1, max_length=160)
+    reason: str | None = Field(default=None, max_length=4000)
+
+
+class ChangeWorkItemDeadlineRequest(ApiModel):
+    deadline: datetime
+    reason: str | None = Field(default=None, max_length=4000)
+
+
+class ChangeWorkItemNextActionRequest(ApiModel):
+    next_action: str = Field(min_length=1, max_length=4000)
+    reason: str | None = Field(default=None, max_length=4000)
+
+
+class WorkItemActionResponse(ApiModel):
+    work_item_id: UUID
+    status: WorkItemStatus
+    version: int
+    idempotent_replay: bool
+
+
+class ResolveDependencyRequest(ApiModel):
+    dependency_version: int = Field(ge=1)
+    reason: str | None = Field(default=None, max_length=4000)
+
+
+class DependencyResolvedResponse(ApiModel):
+    work_item_id: UUID
+    dependency_id: UUID
+    work_item_version: int
+    dependency_version: int
+    status: DependencyStatus
     idempotent_replay: bool

@@ -31,8 +31,7 @@ async def get_request_actor(
     actor_id = (x_actor_id or "").strip()
     if (
         actor_id
-        and settings.environment
-        in {RuntimeEnvironment.LOCAL, RuntimeEnvironment.DEVELOPMENT}
+        and settings.environment in {RuntimeEnvironment.LOCAL, RuntimeEnvironment.DEVELOPMENT}
         and settings.allow_development_actor_header
     ):
         if len(actor_id) > 160:
@@ -75,6 +74,26 @@ async def get_idempotency_key(
             detail="Idempotency-Key must not exceed 160 characters.",
         )
     return key
+
+
+async def get_if_match_version(
+    if_match: Annotated[str | None, Header(alias="If-Match")] = None,
+) -> int:
+    if if_match is None or not if_match.strip():
+        raise HTTPException(
+            status_code=status.HTTP_428_PRECONDITION_REQUIRED,
+            detail="If-Match header with the current entity version is required.",
+        )
+    value = if_match.strip()
+    if value.startswith("W/"):
+        value = value[2:].strip()
+    value = value.strip('"')
+    if not value.isdigit() or int(value) < 1:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="If-Match must contain a positive integer entity version.",
+        )
+    return int(value)
 
 
 def get_correlation_id(request: Request) -> str:

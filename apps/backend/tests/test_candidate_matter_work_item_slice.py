@@ -444,6 +444,42 @@ async def test_candidate_can_be_linked_to_existing_matter_idempotently() -> None
 
 
 @pytest.mark.asyncio
+async def test_candidate_update_requires_a_matter_update_proposal() -> None:
+    state = FakeState()
+    candidate = make_candidate()
+    matter = LegalMatter.create(
+        title="既有事项",
+        primary_category=MatterCategory.CONTRACT,
+        owner_id="legal-user-1",
+        legal_risk=LegalRisk.MEDIUM,
+        business_impact=BusinessImpact.PROJECT,
+        confidentiality=Confidentiality.INTERNAL,
+        secondary_categories=[],
+        requester_ids=[],
+        summary=None,
+        objective=None,
+    )
+    state.candidates[candidate.id] = candidate
+    state.matters[matter.id] = matter
+
+    with pytest.raises(DomainValidationError):
+        await ResolveCandidateHandler(state.factory).execute(
+            ResolveCandidateCommand(
+                candidate_id=candidate.id,
+                candidate_version=candidate.version,
+                action=CandidateResolutionAction.UPDATE_EXISTING,
+                matter_id=matter.id,
+                actor_id="legal-user-1",
+                correlation_id="corr-direct-update",
+                idempotency_key="idem-direct-update",
+            )
+        )
+
+    assert candidate.status == CandidateStatus.PENDING_CONFIRMATION
+    assert matter.version == 1
+
+
+@pytest.mark.asyncio
 async def test_candidate_can_be_marked_information_only_without_matter() -> None:
     state = FakeState()
     candidate = make_candidate()

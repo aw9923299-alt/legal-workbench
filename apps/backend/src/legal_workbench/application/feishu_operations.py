@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import re
+import os
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from pathlib import Path
@@ -11,13 +11,26 @@ from legal_workbench.application.feishu_handlers import IngestFeishuEventHandler
 from legal_workbench.application.idempotency import request_hash, require_matching_replay
 from legal_workbench.application.ports import UnitOfWorkFactory
 from legal_workbench.config import Settings
-from legal_workbench.domain.entities import AuditEvent, IdempotencyRecord, IntegrationConnection
+from legal_workbench.domain.entities import (
+    AuditEvent,
+    IdempotencyRecord,
+    IntegrationConnection,
+    OutboxEvent,
+)
 from legal_workbench.domain.enums import (
     AttachmentDownloadStatus,
+    DocumentExtractionStatus,
     IntegrationConnectionMode,
     IntegrationConnectionStatus,
 )
-from legal_workbench.domain.errors import InvalidStateTransitionError
+from legal_workbench.domain.errors import (
+    InvalidStateTransitionError,
+    StorageQuotaExceededError,
+)
+from legal_workbench.integrations.document_extractors import (
+    AttachmentTooLargeError,
+    sanitize_attachment_filename,
+)
 from legal_workbench.integrations.feishu_client import FeishuApiClient, FeishuApiError
 from legal_workbench.integrations.feishu_event_sources import (
     EventSourceHealth,
@@ -33,9 +46,50 @@ def _connection_status(status: EventSourceStatus) -> IntegrationConnectionStatus
     return IntegrationConnectionStatus(status.value)
 
 
-def _safe_file_name(value: str) -> str:
-    base = Path(value).name.strip() or "attachment"
-    return re.sub(r"[^\w.()\-\u4e00-\u9fff]+", "_", base)[:240]
+def _attachment_storage_usage(root: Path) -> int:
+    if not root.exists():
+        return 0
+    total = 0
+    pending = [root]
+    while pending:
+        directory = pending.pop()
+        with os.scandir(directory) as entries:
+            for entry in entries:
+                if entry.is_symlink():
+                    continue
+                if entry.is_dir(follow_symlinks=False):
+                    pending.append(Path(entry.path))
+                elif entry.is_file(follow_symlinks=False):
+                    total += entry.stat(follow_symlinks=False).st_size
+    return total
+
+
+def _write_private_file(target: Path, content: bytes) -> None:
+    temporary = target.with_name(f".{target.name}.{uuid4().hex}.part")
+    descriptor = os.open(
+        temporary,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+        0o600,
+    )
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.link(temporary, target, follow_symlinks=False)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _download_error_code(exc: Exception) -> str:
+    code = getattr(exc, "code", None)
+    if isinstance(code, str) and code.isascii() and 0 < len(code) <= 100:
+        return code
+    if isinstance(exc, FeishuApiError):
+        return "FEISHU_ATTACHMENT_DOWNLOAD_FAILED"
+    if isinstance(exc, OSError):
+        return "ATTACHMENT_STORAGE_WRITE_FAILED"
+    return "ATTACHMENT_DOWNLOAD_FAILED"
 
 
 def _seconds_to_millis(value: object) -> str | None:
@@ -116,13 +170,9 @@ class FeishuOperationsService:
         connection.updated_at = datetime.now(UTC)
         digest = request_hash({"operation": "feishu_reconnect"})
         async with self._uow_factory() as uow:
-            await uow.lock_idempotency(
-                operation="feishu_reconnect", key=idempotency_key
-            )
+            await uow.lock_idempotency(operation="feishu_reconnect", key=idempotency_key)
             replay = require_matching_replay(
-                await uow.idempotency.get(
-                    operation="feishu_reconnect", key=idempotency_key
-                ),
+                await uow.idempotency.get(operation="feishu_reconnect", key=idempotency_key),
                 expected_hash=digest,
                 idempotency_key=idempotency_key,
             )
@@ -164,9 +214,7 @@ class FeishuOperationsService:
         digest = request_hash({"operation": "feishu_reconcile", "windowMinutes": window})
         async with self._uow_factory() as uow:
             existing_record = require_matching_replay(
-                await uow.idempotency.get(
-                    operation="feishu_reconcile", key=idempotency_key
-                ),
+                await uow.idempotency.get(operation="feishu_reconcile", key=idempotency_key),
                 expected_hash=digest,
                 idempotency_key=idempotency_key,
             )
@@ -188,9 +236,7 @@ class FeishuOperationsService:
                 )
                 for item in items:
                     payload, event_id, event_type = await self._reconcile_payload(chat_id, item)
-                    ingest_result = await IngestFeishuEventHandler(
-                        self._uow_factory
-                    ).execute(
+                    ingest_result = await IngestFeishuEventHandler(self._uow_factory).execute(
                         IngestFeishuEventCommand(
                             actor_id=actor_id,
                             correlation_id=correlation_id,
@@ -223,13 +269,9 @@ class FeishuOperationsService:
             "message": detail,
         }
         async with self._uow_factory() as uow:
-            await uow.lock_idempotency(
-                operation="feishu_reconcile", key=idempotency_key
-            )
+            await uow.lock_idempotency(operation="feishu_reconcile", key=idempotency_key)
             concurrent_replay = require_matching_replay(
-                await uow.idempotency.get(
-                    operation="feishu_reconcile", key=idempotency_key
-                ),
+                await uow.idempotency.get(operation="feishu_reconcile", key=idempotency_key),
                 expected_hash=digest,
                 idempotency_key=idempotency_key,
             )
@@ -275,6 +317,9 @@ class FeishuOperationsService:
         if message is None:
             return
         for attachment in attachments:
+            reservation_token: UUID | None = None
+            target: Path | None = None
+            target_created = False
             attachment.download_status = AttachmentDownloadStatus.DOWNLOADING
             attachment.updated_at = datetime.now(UTC)
             async with self._uow_factory() as uow:
@@ -282,35 +327,122 @@ class FeishuOperationsService:
                 await uow.commit()
             try:
                 resource_type = "image" if message.message_type == "image" else "file"
-                content, mime_type, size = await self._client.download_message_resource(
+                content, mime_type, _size = await self._client.download_message_resource(
                     message_id=message.message_id,
                     file_key=attachment.file_key,
                     resource_type=resource_type,
                 )
                 if len(content) > self._settings.feishu_attachment_max_bytes:
-                    raise FeishuApiError("Attachment exceeds the configured download limit.")
+                    raise AttachmentTooLargeError(
+                        "Attachment exceeds the configured download limit."
+                    )
+                root = Path(self._settings.feishu_attachment_root)
+                root.mkdir(parents=True, exist_ok=True, mode=0o700)
+                root = root.resolve(strict=True)
                 directory = (
-                    Path(self._settings.feishu_attachment_root).resolve()
-                    / (message.tenant_key or "default")
+                    root
+                    / sanitize_attachment_filename(message.tenant_key or "default")
                     / str(message.id)
                 )
                 directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-                target = directory / f"{attachment.id}-{_safe_file_name(attachment.file_name)}"
-                target.write_bytes(content)
-                target.chmod(0o600)
+                directory = directory.resolve(strict=True)
+                directory.relative_to(root)
+                target = directory / (
+                    f"{attachment.id}-{sanitize_attachment_filename(attachment.file_name)}"
+                )
+                requested_bytes = len(content)
+                async with self._uow_factory() as uow:
+                    reservation_token = await uow.storage_quota.reserve(
+                        attachment_id=attachment.id,
+                        requested_bytes=requested_bytes,
+                        total_bytes=self._settings.feishu_attachment_total_quota_bytes,
+                        observed_used_bytes=_attachment_storage_usage(root),
+                        expires_at=datetime.now(UTC) + timedelta(minutes=10),
+                    )
+                    if reservation_token is None:
+                        raise StorageQuotaExceededError(
+                            "Attachment storage quota has been exceeded."
+                        )
+                    await uow.commit()
+                _write_private_file(target, content)
+                target_created = True
                 attachment.sha256 = sha256(content).hexdigest()
                 attachment.local_path = str(target)
                 attachment.mime_type = attachment.mime_type or mime_type
-                attachment.size = attachment.size or size
+                attachment.size = requested_bytes
                 attachment.download_status = AttachmentDownloadStatus.DOWNLOADED
                 attachment.download_error = None
+                attachment.extraction_status = DocumentExtractionStatus.PENDING
+                attachment.updated_at = datetime.now(UTC)
+                async with self._uow_factory() as uow:
+                    await uow.feishu.save_attachment(attachment)
+                    await uow.storage_quota.commit(reservation_token)
+                    await uow.outbox_events.add(
+                        OutboxEvent(
+                            id=uuid4(),
+                            event_type="DocumentExtractionRequested",
+                            aggregate_type="message_attachment",
+                            aggregate_id=attachment.id,
+                            payload={"attachmentId": str(attachment.id)},
+                            correlation_id=f"document-extraction:{attachment.id}",
+                        )
+                    )
+                    await uow.commit()
             except Exception as exc:
+                if target is not None and target_created:
+                    target.unlink(missing_ok=True)
+                if reservation_token is not None:
+                    async with self._uow_factory() as uow:
+                        await uow.storage_quota.release(reservation_token)
+                        await uow.commit()
                 attachment.download_status = AttachmentDownloadStatus.FAILED
-                attachment.download_error = str(exc)[:1000]
-            attachment.updated_at = datetime.now(UTC)
-            async with self._uow_factory() as uow:
-                await uow.feishu.save_attachment(attachment)
-                await uow.commit()
+                attachment.download_error = _download_error_code(exc)
+                attachment.updated_at = datetime.now(UTC)
+                async with self._uow_factory() as uow:
+                    await uow.feishu.save_attachment(attachment)
+                    await uow.commit()
+        await self._request_analysis_after_download_failures(message_id)
+
+    async def _request_analysis_after_download_failures(self, message_id: UUID) -> None:
+        async with self._uow_factory() as uow:
+            await uow.lock_idempotency(operation="attachment_analysis_ready", key=str(message_id))
+            attachments = await uow.feishu.list_attachments(message_id)
+            if not attachments or any(
+                value.download_status != AttachmentDownloadStatus.FAILED
+                and (
+                    value.download_status != AttachmentDownloadStatus.DOWNLOADED
+                    or value.extraction_status
+                    not in {
+                        DocumentExtractionStatus.SUCCEEDED,
+                        DocumentExtractionStatus.BODY_UNAVAILABLE,
+                        DocumentExtractionStatus.FAILED,
+                    }
+                )
+                for value in attachments
+            ):
+                return
+            if await uow.outbox_events.exists_pending(
+                event_type="FeishuMessageAnalysisRequested",
+                aggregate_id=message_id,
+            ):
+                return
+            message = await uow.feishu.get_message_by_id(message_id)
+            await uow.outbox_events.add(
+                OutboxEvent(
+                    id=uuid4(),
+                    event_type="FeishuMessageAnalysisRequested",
+                    aggregate_type="feishu_message",
+                    aggregate_id=message_id,
+                    payload={
+                        "messageId": str(message_id),
+                        "actorId": "feishu-connector",
+                        "actorSource": "integration",
+                        "forceNewRun": bool(message is not None and message.version > 1),
+                    },
+                    correlation_id=f"attachment-analysis:{message_id}",
+                )
+            )
+            await uow.commit()
 
     async def _reconcile_payload(
         self, chat_id: str, item: dict[str, object]
@@ -320,13 +452,9 @@ class FeishuOperationsService:
             raise FeishuApiError("Reconciled message omitted message_id.")
         tenant_key = self._settings.feishu_tenant_key or ""
         async with self._uow_factory() as uow:
-            existing = await uow.feishu.get_message(
-                tenant_key=tenant_key, message_id=message_id
-            )
+            existing = await uow.feishu.get_message(tenant_key=tenant_key, message_id=message_id)
         event_type = (
-            "im.message.message_edited_v1"
-            if existing is not None
-            else "im.message.receive_v1"
+            "im.message.message_edited_v1" if existing is not None else "im.message.receive_v1"
         )
         update_time = _seconds_to_millis(item.get("update_time"))
         create_time = _seconds_to_millis(item.get("create_time"))
@@ -335,9 +463,7 @@ class FeishuOperationsService:
         sender_id = str(sender_object.get("id") or sender_object.get("open_id") or "")
         message = dict(item)
         message["chat_id"] = chat_id
-        message["message_type"] = str(
-            item.get("message_type") or item.get("msg_type") or "unknown"
-        )
+        message["message_type"] = str(item.get("message_type") or item.get("msg_type") or "unknown")
         message["create_time"] = create_time
         message["update_time"] = update_time
         reconcile_event_id = (

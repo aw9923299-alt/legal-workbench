@@ -4,7 +4,12 @@ from uuid import UUID
 from pydantic import Field
 
 from legal_workbench.api.schemas.base import ApiModel
-from legal_workbench.domain.enums import AgentRunStatus, CandidateStatus, FeishuMessageStatus
+from legal_workbench.domain.enums import (
+    AgentRunStatus,
+    CandidateStatus,
+    DocumentExtractionStatus,
+    FeishuMessageStatus,
+)
 
 
 class FeishuEventIngestedResponse(ApiModel):
@@ -95,10 +100,22 @@ class FeishuAttachmentResponse(ApiModel):
     mime_type: str | None
     size: int | None
     sha256: str | None
-    local_path: str | None
     download_status: str
     download_error: str | None
     authorized_for_analysis: bool
+    extraction_status: DocumentExtractionStatus
+    extractor_version: str | None
+    page_count: int | None
+    character_count: int | None
+    extraction_error_code: str | None
+
+
+class SetAttachmentAuthorizationRequest(ApiModel):
+    authorized: bool
+
+
+class SetAttachmentAuthorizationResponse(FeishuAttachmentResponse):
+    idempotent_replay: bool
 
 
 class CandidateRevisionResponse(ApiModel):

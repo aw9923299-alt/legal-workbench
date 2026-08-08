@@ -39,6 +39,7 @@ If-Match: <entity-version>
 
 - 业务 API 从 HttpOnly Cookie Session 解析 Actor，应用服务接收的是后端 `RequestActor`，不直接读取浏览器声明的身份；
 - `POST /api/v1/auth/local-session` 只在显式 `local` 或 `development` 环境签发本地单用户 Session；`test/staging/production` 均拒绝；
+- `POST /api/v1/auth/local-supervisor-session` 只供绑定在 loopback 的 Mac Supervisor 使用，签发固定机器 Actor `mac-supervisor`，审计来源为 `local_supervisor`，不得把自动恢复记到本地法务用户；
 - `GET /api/v1/auth/session` 返回已验证 Actor 及 `identitySource`；
 - `X-Actor-ID` 仅在 `LEGAL_WORKBENCH_ALLOW_DEVELOPMENT_ACTOR_HEADER=true` 且处于 `local/development` 时可用，审计来源标记为 `development_header`；
 - 非本地环境必须配置至少 32 字符的非默认 Session Secret；生产环境缺少或无效 Session 返回 401，开发 Actor Header 配置会导致应用启动失败。
@@ -111,6 +112,7 @@ POST /api/v1/agent-runs/:runId/cancel
 POST /api/v1/feishu/messages/:messageId/analyse
 POST /api/v1/feishu/messages/:messageId/retry-analysis
 GET  /api/v1/feishu/messages/:messageId/analysis
+POST /api/v1/feishu/messages/:messageId/attachments/:attachmentId/analysis-authorization
 ```
 
 `analyse` 和 `retry-analysis` 必须携带 `Idempotency-Key`，首次接受返回 202，同一业务请求的幂等重放返回 200。人工重新分析创建新 AgentRun，历史运行不删除。
@@ -119,7 +121,11 @@ GET  /api/v1/feishu/messages/:messageId/analysis
 
 `analysis` 返回：飞书消息来源与处理状态、ContextSnapshot 摘要、AgentRun 状态/版本/尝试/心跳/错误、研判 JSON、Candidate ID 与 `canRetry`。AgentRun 详情还返回实际授权来源列表、Prompt/Runtime/AgentDefinition 版本、状态历史、租约、校验错误、修复标志、可用时的 Token 用量和受限 stdout/stderr，用于审计。Candidate 详情返回递增分析 revision 与 superseded 关系。
 
+附件授权接口要求认证 Actor、`Idempotency-Key` 和 Correlation ID，并只允许操作属于该消息且已下载的附件。附件响应返回下载/提取状态、SHA-256、页数、字符数和稳定错误码，不返回本地路径。授权只影响后续不可变 ContextSnapshot；Codex 事实引用必须精确匹配已纳入片段的附件 ID、文件名、页码、段落号和内容哈希。
+
 `POST /api/v1/system/recover-pending-jobs` 与后台定时任务复用同一 PostgreSQL recovery service；写接口要求 Actor、Idempotency-Key、Correlation ID、权限和审计。恢复操作只重建 Outbox/状态，不在 API 线程运行 Codex。
+
+`GET /api/v1/system/health` 与 `/system/metrics` 还返回 `pendingRecovery`、磁盘总量/剩余量、附件用量/配额、最近备份时间/状态和最近唤醒检查时间。备份或磁盘元数据不可读时返回 `unknown/unavailable`，不得伪造正常；有效未来租约不计入 `pendingRecovery`。
 
 ## 4. 消息候选接口
 
@@ -130,9 +136,29 @@ GET    /api/v1/inbox/candidates/:id
 POST   /api/v1/inbox/candidates/:id/confirm-create
 GET    /api/v1/inbox/candidates/:id/revisions
 POST   /api/v1/inbox/candidates/:id/resolve
+POST   /api/v1/inbox/candidates/:id/matter-update-proposals
+GET    /api/v1/matter-update-proposals/:proposalId
+POST   /api/v1/matter-update-proposals/:proposalId/review
 ```
 
-`resolve` 统一承载 `link_existing/update_existing/information_only/ignore`，避免为同一业务动作创建同义接口；关联/更新要求 `matterId`，并只登记可审计关系，不静默改写 Matter 已确认字段。重新分析使用消息或 AgentRun retry API。
+`resolve` 只承载 `link_existing/information_only/ignore`。`update_existing` 必须改走 `matter-update-proposals`：创建时只登记 Candidate-Matter 更新关系和待审 Proposal，不改 Matter；审核接口同时校验 Proposal 版本与 `baseMatterVersion`，只应用法务逐字段批准的最终值。重新分析使用消息或 AgentRun retry API。
+
+更新建议使用固定字段集合：`title/category/priority/deadline/owner/currentStatus/nextAction/newWorkItems`。服务端从当前 Matter 和 Candidate 的受控分析结果生成“当前值/消息提取值/AI 建议值”，不信任浏览器提交的 Actor ID，也不允许浏览器把建议直接写入正式记录。
+
+```ts
+interface ReviewMatterUpdateProposalRequest {
+  proposalVersion: number;
+  matterVersion: number;
+  decisions: Array<{
+    fieldName: string;
+    decision: 'approve' | 'reject';
+    finalValue?: unknown;
+  }>;
+  rejectionReason?: string;
+}
+```
+
+Matter 已变化时返回 `409 ENTITY_VERSION_CONFLICT`，Proposal 保持 `pending`。新增 WorkItem、规范化 Deadline、Matter 更新、审计、Outbox 和幂等记录在同一 PostgreSQL 事务提交。
 
 创建Candidate、`confirm-create`和新增WorkItem必须已建立认证 Session，写操作还必须携带：
 
@@ -182,28 +208,57 @@ GET    /api/v1/matters/:matterId/artifacts
 
 ```http
 POST   /api/v1/matters/:matterId/work-items
-PATCH  /api/v1/work-items/:workItemId
 POST   /api/v1/work-items/:workItemId/start
+POST   /api/v1/work-items/:workItemId/pause
 POST   /api/v1/work-items/:workItemId/wait
 POST   /api/v1/work-items/:workItemId/block
-POST   /api/v1/work-items/:workItemId/submit-review
+POST   /api/v1/work-items/:workItemId/resume
 POST   /api/v1/work-items/:workItemId/complete
 POST   /api/v1/work-items/:workItemId/cancel
+POST   /api/v1/work-items/:workItemId/reopen
+PATCH  /api/v1/work-items/:workItemId/owner
+PATCH  /api/v1/work-items/:workItemId/deadline
+PATCH  /api/v1/work-items/:workItemId/next-action
+POST   /api/v1/work-items/:workItemId/dependencies
+POST   /api/v1/work-items/:workItemId/dependencies/:dependencyId/resolve
 ```
 
 新增WorkItem同样必须通过 Session 认证并携带`Idempotency-Key`。系统对Matter行加锁，保证并发新增时`sequenceOrder`稳定，并将业务写入、审计、Outbox和幂等记录在同一事务提交。
 
-等待请求：
+上述 WorkItem 状态、字段和依赖写接口还必须携带 `If-Match: <work-item-version>`；解决依赖的请求体另带 `dependencyVersion`。缺少 `If-Match` 返回 `428`，版本冲突返回 `409`。API 不直接写状态字符串，统一调用领域状态机；每个成功动作只增加一次 WorkItem 版本并追加审计、Outbox 和幂等结果。
+
+状态请求：
 
 ```ts
-interface StartWaitingRequest {
-  dependencyType: 'material' | 'response' | 'decision' | 'approval' | 'external_event';
-  waitingForId?: string;
-  description: string;
-  expectedAt?: string;
-  nextReminderAt?: string;
+interface WorkItemActionRequest {
+  reason?: string;
+  waitingPartyId?: string;
+  blockerOwnerId?: string;
 }
 ```
+
+调用 `wait` 前先通过 `dependencies` 创建开放依赖；`pause/wait/block/cancel/reopen` 必须填写原因，`block` 还必须填写 `blockerOwnerId`。
+
+## 6.1 今日工作台接口
+
+```http
+GET /api/v1/dashboard/today
+```
+
+接口只接受后端认证 Actor，并从 PostgreSQL 业务事实与实时健康快照投影以下队列：
+
+```text
+todayMustHandle
+overdue
+pendingCandidates
+analysisFailed
+waitingOthers
+upcomingDeadlines
+pendingOutboundReview
+systemAbnormal
+```
+
+每项返回真实对象 `href`、截止时间、硬期限、法律风险、人工确认优先级、AI 建议优先级、等待时间和实际排序理由。队列按“硬期限 → 逾期 → 法律风险 → 人工确认优先级 → 等待时长 → 创建时间 → ID”确定性排序；AI 建议优先级不参与排序，也不得覆盖人工值。健康探针失败会形成脱敏的 `systemAbnormal` 项，不泄露原始异常或阻断其他业务队列。
 
 ## 7. 优先级确认接口
 
@@ -366,11 +421,37 @@ POST /api/v1/rules/candidates/:id/approve-trial
 POST /api/v1/rules/candidates/:id/reject
 POST /api/v1/rules/candidates/:id/activate
 POST /api/v1/rules/candidates/:id/rollback
-GET  /api/v1/evaluations
-POST /api/v1/evaluations/run
+POST /api/v1/evaluations/runs
+GET  /api/v1/evaluations/runs/:runId
 ```
 
 规则启用前必须关联通过的评测运行。
+
+评估创建请求默认 `runtimeType=fake`，必须携带认证 Session、`Idempotency-Key` 和 Correlation ID；相同键只返回原 EvaluationRun。响应包含不可变 Fixture/AgentDefinition 版本、逐用例结果和相关性、分类、期限、角色、事实引用、推断误报、缺失信息、Schema 首次通过、平均耗时、失败率及重试率。`runtimeType=real` 还要求 `allowRealRuntime=true` 和服务端真实 Codex 门禁；当前 API 进程不持有 Codex 认证，因此真实路径由专用 CLI Runner 执行。评估不得启用规则、修改 Prompt 或改变 AgentDefinition 状态。
+
+## 12.2 首次配置接口
+
+```http
+GET  /api/v1/setup/status
+POST /api/v1/setup/feishu/validate
+POST /api/v1/setup/feishu/start
+POST /api/v1/setup/feishu/stop
+POST /api/v1/setup/codex/validate
+POST /api/v1/setup/codex/smoke-test
+```
+
+状态只返回 `configured`、掩码、稳定状态/错误码、可读说明和 Correlation ID，不返回 Secret。Codex 两个写接口返回 `202` 与 `checkRunId`，请求经事务 Outbox 交给只在 Worker 中可用的认证环境；外部运行期间不持有数据库事务。按当前用户确认，三个飞书写接口均不验证、不保存新 Secret、不启动连接，只返回 `not_executed / REAL_FEISHU_PHASE_DEFERRED`。
+
+## 12.3 飞书群聊范围接口
+
+```http
+GET   /api/v1/settings/feishu-scopes
+POST  /api/v1/settings/feishu-scopes
+PATCH /api/v1/settings/feishu-scopes/:scopeId
+POST  /api/v1/settings/feishu-scopes/:scopeId/compensate
+```
+
+新登记群聊固定为 `unapproved/disabled`。`PATCH` 支持 `allow/exclude/pause/resume`，写请求必须携带认证 Session、`Idempotency-Key`、Correlation ID 和当前版本 `If-Match`；旧版本返回 `409 ENTITY_VERSION_CONFLICT`，不得覆盖更新的人工决定。`allow/resume` 必须显式选择 `mentions_only` 或 `all_messages`。当前真实飞书阶段延后，补偿接口只写入 `last_compensation_status=not_executed` 与审计记录，返回 `REAL_FEISHU_PHASE_DEFERRED`，不调用飞书远端接口。
 
 ## 13. 日报和复盘接口
 

@@ -16,6 +16,7 @@ import {
 } from 'antd';
 import { ReloadOutlined, SendOutlined } from '@ant-design/icons';
 import { useCallback, useEffect, useState, type ReactNode } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { legalApi } from '../services/api';
 import { displayValue } from '../services/apiLabels';
 import type { ReviewDecision, ReviewPackage } from '../types/api';
@@ -30,6 +31,8 @@ interface ReviewDraft {
 }
 
 export default function ReviewCenterPage() {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const requestedPackageId = searchParams.get('packageId');
   const [packages, setPackages] = useState<ReviewPackage[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -42,11 +45,27 @@ export default function ReviewCenterPage() {
     reusableAsExample: false,
   });
 
+  const open = useCallback((value: ReviewPackage) => {
+    setActive(value);
+    setDraft({
+      decision: 'approved',
+      comments: '',
+      finalContent: value.proposedContent,
+      reusableAsExample: false,
+    });
+  }, []);
+
+  const close = () => {
+    setActive(undefined);
+    if (requestedPackageId) setSearchParams({}, { replace: true });
+  };
+
   const load = useCallback(async () => {
     setLoading(true);
     setError(undefined);
     try {
-      setPackages(await legalApi.listReviewPackages());
+      const values = await legalApi.listReviewPackages();
+      setPackages(values);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : '加载审核包失败');
     } finally {
@@ -55,16 +74,11 @@ export default function ReviewCenterPage() {
   }, []);
 
   useEffect(() => { void load(); }, [load]);
-
-  const open = (value: ReviewPackage) => {
-    setActive(value);
-    setDraft({
-      decision: 'approved',
-      comments: '',
-      finalContent: value.proposedContent,
-      reusableAsExample: false,
-    });
-  };
+  useEffect(() => {
+    if (!requestedPackageId) return;
+    const requested = packages.find((value) => value.id === requestedPackageId);
+    if (requested) open(requested);
+  }, [open, packages, requestedPackageId]);
 
   const submitReview = async () => {
     if (!active) return;
@@ -80,7 +94,7 @@ export default function ReviewCenterPage() {
         reusableAsExample: draft.reusableAsExample,
       });
       message.success('审核结果已保存');
-      setActive(undefined);
+      close();
       await load();
     } catch (reason) {
       message.error(reason instanceof Error ? reason.message : '审核失败');
@@ -118,7 +132,10 @@ export default function ReviewCenterPage() {
             renderItem={(item) => (
               <List.Item>
                 <Card bordered={false} actions={[
-                  <Button key="review" type="link" onClick={() => open(item)}>审核</Button>,
+                  <Button key="review" type="link" onClick={() => {
+                    setSearchParams({ packageId: item.id }, { replace: true });
+                    open(item);
+                  }}>审核</Button>,
                   <Button key="send" type="link" icon={<SendOutlined />} disabled={item.status !== 'approved'} onClick={() => void queue(item)}>进入外发队列</Button>,
                 ]}>
                   <Space wrap><Tag color={item.status === 'approved' ? 'green' : item.status === 'pending_review' ? 'blue' : 'default'}>{item.status}</Tag><Tag>{item.packageType}</Tag></Space>
@@ -139,7 +156,7 @@ export default function ReviewCenterPage() {
         okText="提交审核"
         cancelText="取消"
         confirmLoading={submitting}
-        onCancel={() => setActive(undefined)}
+        onCancel={close}
         onOk={() => void submitReview()}
       >
         {active && (

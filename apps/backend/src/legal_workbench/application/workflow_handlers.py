@@ -49,9 +49,7 @@ class ConfirmPriorityHandler:
         async with self._uow_factory() as uow:
             await uow.lock_idempotency(operation=self.OPERATION, key=command.idempotency_key)
             replay = require_matching_replay(
-                await uow.idempotency.get(
-                    operation=self.OPERATION, key=command.idempotency_key
-                ),
+                await uow.idempotency.get(operation=self.OPERATION, key=command.idempotency_key),
                 expected_hash=digest,
                 idempotency_key=command.idempotency_key,
             )
@@ -165,9 +163,7 @@ class CreateDeadlineHandler:
         async with self._uow_factory() as uow:
             await uow.lock_idempotency(operation=self.OPERATION, key=command.idempotency_key)
             replay = require_matching_replay(
-                await uow.idempotency.get(
-                    operation=self.OPERATION, key=command.idempotency_key
-                ),
+                await uow.idempotency.get(operation=self.OPERATION, key=command.idempotency_key),
                 expected_hash=digest,
                 idempotency_key=command.idempotency_key,
             )
@@ -246,10 +242,9 @@ class CreateDependencyHandler:
     async def execute(self, command: CreateDependencyCommand) -> DependencyCreatedResult:
         payload = {
             "workItemId": str(command.work_item_id),
+            "workItemVersion": command.work_item_version,
             "dependsOnWorkItemId": (
-                str(command.depends_on_work_item_id)
-                if command.depends_on_work_item_id
-                else None
+                str(command.depends_on_work_item_id) if command.depends_on_work_item_id else None
             ),
             "dependencyType": command.dependency_type.value,
             "externalPartyId": command.external_party_id,
@@ -259,18 +254,18 @@ class CreateDependencyHandler:
         async with self._uow_factory() as uow:
             await uow.lock_idempotency(operation=self.OPERATION, key=command.idempotency_key)
             replay = require_matching_replay(
-                await uow.idempotency.get(
-                    operation=self.OPERATION, key=command.idempotency_key
-                ),
+                await uow.idempotency.get(operation=self.OPERATION, key=command.idempotency_key),
                 expected_hash=digest,
                 idempotency_key=command.idempotency_key,
             )
             if replay is not None:
                 return DependencyCreatedResult(
                     dependency_id=replay_uuid(replay, "dependencyId"),
+                    work_item_version=int(str(replay.response_payload["workItemVersion"])),
                     idempotent_replay=True,
                 )
-            if await uow.work_items.get(command.work_item_id) is None:
+            work_item = await uow.work_items.get_for_update(command.work_item_id)
+            if work_item is None:
                 raise EntityNotFoundError("Work item was not found.")
             if (
                 command.depends_on_work_item_id is not None
@@ -284,7 +279,9 @@ class CreateDependencyHandler:
                 external_party_id=command.external_party_id,
                 description=command.description,
             )
+            work_item.touch_dependency_change(expected_version=command.work_item_version)
             await uow.dependencies.add(dependency)
+            await uow.work_items.save(work_item)
             event_payload: dict[str, object] = {
                 "dependencyId": str(dependency.id),
                 "workItemId": str(dependency.work_item_id),
@@ -322,8 +319,13 @@ class CreateDependencyHandler:
                     operation=self.OPERATION,
                     idempotency_key=command.idempotency_key,
                     request_hash=digest,
-                    response_payload={"dependencyId": str(dependency.id)},
+                    response_payload={
+                        "dependencyId": str(dependency.id),
+                        "workItemVersion": work_item.version,
+                    },
                 )
             )
             await uow.commit()
-        return DependencyCreatedResult(dependency_id=dependency.id)
+        return DependencyCreatedResult(
+            dependency_id=dependency.id, work_item_version=work_item.version
+        )

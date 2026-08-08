@@ -2,17 +2,20 @@ from __future__ import annotations
 
 import json
 from collections.abc import Sequence
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 from hashlib import sha256
 from uuid import UUID, uuid4
 
 from sqlalchemy import Select, exists, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql.elements import ColumnElement
 
 from legal_workbench.domain.entities import (
+    AgentAttemptLease,
     AgentDefinition,
     AgentRun,
+    AgentRunAttempt,
     AgentRunSource,
     AgentRunStatusChange,
     AuditEvent,
@@ -20,23 +23,35 @@ from legal_workbench.domain.entities import (
     Communication,
     ContextSnapshot,
     Deadline,
+    DocumentExtraction,
+    DocumentSegment,
+    DocumentVersion,
     DraftArtifact,
+    EvaluationCase,
+    EvaluationResult,
+    EvaluationRun,
     FeishuAttachment,
     FeishuMessage,
     FeishuMessageVersion,
     FeishuRawEvent,
     IdempotencyRecord,
+    IntegrationCheckRun,
     IntegrationConnection,
+    IntegrationCredential,
+    IntegrationScope,
     LegalMatter,
+    MatterUpdateProposal,
     MessageCandidate,
     OutboxEvent,
     PriorityConfirmation,
     ReviewPackage,
     ReviewRecord,
+    SystemSetting,
     WorkItem,
     WorkItemDependency,
 )
 from legal_workbench.domain.enums import (
+    AgentAttemptStatus,
     AgentDefinitionStatus,
     AgentRunStatus,
     AttachmentDownloadStatus,
@@ -44,13 +59,17 @@ from legal_workbench.domain.enums import (
     CandidateStatus,
     CommunicationStatus,
     DeadlineStatus,
+    DocumentExtractionStatus,
     FeishuMessageStatus,
     MatterCategory,
+    MatterUpdateProposalStatus,
     ReviewDecision,
     ReviewPackageStatus,
 )
+from legal_workbench.domain.errors import StaleAgentAttemptError
 from legal_workbench.infrastructure.models import (
     AgentDefinitionModel,
+    AgentRunAttemptModel,
     AgentRunModel,
     AgentRunSourceModel,
     AgentRunStatusEventModel,
@@ -60,19 +79,31 @@ from legal_workbench.infrastructure.models import (
     CommunicationModel,
     ContextSnapshotModel,
     DeadlineModel,
+    DocumentExtractionModel,
+    DocumentSegmentModel,
+    DocumentVersionModel,
     DraftArtifactModel,
+    EvaluationCaseModel,
+    EvaluationResultModel,
+    EvaluationRunModel,
     FeishuAttachmentModel,
     FeishuEventModel,
     FeishuMessageModel,
     FeishuMessageVersionModel,
     IdempotencyRecordModel,
+    IntegrationCheckRunModel,
     IntegrationConnectionModel,
+    IntegrationCredentialModel,
+    IntegrationScopeModel,
     LegalMatterModel,
+    MatterUpdateProposalModel,
     MessageCandidateModel,
     OutboxEventModel,
     PriorityConfirmationModel,
     ReviewPackageModel,
     ReviewRecordModel,
+    StorageQuotaReservationModel,
+    SystemSettingModel,
     WorkItemDependencyModel,
     WorkItemModel,
 )
@@ -109,6 +140,8 @@ class SqlAlchemyContextSnapshotRepository:
                 ),
                 snapshot_version=snapshot.snapshot_version,
                 attachment_ids=snapshot.attachment_ids,
+                included_segments=snapshot.included_segments,
+                excluded_segments=snapshot.excluded_segments,
                 thread_metadata=snapshot.thread_metadata,
                 content=snapshot.content,
             )
@@ -145,6 +178,8 @@ class SqlAlchemyContextSnapshotRepository:
             source_id=model.source_id,
             snapshot_version=model.snapshot_version,
             attachment_ids=model.attachment_ids,
+            included_segments=model.included_segments,
+            excluded_segments=model.excluded_segments,
             thread_metadata=model.thread_metadata,
             content=model.content,
             builder_version=model.builder_version,
@@ -554,9 +589,7 @@ class SqlAlchemyAgentRunRepository:
         models = (await self._session.execute(statement)).scalars().all()
         return [self._to_domain(model) for model in models]
 
-    async def list_status_events(
-        self, run_id: UUID
-    ) -> Sequence[AgentRunStatusChange]:
+    async def list_status_events(self, run_id: UUID) -> Sequence[AgentRunStatusChange]:
         statement = (
             select(AgentRunStatusEventModel)
             .where(AgentRunStatusEventModel.agent_run_id == run_id)
@@ -648,6 +681,166 @@ class SqlAlchemyAgentRunRepository:
         )
 
 
+class SqlAlchemyAgentRunAttemptRepository:
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def add(self, attempt: AgentRunAttempt) -> None:
+        self._session.add(
+            AgentRunAttemptModel(
+                id=attempt.id,
+                agent_run_id=attempt.run_id,
+                attempt_number=attempt.attempt_number,
+                lease_token=attempt.lease_token,
+                worker_id=attempt.worker_id,
+                status=attempt.status,
+                lease_expires_at=attempt.lease_expires_at,
+                started_at=attempt.started_at,
+                heartbeat_at=attempt.heartbeat_at,
+                finished_at=attempt.finished_at,
+                failure_code=attempt.failure_code,
+                failure_message=attempt.failure_message,
+            )
+        )
+
+    async def heartbeat(
+        self,
+        lease: AgentAttemptLease,
+        *,
+        heartbeat_at: datetime,
+        lease_expires_at: datetime,
+    ) -> None:
+        statement = (
+            update(AgentRunAttemptModel)
+            .where(*self._active_lease_predicates(lease))
+            .values(
+                heartbeat_at=heartbeat_at,
+                lease_expires_at=lease_expires_at,
+            )
+            .returning(AgentRunAttemptModel.id)
+        )
+        if (await self._session.execute(statement)).scalar_one_or_none() is None:
+            self._raise_stale(lease)
+
+    async def complete(self, lease: AgentAttemptLease, *, finished_at: datetime) -> None:
+        statement = (
+            update(AgentRunAttemptModel)
+            .where(*self._active_lease_predicates(lease))
+            .values(
+                status=AgentAttemptStatus.COMPLETED,
+                finished_at=finished_at,
+                lease_expires_at=finished_at,
+                failure_code=None,
+                failure_message=None,
+            )
+            .returning(AgentRunAttemptModel.id)
+        )
+        if (await self._session.execute(statement)).scalar_one_or_none() is None:
+            self._raise_stale(lease)
+
+    async def fail(
+        self,
+        lease: AgentAttemptLease,
+        *,
+        status: AgentAttemptStatus,
+        failure_code: str,
+        failure_message: str,
+        finished_at: datetime,
+    ) -> None:
+        if status not in {
+            AgentAttemptStatus.FAILED,
+            AgentAttemptStatus.TIMED_OUT,
+            AgentAttemptStatus.CANCELLED,
+        }:
+            raise ValueError("Attempt failure status must be terminal.")
+        statement = (
+            update(AgentRunAttemptModel)
+            .where(*self._active_lease_predicates(lease))
+            .values(
+                status=status,
+                finished_at=finished_at,
+                lease_expires_at=finished_at,
+                failure_code=failure_code,
+                failure_message=failure_message,
+            )
+            .returning(AgentRunAttemptModel.id)
+        )
+        if (await self._session.execute(statement)).scalar_one_or_none() is None:
+            self._raise_stale(lease)
+
+    async def expire_current(
+        self,
+        *,
+        run_id: UUID,
+        attempt_number: int,
+        finished_at: datetime,
+    ) -> bool:
+        statement = (
+            update(AgentRunAttemptModel)
+            .where(
+                AgentRunAttemptModel.agent_run_id == run_id,
+                AgentRunAttemptModel.attempt_number == attempt_number,
+                AgentRunAttemptModel.status == AgentAttemptStatus.RUNNING,
+            )
+            .values(
+                status=AgentAttemptStatus.EXPIRED,
+                finished_at=finished_at,
+                lease_expires_at=finished_at,
+                failure_code="AGENT_LEASE_EXPIRED",
+                failure_message="Agent worker heartbeat lease expired.",
+            )
+            .returning(AgentRunAttemptModel.id)
+        )
+        return (await self._session.execute(statement)).scalar_one_or_none() is not None
+
+    async def list_by_run(self, run_id: UUID) -> Sequence[AgentRunAttempt]:
+        statement = (
+            select(AgentRunAttemptModel)
+            .where(AgentRunAttemptModel.agent_run_id == run_id)
+            .order_by(AgentRunAttemptModel.attempt_number)
+        )
+        models = (await self._session.execute(statement)).scalars().all()
+        return [self._to_domain(model) for model in models]
+
+    @staticmethod
+    def _active_lease_predicates(
+        lease: AgentAttemptLease,
+    ) -> tuple[ColumnElement[bool], ...]:
+        return (
+            AgentRunAttemptModel.agent_run_id == lease.run_id,
+            AgentRunAttemptModel.attempt_number == lease.attempt_number,
+            AgentRunAttemptModel.lease_token == lease.lease_token,
+            AgentRunAttemptModel.status == AgentAttemptStatus.RUNNING,
+        )
+
+    @staticmethod
+    def _raise_stale(lease: AgentAttemptLease) -> None:
+        raise StaleAgentAttemptError(
+            "The Agent Attempt lease is stale and cannot update this run.",
+            details={
+                "runId": str(lease.run_id),
+                "attemptNumber": lease.attempt_number,
+            },
+        )
+
+    @staticmethod
+    def _to_domain(model: AgentRunAttemptModel) -> AgentRunAttempt:
+        return AgentRunAttempt(
+            id=model.id,
+            run_id=model.agent_run_id,
+            attempt_number=model.attempt_number,
+            lease_token=model.lease_token,
+            worker_id=model.worker_id,
+            status=model.status,
+            lease_expires_at=model.lease_expires_at,
+            started_at=model.started_at,
+            heartbeat_at=model.heartbeat_at,
+            finished_at=model.finished_at,
+            failure_code=model.failure_code,
+            failure_message=model.failure_message,
+        )
+
+
 class SqlAlchemyAgentRunSourceRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
@@ -717,37 +910,44 @@ class SqlAlchemyDraftArtifactRepository:
 class SqlAlchemyLegalMatterRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
+        self._tracked: dict[UUID, LegalMatterModel] = {}
 
     async def add(self, matter: LegalMatter) -> None:
-        self._session.add(
-            LegalMatterModel(
-                id=matter.id,
-                matter_number=matter.matter_number,
-                title=matter.title,
-                primary_category=matter.primary_category,
-                secondary_categories=[item.value for item in matter.secondary_categories],
-                lifecycle_status=matter.lifecycle_status,
-                work_status=matter.work_status,
-                owner_id=matter.owner_id,
-                collaborator_ids=matter.collaborator_ids,
-                requester_ids=matter.requester_ids,
-                entity_ids=matter.entity_ids,
-                legal_risk=matter.legal_risk,
-                business_impact=matter.business_impact,
-                confidentiality=matter.confidentiality,
-                summary=matter.summary,
-                objective=matter.objective,
-                current_stage=matter.current_stage,
-                opened_at=matter.opened_at,
-                resolved_at=matter.resolved_at,
-                closed_at=matter.closed_at,
-                reopened_at=matter.reopened_at,
-                version=matter.version,
-            )
+        model = LegalMatterModel(
+            id=matter.id,
+            matter_number=matter.matter_number,
+            title=matter.title,
+            primary_category=matter.primary_category,
+            secondary_categories=[item.value for item in matter.secondary_categories],
+            lifecycle_status=matter.lifecycle_status,
+            work_status=matter.work_status,
+            owner_id=matter.owner_id,
+            collaborator_ids=matter.collaborator_ids,
+            requester_ids=matter.requester_ids,
+            entity_ids=matter.entity_ids,
+            legal_risk=matter.legal_risk,
+            business_impact=matter.business_impact,
+            priority=matter.priority,
+            priority_source=matter.priority_source,
+            target_deadline_at=matter.target_deadline_at,
+            next_action=matter.next_action,
+            confidentiality=matter.confidentiality,
+            summary=matter.summary,
+            objective=matter.objective,
+            current_stage=matter.current_stage,
+            opened_at=matter.opened_at,
+            resolved_at=matter.resolved_at,
+            closed_at=matter.closed_at,
+            reopened_at=matter.reopened_at,
+            version=matter.version,
         )
+        self._tracked[matter.id] = model
+        self._session.add(model)
 
     async def get(self, matter_id: UUID) -> LegalMatter | None:
         model = await self._session.get(LegalMatterModel, matter_id)
+        if model is not None:
+            self._tracked[matter_id] = model
         return None if model is None else self._to_domain(model)
 
     async def get_for_update(self, matter_id: UUID) -> LegalMatter | None:
@@ -755,7 +955,25 @@ class SqlAlchemyLegalMatterRepository:
             select(LegalMatterModel).where(LegalMatterModel.id == matter_id).with_for_update()
         )
         model = (await self._session.execute(statement)).scalar_one_or_none()
+        if model is not None:
+            self._tracked[matter_id] = model
         return None if model is None else self._to_domain(model)
+
+    async def save(self, matter: LegalMatter) -> None:
+        model = self._tracked.get(matter.id)
+        if model is None:
+            model = await self._session.get(LegalMatterModel, matter.id)
+        if model is None:
+            raise RuntimeError(f"Legal matter {matter.id} is not tracked")
+        model.title = matter.title
+        model.primary_category = matter.primary_category
+        model.owner_id = matter.owner_id
+        model.work_status = matter.work_status
+        model.priority = matter.priority
+        model.priority_source = matter.priority_source
+        model.target_deadline_at = matter.target_deadline_at
+        model.next_action = matter.next_action
+        model.version = matter.version
 
     async def list(self, *, owner_id: str | None, limit: int) -> Sequence[LegalMatter]:
         statement: Select[tuple[LegalMatterModel]] = select(LegalMatterModel)
@@ -781,6 +999,10 @@ class SqlAlchemyLegalMatterRepository:
             entity_ids=model.entity_ids,
             legal_risk=model.legal_risk,
             business_impact=model.business_impact,
+            priority=model.priority,
+            priority_source=model.priority_source,
+            target_deadline_at=model.target_deadline_at,
+            next_action=model.next_action,
             confidentiality=model.confidentiality,
             summary=model.summary,
             objective=model.objective,
@@ -790,6 +1012,102 @@ class SqlAlchemyLegalMatterRepository:
             resolved_at=model.resolved_at,
             closed_at=model.closed_at,
             reopened_at=model.reopened_at,
+        )
+
+
+class SqlAlchemyMatterUpdateProposalRepository:
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+        self._tracked: dict[UUID, MatterUpdateProposalModel] = {}
+
+    async def add(self, proposal: MatterUpdateProposal) -> None:
+        model = MatterUpdateProposalModel(
+            id=proposal.id,
+            candidate_id=proposal.candidate_id,
+            matter_id=proposal.matter_id,
+            base_matter_version=proposal.base_matter_version,
+            proposed_changes=proposal.proposed_changes,
+            final_changes=proposal.final_changes,
+            field_decisions=proposal.field_decisions,
+            reason=proposal.reason,
+            status=proposal.status,
+            created_by=proposal.created_by,
+            reviewed_by=proposal.reviewed_by,
+            reviewed_at=proposal.reviewed_at,
+            rejection_reason=proposal.rejection_reason,
+            version=proposal.version,
+            created_at=proposal.created_at,
+        )
+        self._tracked[proposal.id] = model
+        self._session.add(model)
+
+    async def get(self, proposal_id: UUID) -> MatterUpdateProposal | None:
+        model = await self._session.get(MatterUpdateProposalModel, proposal_id)
+        if model is None:
+            return None
+        self._tracked[proposal_id] = model
+        return self._to_domain(model)
+
+    async def get_for_update(self, proposal_id: UUID) -> MatterUpdateProposal | None:
+        statement = (
+            select(MatterUpdateProposalModel)
+            .where(MatterUpdateProposalModel.id == proposal_id)
+            .with_for_update()
+        )
+        model = (await self._session.execute(statement)).scalar_one_or_none()
+        if model is None:
+            return None
+        self._tracked[proposal_id] = model
+        return self._to_domain(model)
+
+    async def save(self, proposal: MatterUpdateProposal) -> None:
+        model = self._tracked.get(proposal.id)
+        if model is None:
+            model = await self._session.get(MatterUpdateProposalModel, proposal.id)
+        if model is None:
+            raise RuntimeError(f"Matter update proposal {proposal.id} is not tracked")
+        model.status = proposal.status
+        model.final_changes = proposal.final_changes
+        model.field_decisions = proposal.field_decisions
+        model.reviewed_by = proposal.reviewed_by
+        model.reviewed_at = proposal.reviewed_at
+        model.rejection_reason = proposal.rejection_reason
+        model.version = proposal.version
+
+    async def list(
+        self,
+        *,
+        status: MatterUpdateProposalStatus | None,
+        matter_id: UUID | None,
+        limit: int,
+    ) -> Sequence[MatterUpdateProposal]:
+        statement: Select[tuple[MatterUpdateProposalModel]] = select(MatterUpdateProposalModel)
+        if status is not None:
+            statement = statement.where(MatterUpdateProposalModel.status == status)
+        if matter_id is not None:
+            statement = statement.where(MatterUpdateProposalModel.matter_id == matter_id)
+        statement = statement.order_by(MatterUpdateProposalModel.created_at.desc()).limit(limit)
+        models = (await self._session.execute(statement)).scalars().all()
+        return [self._to_domain(model) for model in models]
+
+    @staticmethod
+    def _to_domain(model: MatterUpdateProposalModel) -> MatterUpdateProposal:
+        return MatterUpdateProposal(
+            id=model.id,
+            candidate_id=model.candidate_id,
+            matter_id=model.matter_id,
+            base_matter_version=model.base_matter_version,
+            proposed_changes=model.proposed_changes,
+            final_changes=model.final_changes,
+            field_decisions=model.field_decisions,
+            reason=model.reason,
+            status=model.status,
+            created_by=model.created_by,
+            reviewed_by=model.reviewed_by,
+            reviewed_at=model.reviewed_at,
+            rejection_reason=model.rejection_reason,
+            created_at=model.created_at,
+            version=model.version,
         )
 
 
@@ -830,12 +1148,27 @@ class SqlAlchemyWorkItemRepository:
         if model is None:
             raise RuntimeError(f"Work item {work_item.id} is not tracked")
         model.priority = work_item.priority
+        model.status = work_item.status
+        model.owner_id = work_item.owner_id
         model.priority_source = work_item.priority_source
         model.priority_reasons = work_item.priority_reasons
         model.override_reason = work_item.override_reason
         model.planned_complete_at = work_item.planned_complete_at
+        model.next_action = work_item.next_action
+        model.waiting_party_id = work_item.waiting_party_id
+        model.waiting_reason = work_item.waiting_reason
+        model.waiting_since = work_item.waiting_since
+        model.paused_reason = work_item.paused_reason
+        model.is_blocked = work_item.is_blocked
+        model.blocker_reason = work_item.blocker_reason
+        model.blocker_owner_id = work_item.blocker_owner_id
+        model.planned_start_at = work_item.planned_start_at
+        model.completed_at = work_item.completed_at
+        model.cancelled_at = work_item.cancelled_at
+        model.cancel_reason = work_item.cancel_reason
         model.priority_confirmed_by = work_item.priority_confirmed_by
         model.priority_confirmed_at = work_item.priority_confirmed_at
+        model.version = work_item.version
 
     async def list_by_matter(self, matter_id: UUID) -> Sequence[WorkItem]:
         statement = (
@@ -865,12 +1198,15 @@ class SqlAlchemyWorkItemRepository:
             waiting_party_id=work_item.waiting_party_id,
             waiting_reason=work_item.waiting_reason,
             waiting_since=work_item.waiting_since,
+            paused_reason=work_item.paused_reason,
             is_blocked=work_item.is_blocked,
             blocker_reason=work_item.blocker_reason,
             blocker_owner_id=work_item.blocker_owner_id,
             planned_start_at=work_item.planned_start_at,
             planned_complete_at=work_item.planned_complete_at,
             completed_at=work_item.completed_at,
+            cancelled_at=work_item.cancelled_at,
+            cancel_reason=work_item.cancel_reason,
             priority_confirmed_by=work_item.priority_confirmed_by,
             priority_confirmed_at=work_item.priority_confirmed_at,
             sequence_order=work_item.sequence_order,
@@ -896,12 +1232,15 @@ class SqlAlchemyWorkItemRepository:
             waiting_party_id=model.waiting_party_id,
             waiting_reason=model.waiting_reason,
             waiting_since=model.waiting_since,
+            paused_reason=model.paused_reason,
             is_blocked=model.is_blocked,
             blocker_reason=model.blocker_reason,
             blocker_owner_id=model.blocker_owner_id,
             planned_start_at=model.planned_start_at,
             planned_complete_at=model.planned_complete_at,
             completed_at=model.completed_at,
+            cancelled_at=model.cancelled_at,
+            cancel_reason=model.cancel_reason,
             priority_confirmed_by=model.priority_confirmed_by,
             priority_confirmed_at=model.priority_confirmed_at,
             sequence_order=model.sequence_order,
@@ -1028,23 +1367,50 @@ class SqlAlchemyDeadlineRepository:
 class SqlAlchemyDependencyRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
+        self._tracked: dict[UUID, WorkItemDependencyModel] = {}
 
     async def add(self, dependency: WorkItemDependency) -> None:
-        self._session.add(
-            WorkItemDependencyModel(
-                id=dependency.id,
-                work_item_id=dependency.work_item_id,
-                depends_on_work_item_id=dependency.depends_on_work_item_id,
-                dependency_type=dependency.dependency_type,
-                status=dependency.status,
-                external_party_id=dependency.external_party_id,
-                description=dependency.description,
-                satisfied_at=dependency.satisfied_at,
-                waived_by=dependency.waived_by,
-                waived_at=dependency.waived_at,
-                version=dependency.version,
-            )
+        model = WorkItemDependencyModel(
+            id=dependency.id,
+            work_item_id=dependency.work_item_id,
+            depends_on_work_item_id=dependency.depends_on_work_item_id,
+            dependency_type=dependency.dependency_type,
+            status=dependency.status,
+            external_party_id=dependency.external_party_id,
+            description=dependency.description,
+            satisfied_at=dependency.satisfied_at,
+            satisfied_by=dependency.satisfied_by,
+            waived_by=dependency.waived_by,
+            waived_at=dependency.waived_at,
+            version=dependency.version,
         )
+        self._tracked[dependency.id] = model
+        self._session.add(model)
+
+    async def get_for_update(self, dependency_id: UUID) -> WorkItemDependency | None:
+        statement = (
+            select(WorkItemDependencyModel)
+            .where(WorkItemDependencyModel.id == dependency_id)
+            .with_for_update()
+        )
+        model = (await self._session.execute(statement)).scalar_one_or_none()
+        if model is None:
+            return None
+        self._tracked[dependency_id] = model
+        return self._to_domain(model)
+
+    async def save(self, dependency: WorkItemDependency) -> None:
+        model = self._tracked.get(dependency.id)
+        if model is None:
+            model = await self._session.get(WorkItemDependencyModel, dependency.id)
+        if model is None:
+            raise RuntimeError(f"Work item dependency {dependency.id} is not tracked")
+        model.status = dependency.status
+        model.satisfied_at = dependency.satisfied_at
+        model.satisfied_by = dependency.satisfied_by
+        model.waived_by = dependency.waived_by
+        model.waived_at = dependency.waived_at
+        model.version = dependency.version
 
     async def list_by_work_item(self, work_item_id: UUID) -> Sequence[WorkItemDependency]:
         statement = (
@@ -1053,22 +1419,24 @@ class SqlAlchemyDependencyRepository:
             .order_by(WorkItemDependencyModel.created_at)
         )
         models = (await self._session.execute(statement)).scalars().all()
-        return [
-            WorkItemDependency(
-                id=model.id,
-                work_item_id=model.work_item_id,
-                depends_on_work_item_id=model.depends_on_work_item_id,
-                dependency_type=model.dependency_type,
-                status=model.status,
-                external_party_id=model.external_party_id,
-                description=model.description,
-                satisfied_at=model.satisfied_at,
-                waived_by=model.waived_by,
-                waived_at=model.waived_at,
-                version=model.version,
-            )
-            for model in models
-        ]
+        return [self._to_domain(model) for model in models]
+
+    @staticmethod
+    def _to_domain(model: WorkItemDependencyModel) -> WorkItemDependency:
+        return WorkItemDependency(
+            id=model.id,
+            work_item_id=model.work_item_id,
+            depends_on_work_item_id=model.depends_on_work_item_id,
+            dependency_type=model.dependency_type,
+            status=model.status,
+            external_party_id=model.external_party_id,
+            description=model.description,
+            satisfied_at=model.satisfied_at,
+            satisfied_by=model.satisfied_by,
+            waived_by=model.waived_by,
+            waived_at=model.waived_at,
+            version=model.version,
+        )
 
 
 class SqlAlchemyReviewPackageRepository:
@@ -1484,9 +1852,7 @@ class SqlAlchemyFeishuRepository:
             self._tracked_messages[model.id] = model
         return [self._message_to_domain(model) for model in models]
 
-    async def list_queued_without_active_run(
-        self, *, limit: int
-    ) -> Sequence[FeishuMessage]:
+    async def list_queued_without_active_run(self, *, limit: int) -> Sequence[FeishuMessage]:
         active_run_exists = exists(
             select(AgentRunModel.id).where(
                 AgentRunModel.feishu_message_id == FeishuMessageModel.id,
@@ -1596,29 +1962,32 @@ class SqlAlchemyFeishuRepository:
     async def add_attachments(self, attachments: Sequence[FeishuAttachment]) -> None:
         models = [
             FeishuAttachmentModel(
-                    id=value.id,
-                    feishu_message_id=value.feishu_message_id,
-                    message_version_id=value.message_version_id,
-                    file_key=value.file_key,
-                    file_name=value.file_name,
-                    mime_type=value.mime_type,
-                    size=value.size,
-                    sha256=value.sha256,
-                    local_path=value.local_path,
-                    download_status=value.download_status,
-                    download_error=value.download_error,
-                    authorized_for_analysis=value.authorized_for_analysis,
-                    created_at=value.created_at,
-                    updated_at=value.updated_at,
+                id=value.id,
+                feishu_message_id=value.feishu_message_id,
+                message_version_id=value.message_version_id,
+                file_key=value.file_key,
+                file_name=value.file_name,
+                mime_type=value.mime_type,
+                size=value.size,
+                sha256=value.sha256,
+                local_path=value.local_path,
+                download_status=value.download_status,
+                download_error=value.download_error,
+                authorized_for_analysis=value.authorized_for_analysis,
+                extraction_status=value.extraction_status,
+                extractor_version=value.extractor_version,
+                page_count=value.page_count,
+                character_count=value.character_count,
+                extraction_error_code=value.extraction_error_code,
+                created_at=value.created_at,
+                updated_at=value.updated_at,
             )
             for value in attachments
         ]
         self._tracked_attachments.update({model.id: model for model in models})
         self._session.add_all(models)
 
-    async def list_pending_attachments(
-        self, message_id: UUID
-    ) -> Sequence[FeishuAttachment]:
+    async def list_pending_attachments(self, message_id: UUID) -> Sequence[FeishuAttachment]:
         statement = select(FeishuAttachmentModel).where(
             FeishuAttachmentModel.feishu_message_id == message_id,
             FeishuAttachmentModel.download_status == AttachmentDownloadStatus.PENDING,
@@ -1637,6 +2006,18 @@ class SqlAlchemyFeishuRepository:
         self._tracked_attachments.update({model.id: model for model in models})
         return [self._attachment_to_domain(model) for model in models]
 
+    async def get_attachment_for_update(self, attachment_id: UUID) -> FeishuAttachment | None:
+        statement = (
+            select(FeishuAttachmentModel)
+            .where(FeishuAttachmentModel.id == attachment_id)
+            .with_for_update()
+        )
+        model = (await self._session.execute(statement)).scalar_one_or_none()
+        if model is None:
+            return None
+        self._tracked_attachments[attachment_id] = model
+        return self._attachment_to_domain(model)
+
     async def save_attachment(self, attachment: FeishuAttachment) -> None:
         model = self._tracked_attachments.get(attachment.id)
         if model is None:
@@ -1648,6 +2029,11 @@ class SqlAlchemyFeishuRepository:
         model.download_status = attachment.download_status
         model.download_error = attachment.download_error
         model.authorized_for_analysis = attachment.authorized_for_analysis
+        model.extraction_status = attachment.extraction_status
+        model.extractor_version = attachment.extractor_version
+        model.page_count = attachment.page_count
+        model.character_count = attachment.character_count
+        model.extraction_error_code = attachment.extraction_error_code
         model.updated_at = attachment.updated_at
 
     async def get_connection(
@@ -1723,6 +2109,11 @@ class SqlAlchemyFeishuRepository:
             download_status=model.download_status,
             download_error=model.download_error,
             authorized_for_analysis=model.authorized_for_analysis,
+            extraction_status=model.extraction_status,
+            extractor_version=model.extractor_version,
+            page_count=model.page_count,
+            character_count=model.character_count,
+            extraction_error_code=model.extraction_error_code,
             created_at=model.created_at,
             updated_at=model.updated_at,
         )
@@ -1777,6 +2168,747 @@ class SqlAlchemyFeishuRepository:
             edited_at=model.edited_at,
             recalled_at=model.recalled_at,
             unsupported_reason=model.unsupported_reason,
+        )
+
+
+class SqlAlchemyAttachmentStorageQuotaRepository:
+    LOCK_OPERATION = "attachment_storage_quota"
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def reserve(
+        self,
+        *,
+        attachment_id: UUID,
+        requested_bytes: int,
+        total_bytes: int,
+        observed_used_bytes: int,
+        expires_at: datetime,
+    ) -> UUID | None:
+        if min(requested_bytes, total_bytes, observed_used_bytes) < 0:
+            raise ValueError("Storage quota values cannot be negative.")
+        await self._session.execute(
+            select(func.pg_advisory_xact_lock(func.hashtextextended(self.LOCK_OPERATION, 0)))
+        )
+        now = datetime.now(UTC)
+        await self._session.execute(
+            update(StorageQuotaReservationModel)
+            .where(
+                StorageQuotaReservationModel.status == "reserved",
+                StorageQuotaReservationModel.expires_at <= now,
+            )
+            .values(status="expired", updated_at=now)
+        )
+        stored_value = (
+            await self._session.execute(
+                select(func.coalesce(func.sum(FeishuAttachmentModel.size), 0)).where(
+                    FeishuAttachmentModel.download_status == AttachmentDownloadStatus.DOWNLOADED
+                )
+            )
+        ).scalar_one()
+        stored_bytes = int(stored_value or 0)
+        reserved_value = (
+            await self._session.execute(
+                select(
+                    func.coalesce(func.sum(StorageQuotaReservationModel.requested_bytes), 0)
+                ).where(
+                    StorageQuotaReservationModel.status == "reserved",
+                    StorageQuotaReservationModel.expires_at > now,
+                )
+            )
+        ).scalar_one()
+        reserved_bytes = int(reserved_value or 0)
+        used_bytes = max(stored_bytes, observed_used_bytes)
+        if used_bytes + reserved_bytes + requested_bytes > total_bytes:
+            return None
+        token = uuid4()
+        self._session.add(
+            StorageQuotaReservationModel(
+                id=uuid4(),
+                attachment_id=attachment_id,
+                reservation_token=token,
+                requested_bytes=requested_bytes,
+                status="reserved",
+                expires_at=expires_at,
+            )
+        )
+        return token
+
+    async def commit(self, reservation_token: UUID) -> None:
+        await self._set_status(reservation_token, status="committed")
+
+    async def release(self, reservation_token: UUID) -> None:
+        await self._set_status(reservation_token, status="released")
+
+    async def _set_status(self, reservation_token: UUID, *, status: str) -> None:
+        statement = (
+            select(StorageQuotaReservationModel)
+            .where(
+                StorageQuotaReservationModel.reservation_token == reservation_token,
+                StorageQuotaReservationModel.status == "reserved",
+            )
+            .with_for_update()
+        )
+        model = (await self._session.execute(statement)).scalar_one_or_none()
+        if model is None:
+            raise RuntimeError("Storage quota reservation is no longer active.")
+        model.status = status
+        model.updated_at = datetime.now(UTC)
+
+
+class SqlAlchemyDocumentRepository:
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+        self._tracked_extractions: dict[UUID, DocumentExtractionModel] = {}
+
+    async def find_version(
+        self, *, attachment_id: UUID, content_sha256: str
+    ) -> DocumentVersion | None:
+        statement = select(DocumentVersionModel).where(
+            DocumentVersionModel.attachment_id == attachment_id,
+            DocumentVersionModel.content_sha256 == content_sha256,
+        )
+        model = (await self._session.execute(statement)).scalar_one_or_none()
+        return None if model is None else self._version_to_domain(model)
+
+    async def next_version(self, attachment_id: UUID) -> int:
+        statement = select(func.coalesce(func.max(DocumentVersionModel.version), 0)).where(
+            DocumentVersionModel.attachment_id == attachment_id
+        )
+        return int((await self._session.execute(statement)).scalar_one()) + 1
+
+    async def add_version(self, version: DocumentVersion) -> None:
+        self._session.add(
+            DocumentVersionModel(
+                id=version.id,
+                attachment_id=version.attachment_id,
+                version=version.version,
+                content_sha256=version.content_sha256,
+                file_name=version.file_name,
+                mime_type=version.mime_type,
+                size=version.size,
+                local_path=version.local_path,
+                created_at=version.created_at,
+            )
+        )
+
+    async def add_extraction(self, extraction: DocumentExtraction) -> None:
+        model = DocumentExtractionModel(
+            id=extraction.id,
+            document_version_id=extraction.document_version_id,
+            status=extraction.status,
+            extractor_version=extraction.extractor_version,
+            page_count=extraction.page_count,
+            character_count=extraction.character_count,
+            error_code=extraction.error_code,
+            started_at=extraction.started_at,
+            finished_at=extraction.finished_at,
+            created_at=extraction.created_at,
+        )
+        self._tracked_extractions[extraction.id] = model
+        self._session.add(model)
+
+    async def find_latest_extraction(self, document_version_id: UUID) -> DocumentExtraction | None:
+        statement = (
+            select(DocumentExtractionModel)
+            .where(DocumentExtractionModel.document_version_id == document_version_id)
+            .order_by(
+                DocumentExtractionModel.created_at.desc(),
+                DocumentExtractionModel.id.desc(),
+            )
+            .limit(1)
+        )
+        model = (await self._session.execute(statement)).scalar_one_or_none()
+        return None if model is None else self._extraction_to_domain(model)
+
+    async def get_extraction_for_update(self, extraction_id: UUID) -> DocumentExtraction | None:
+        statement = (
+            select(DocumentExtractionModel)
+            .where(DocumentExtractionModel.id == extraction_id)
+            .with_for_update()
+        )
+        model = (await self._session.execute(statement)).scalar_one_or_none()
+        if model is None:
+            return None
+        self._tracked_extractions[extraction_id] = model
+        return self._extraction_to_domain(model)
+
+    async def save_extraction(self, extraction: DocumentExtraction) -> None:
+        model = self._tracked_extractions.get(extraction.id)
+        if model is None:
+            model = await self._session.get(DocumentExtractionModel, extraction.id)
+        if model is None:
+            raise RuntimeError(f"DocumentExtraction {extraction.id} is not tracked")
+        model.status = extraction.status
+        model.extractor_version = extraction.extractor_version
+        model.page_count = extraction.page_count
+        model.character_count = extraction.character_count
+        model.error_code = extraction.error_code
+        model.finished_at = extraction.finished_at
+
+    async def get_version(self, version_id: UUID) -> DocumentVersion | None:
+        model = await self._session.get(DocumentVersionModel, version_id)
+        return None if model is None else self._version_to_domain(model)
+
+    async def add_segments(self, segments: Sequence[DocumentSegment]) -> None:
+        self._session.add_all(
+            [
+                DocumentSegmentModel(
+                    id=value.id,
+                    extraction_id=value.extraction_id,
+                    attachment_id=value.attachment_id,
+                    page_number=value.page_number,
+                    paragraph_number=value.paragraph_number,
+                    start_offset=value.start_offset,
+                    end_offset=value.end_offset,
+                    content=value.content,
+                    content_hash=value.content_hash,
+                    created_at=value.created_at,
+                )
+                for value in segments
+            ]
+        )
+
+    async def list_latest_segments(
+        self, attachment_ids: Sequence[UUID]
+    ) -> Sequence[DocumentSegment]:
+        if not attachment_ids:
+            return []
+        statement = (
+            select(DocumentSegmentModel, DocumentExtractionModel.created_at)
+            .join(
+                DocumentExtractionModel,
+                DocumentExtractionModel.id == DocumentSegmentModel.extraction_id,
+            )
+            .where(
+                DocumentSegmentModel.attachment_id.in_(list(attachment_ids)),
+                DocumentExtractionModel.status == DocumentExtractionStatus.SUCCEEDED,
+            )
+            .order_by(
+                DocumentSegmentModel.attachment_id,
+                DocumentExtractionModel.created_at.desc(),
+                DocumentSegmentModel.paragraph_number,
+            )
+        )
+        rows = (await self._session.execute(statement)).all()
+        latest: dict[UUID, UUID] = {}
+        segments: list[DocumentSegment] = []
+        for model, _created_at in rows:
+            extraction_id = latest.setdefault(model.attachment_id, model.extraction_id)
+            if model.extraction_id != extraction_id:
+                continue
+            segments.append(
+                DocumentSegment(
+                    id=model.id,
+                    extraction_id=model.extraction_id,
+                    attachment_id=model.attachment_id,
+                    page_number=model.page_number,
+                    paragraph_number=model.paragraph_number,
+                    start_offset=model.start_offset,
+                    end_offset=model.end_offset,
+                    content=model.content,
+                    content_hash=model.content_hash,
+                    created_at=model.created_at,
+                )
+            )
+        return segments
+
+    @staticmethod
+    def _version_to_domain(model: DocumentVersionModel) -> DocumentVersion:
+        return DocumentVersion(
+            id=model.id,
+            attachment_id=model.attachment_id,
+            version=model.version,
+            content_sha256=model.content_sha256,
+            file_name=model.file_name,
+            mime_type=model.mime_type,
+            size=model.size,
+            local_path=model.local_path,
+            created_at=model.created_at,
+        )
+
+    @staticmethod
+    def _extraction_to_domain(model: DocumentExtractionModel) -> DocumentExtraction:
+        return DocumentExtraction(
+            id=model.id,
+            document_version_id=model.document_version_id,
+            status=model.status,
+            extractor_version=model.extractor_version,
+            page_count=model.page_count,
+            character_count=model.character_count,
+            error_code=model.error_code,
+            started_at=model.started_at,
+            finished_at=model.finished_at,
+            created_at=model.created_at,
+        )
+
+
+class SqlAlchemyEvaluationRepository:
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+        self._tracked_runs: dict[UUID, EvaluationRunModel] = {}
+
+    async def get_case(
+        self, *, suite_key: str, case_key: str, case_version: int
+    ) -> EvaluationCase | None:
+        statement = select(EvaluationCaseModel).where(
+            EvaluationCaseModel.suite_key == suite_key,
+            EvaluationCaseModel.case_key == case_key,
+            EvaluationCaseModel.case_version == case_version,
+        )
+        model = (await self._session.execute(statement)).scalar_one_or_none()
+        return None if model is None else self._case_to_domain(model)
+
+    async def add_case(self, case: EvaluationCase) -> None:
+        self._session.add(
+            EvaluationCaseModel(
+                id=case.id,
+                suite_key=case.suite_key,
+                case_key=case.case_key,
+                case_version=case.case_version,
+                agent_key=case.agent_key,
+                input_payload=case.input_payload,
+                expected_output=case.expected_output,
+                content_hash=case.content_hash,
+                data_classification=case.data_classification,
+                created_at=case.created_at,
+            )
+        )
+
+    async def add_run(self, run: EvaluationRun) -> None:
+        model = EvaluationRunModel(
+            id=run.id,
+            suite_key=run.suite_key,
+            suite_version=run.suite_version,
+            runtime_type=run.runtime_type,
+            agent_key=run.agent_key,
+            agent_definition_version=run.agent_definition_version,
+            status=run.status,
+            requested_by=run.requested_by,
+            correlation_id=run.correlation_id,
+            allow_real_runtime=run.allow_real_runtime,
+            started_at=run.started_at,
+            finished_at=run.finished_at,
+            metrics=run.metrics,
+            failure_code=run.failure_code,
+            failure_message=run.failure_message,
+            created_at=run.created_at,
+        )
+        self._tracked_runs[run.id] = model
+        self._session.add(model)
+
+    async def get_run(self, run_id: UUID) -> EvaluationRun | None:
+        model = await self._session.get(EvaluationRunModel, run_id)
+        if model is None:
+            return None
+        self._tracked_runs[run_id] = model
+        return self._run_to_domain(model)
+
+    async def get_run_for_update(self, run_id: UUID) -> EvaluationRun | None:
+        statement = (
+            select(EvaluationRunModel).where(EvaluationRunModel.id == run_id).with_for_update()
+        )
+        model = (await self._session.execute(statement)).scalar_one_or_none()
+        if model is None:
+            return None
+        self._tracked_runs[run_id] = model
+        return self._run_to_domain(model)
+
+    async def save_run(self, run: EvaluationRun) -> None:
+        model = self._tracked_runs.get(run.id)
+        if model is None:
+            model = await self._session.get(EvaluationRunModel, run.id)
+        if model is None:
+            raise RuntimeError(f"Evaluation run {run.id} is not tracked")
+        model.status = run.status
+        model.finished_at = run.finished_at
+        model.metrics = run.metrics
+        model.failure_code = run.failure_code
+        model.failure_message = run.failure_message
+
+    async def add_result(self, result: EvaluationResult) -> None:
+        self._session.add(
+            EvaluationResultModel(
+                id=result.id,
+                evaluation_run_id=result.evaluation_run_id,
+                evaluation_case_id=result.evaluation_case_id,
+                result_payload=result.result_payload,
+                scores=result.scores,
+                expected_relevant=result.expected_relevant,
+                candidate_created=result.candidate_created,
+                schema_first_pass=result.schema_first_pass,
+                duration_ms=result.duration_ms,
+                retry_count=result.retry_count,
+                failure_code=result.failure_code,
+                runtime_version=result.runtime_version,
+                runtime_execution_id=result.runtime_execution_id,
+                created_at=result.created_at,
+            )
+        )
+
+    async def list_results(self, run_id: UUID) -> Sequence[EvaluationResult]:
+        statement = (
+            select(EvaluationResultModel)
+            .where(EvaluationResultModel.evaluation_run_id == run_id)
+            .order_by(EvaluationResultModel.created_at, EvaluationResultModel.id)
+        )
+        models = (await self._session.execute(statement)).scalars().all()
+        return [self._result_to_domain(model) for model in models]
+
+    @staticmethod
+    def _case_to_domain(model: EvaluationCaseModel) -> EvaluationCase:
+        return EvaluationCase(
+            id=model.id,
+            suite_key=model.suite_key,
+            case_key=model.case_key,
+            case_version=model.case_version,
+            agent_key=model.agent_key,
+            input_payload=model.input_payload,
+            expected_output=model.expected_output,
+            content_hash=model.content_hash,
+            data_classification=model.data_classification,
+            created_at=model.created_at,
+        )
+
+    @staticmethod
+    def _run_to_domain(model: EvaluationRunModel) -> EvaluationRun:
+        return EvaluationRun(
+            id=model.id,
+            suite_key=model.suite_key,
+            suite_version=model.suite_version,
+            runtime_type=model.runtime_type,
+            agent_key=model.agent_key,
+            agent_definition_version=model.agent_definition_version,
+            status=model.status,
+            requested_by=model.requested_by,
+            correlation_id=model.correlation_id,
+            started_at=model.started_at,
+            allow_real_runtime=model.allow_real_runtime,
+            finished_at=model.finished_at,
+            metrics=model.metrics,
+            failure_code=model.failure_code,
+            failure_message=model.failure_message,
+            created_at=model.created_at,
+        )
+
+    @staticmethod
+    def _result_to_domain(model: EvaluationResultModel) -> EvaluationResult:
+        return EvaluationResult(
+            id=model.id,
+            evaluation_run_id=model.evaluation_run_id,
+            evaluation_case_id=model.evaluation_case_id,
+            result_payload=model.result_payload,
+            scores=model.scores,
+            expected_relevant=model.expected_relevant,
+            candidate_created=model.candidate_created,
+            schema_first_pass=model.schema_first_pass,
+            duration_ms=model.duration_ms,
+            retry_count=model.retry_count,
+            failure_code=model.failure_code,
+            runtime_version=model.runtime_version,
+            runtime_execution_id=model.runtime_execution_id,
+            created_at=model.created_at,
+        )
+
+
+class SqlAlchemySetupRepository:
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+        self._tracked_checks: dict[UUID, IntegrationCheckRunModel] = {}
+        self._tracked_scopes: dict[UUID, IntegrationScopeModel] = {}
+
+    async def get_setting(self, key: str) -> SystemSetting | None:
+        model = await self._session.scalar(
+            select(SystemSettingModel).where(SystemSettingModel.key == key)
+        )
+        return None if model is None else self._setting_to_domain(model)
+
+    async def save_setting(self, value: SystemSetting) -> None:
+        model = await self._session.scalar(
+            select(SystemSettingModel).where(SystemSettingModel.key == value.key)
+        )
+        if model is None:
+            self._session.add(
+                SystemSettingModel(
+                    id=value.id,
+                    key=value.key,
+                    value=value.value,
+                    value_type=value.value_type,
+                    updated_by=value.updated_by,
+                    version=value.version,
+                    created_at=value.created_at,
+                    updated_at=value.updated_at,
+                )
+            )
+            return
+        model.value = value.value
+        model.value_type = value.value_type
+        model.updated_by = value.updated_by
+        model.updated_at = value.updated_at
+        model.version = value.version
+
+    async def get_credential(
+        self, *, provider: str, credential_kind: str
+    ) -> IntegrationCredential | None:
+        model = await self._session.scalar(
+            select(IntegrationCredentialModel).where(
+                IntegrationCredentialModel.provider == provider,
+                IntegrationCredentialModel.credential_kind == credential_kind,
+            )
+        )
+        return None if model is None else self._credential_to_domain(model)
+
+    async def save_credential(self, value: IntegrationCredential) -> None:
+        model = await self._session.scalar(
+            select(IntegrationCredentialModel).where(
+                IntegrationCredentialModel.provider == value.provider,
+                IntegrationCredentialModel.credential_kind == value.credential_kind,
+            )
+        )
+        if model is None:
+            self._session.add(
+                IntegrationCredentialModel(
+                    id=value.id,
+                    provider=value.provider,
+                    credential_kind=value.credential_kind,
+                    secret_ref=value.secret_ref,
+                    configured=value.configured,
+                    masked_hint=value.masked_hint,
+                    last_validated_at=value.last_validated_at,
+                    last_validation_status=value.last_validation_status,
+                    last_error_code=value.last_error_code,
+                    version=value.version,
+                    created_at=value.created_at,
+                    updated_at=value.updated_at,
+                )
+            )
+            return
+        model.secret_ref = value.secret_ref
+        model.configured = value.configured
+        model.masked_hint = value.masked_hint
+        model.last_validated_at = value.last_validated_at
+        model.last_validation_status = value.last_validation_status
+        model.last_error_code = value.last_error_code
+        model.updated_at = value.updated_at
+        model.version = value.version
+
+    async def list_scopes(self, *, provider: str) -> Sequence[IntegrationScope]:
+        models = (
+            (
+                await self._session.execute(
+                    select(IntegrationScopeModel)
+                    .where(IntegrationScopeModel.provider == provider)
+                    .order_by(IntegrationScopeModel.display_name, IntegrationScopeModel.id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        return [self._scope_to_domain(model) for model in models]
+
+    async def find_scope(
+        self, *, provider: str, external_scope_id: str
+    ) -> IntegrationScope | None:
+        model = await self._session.scalar(
+            select(IntegrationScopeModel).where(
+                IntegrationScopeModel.provider == provider,
+                IntegrationScopeModel.external_scope_id == external_scope_id,
+            )
+        )
+        return None if model is None else self._scope_to_domain(model)
+
+    async def get_scope(self, scope_id: UUID) -> IntegrationScope | None:
+        model = await self._session.get(IntegrationScopeModel, scope_id)
+        if model is None:
+            return None
+        self._tracked_scopes[scope_id] = model
+        return self._scope_to_domain(model)
+
+    async def get_scope_for_update(self, scope_id: UUID) -> IntegrationScope | None:
+        model = await self._session.scalar(
+            select(IntegrationScopeModel)
+            .where(IntegrationScopeModel.id == scope_id)
+            .with_for_update()
+        )
+        if model is None:
+            return None
+        self._tracked_scopes[scope_id] = model
+        return self._scope_to_domain(model)
+
+    async def add_scope(self, value: IntegrationScope) -> None:
+        model = IntegrationScopeModel(
+            id=value.id,
+            provider=value.provider,
+            external_scope_id=value.external_scope_id,
+            display_name=value.display_name,
+            status=value.status,
+            sync_mode=value.sync_mode,
+            last_message_at=value.last_message_at,
+            last_error_code=value.last_error_code,
+            last_error_message=value.last_error_message,
+            last_compensated_at=value.last_compensated_at,
+            last_compensation_status=value.last_compensation_status,
+            approved_by=value.approved_by,
+            approved_at=value.approved_at,
+            version=value.version,
+            created_at=value.created_at,
+            updated_at=value.updated_at,
+        )
+        self._tracked_scopes[value.id] = model
+        self._session.add(model)
+
+    async def save_scope(self, value: IntegrationScope) -> None:
+        model = self._tracked_scopes.get(value.id)
+        if model is None:
+            model = await self._session.get(IntegrationScopeModel, value.id)
+        if model is None:
+            raise RuntimeError(f"Integration scope {value.id} is not tracked")
+        model.display_name = value.display_name
+        model.status = value.status
+        model.sync_mode = value.sync_mode
+        model.last_message_at = value.last_message_at
+        model.last_error_code = value.last_error_code
+        model.last_error_message = value.last_error_message
+        model.last_compensated_at = value.last_compensated_at
+        model.last_compensation_status = value.last_compensation_status
+        model.approved_by = value.approved_by
+        model.approved_at = value.approved_at
+        model.updated_at = value.updated_at
+        model.version = value.version
+
+    async def add_check(self, value: IntegrationCheckRun) -> None:
+        model = IntegrationCheckRunModel(
+            id=value.id,
+            provider=value.provider,
+            check_kind=value.check_kind,
+            status=value.status,
+            requested_by=value.requested_by,
+            correlation_id=value.correlation_id,
+            state=value.state,
+            error_code=value.error_code,
+            detail=value.detail,
+            runtime_version=value.runtime_version,
+            started_at=value.started_at,
+            finished_at=value.finished_at,
+            created_at=value.created_at,
+        )
+        self._tracked_checks[value.id] = model
+        self._session.add(model)
+
+    async def get_check(self, check_run_id: UUID) -> IntegrationCheckRun | None:
+        model = await self._session.get(IntegrationCheckRunModel, check_run_id)
+        if model is None:
+            return None
+        self._tracked_checks[check_run_id] = model
+        return self._check_to_domain(model)
+
+    async def get_check_for_update(self, check_run_id: UUID) -> IntegrationCheckRun | None:
+        model = await self._session.scalar(
+            select(IntegrationCheckRunModel)
+            .where(IntegrationCheckRunModel.id == check_run_id)
+            .with_for_update()
+        )
+        if model is None:
+            return None
+        self._tracked_checks[check_run_id] = model
+        return self._check_to_domain(model)
+
+    async def save_check(self, value: IntegrationCheckRun) -> None:
+        model = self._tracked_checks.get(value.id)
+        if model is None:
+            model = await self._session.get(IntegrationCheckRunModel, value.id)
+        if model is None:
+            raise RuntimeError(f"Integration check {value.id} is not tracked")
+        model.status = value.status
+        model.state = value.state
+        model.error_code = value.error_code
+        model.detail = value.detail
+        model.runtime_version = value.runtime_version
+        model.started_at = value.started_at
+        model.finished_at = value.finished_at
+
+    async def latest_check(self, *, provider: str, check_kind: str) -> IntegrationCheckRun | None:
+        model = await self._session.scalar(
+            select(IntegrationCheckRunModel)
+            .where(
+                IntegrationCheckRunModel.provider == provider,
+                IntegrationCheckRunModel.check_kind == check_kind,
+            )
+            .order_by(IntegrationCheckRunModel.created_at.desc())
+            .limit(1)
+        )
+        return None if model is None else self._check_to_domain(model)
+
+    @staticmethod
+    def _setting_to_domain(model: SystemSettingModel) -> SystemSetting:
+        return SystemSetting(
+            id=model.id,
+            key=model.key,
+            value=model.value,
+            value_type=model.value_type,
+            updated_by=model.updated_by,
+            version=model.version,
+            created_at=model.created_at,
+            updated_at=model.updated_at,
+        )
+
+    @staticmethod
+    def _credential_to_domain(
+        model: IntegrationCredentialModel,
+    ) -> IntegrationCredential:
+        return IntegrationCredential(
+            id=model.id,
+            provider=model.provider,
+            credential_kind=model.credential_kind,
+            secret_ref=model.secret_ref,
+            configured=model.configured,
+            masked_hint=model.masked_hint,
+            last_validated_at=model.last_validated_at,
+            last_validation_status=model.last_validation_status,
+            last_error_code=model.last_error_code,
+            version=model.version,
+            created_at=model.created_at,
+            updated_at=model.updated_at,
+        )
+
+    @staticmethod
+    def _scope_to_domain(model: IntegrationScopeModel) -> IntegrationScope:
+        return IntegrationScope(
+            id=model.id,
+            provider=model.provider,
+            external_scope_id=model.external_scope_id,
+            display_name=model.display_name,
+            status=model.status,
+            sync_mode=model.sync_mode,
+            last_message_at=model.last_message_at,
+            last_error_code=model.last_error_code,
+            last_error_message=model.last_error_message,
+            last_compensated_at=model.last_compensated_at,
+            last_compensation_status=model.last_compensation_status,
+            approved_by=model.approved_by,
+            approved_at=model.approved_at,
+            version=model.version,
+            created_at=model.created_at,
+            updated_at=model.updated_at,
+        )
+
+    @staticmethod
+    def _check_to_domain(model: IntegrationCheckRunModel) -> IntegrationCheckRun:
+        return IntegrationCheckRun(
+            id=model.id,
+            provider=model.provider,
+            check_kind=model.check_kind,
+            status=model.status,
+            requested_by=model.requested_by,
+            correlation_id=model.correlation_id,
+            started_at=model.started_at,
+            state=model.state,
+            error_code=model.error_code,
+            detail=model.detail,
+            runtime_version=model.runtime_version,
+            finished_at=model.finished_at,
+            created_at=model.created_at,
         )
 
 

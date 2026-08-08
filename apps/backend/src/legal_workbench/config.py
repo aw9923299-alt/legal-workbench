@@ -1,6 +1,7 @@
 from enum import StrEnum
 from functools import lru_cache
 from typing import Self
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -28,12 +29,14 @@ class Settings(BaseSettings):
         env_prefix="LEGAL_WORKBENCH_",
         case_sensitive=False,
         extra="ignore",
+        populate_by_name=True,
     )
 
     app_name: str = "法务工作台 API"
     environment: RuntimeEnvironment = RuntimeEnvironment.DEVELOPMENT
     api_prefix: str = "/api/v1"
     log_level: str = "INFO"
+    local_timezone: str = "Asia/Shanghai"
     cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost:5173"])
 
     database_url: str = Field(
@@ -53,14 +56,32 @@ class Settings(BaseSettings):
     feishu_reconnect_max_seconds: int = 30
     feishu_reconcile_window_minutes: int = 60
     feishu_reconcile_chat_ids: list[str] = Field(default_factory=list)
+    feishu_allowed_chat_ids: list[str] = Field(default_factory=list)
+    feishu_excluded_chat_ids: list[str] = Field(default_factory=list)
+    feishu_receive_direct_messages: bool = True
+    feishu_group_mentions_only: bool = True
+    feishu_configured_group_all_messages: bool = True
     feishu_tenant_key: str | None = None
     feishu_attachment_root: str = "/data/feishu-attachments"
     feishu_attachment_max_bytes: int = 50 * 1024 * 1024
+    feishu_attachment_total_quota_bytes: int = 5 * 1024 * 1024 * 1024
+    document_extraction_work_root: str = "/data/document-extractions"
+    document_extraction_timeout_seconds: int = 30
+    document_extraction_max_output_bytes: int = 5 * 1024 * 1024
 
     knowledge_root: str = "/data/knowledge"
     codex_runs_root: str = "/data/codex-runs"
+    setup_secret_root: str = "/data/local-secrets"
+    operations_state_root: str = "/data/operations"
+    backup_root: str = "/data/backups"
+    backup_max_age_hours: int = 36
+    minimum_disk_free_bytes: int = 5 * 1024 * 1024 * 1024
+    codex_run_retention_days: int = 14
     codex_command: str = "codex"
-    codex_expected_version: str = "0.145.0-alpha.9"
+    codex_cli_version: str = Field(
+        default="0.146.0",
+        validation_alias="CODEX_CLI_VERSION",
+    )
     codex_run_timeout_seconds: int = 900
     codex_sandbox_uid: int | None = None
     codex_sandbox_gid: int | None = None
@@ -68,8 +89,12 @@ class Settings(BaseSettings):
     enable_real_feishu: bool = False
     enable_real_codex: bool = False
     enable_external_send: bool = False
+    evaluation_fixture_path: str = (
+        "apps/backend/tests/fixtures/evaluations/message_judgement_v1.json"
+    )
 
     local_actor_id: str = "local-legal-user"
+    local_supervisor_actor_id: str = "mac-supervisor"
     session_secret: str = "development-only-change-me"
     session_cookie_name: str = "legal_workbench_session"
     session_ttl_seconds: int = 43200
@@ -86,6 +111,8 @@ class Settings(BaseSettings):
     context_max_text_characters: int = 20000
     context_max_single_message_characters: int = 8000
     context_max_attachments: int = 10
+    context_max_attachment_segments: int = 100
+    context_max_single_attachment_segment_characters: int = 4000
     context_builder_version: str = "2.0.0"
     context_selection_policy_version: str = "thread-v2"
     message_analysis_manual_review_threshold: float = 0.75
@@ -96,22 +123,36 @@ class Settings(BaseSettings):
     analysis_recovery_stale_seconds: int = 120
     analysis_recovery_batch_size: int = 100
 
+    @property
+    def codex_expected_version(self) -> str:
+        """Compatibility name for the single CODEX_CLI_VERSION setting."""
+        return self.codex_cli_version
+
     @field_validator("codex_sandbox_uid", "codex_sandbox_gid", mode="before")
     @classmethod
     def normalize_optional_process_ids(cls, value: object) -> object:
         return None if value == "" else value
 
+    @field_validator("local_timezone")
+    @classmethod
+    def validate_local_timezone(cls, value: str) -> str:
+        try:
+            ZoneInfo(value)
+        except ZoneInfoNotFoundError as exc:
+            raise ValueError("Local timezone must be a valid IANA timezone.") from exc
+        return value
+
     @model_validator(mode="after")
     def validate_security_boundaries(self) -> Self:
         if self.enable_real_feishu:
             if self.feishu_event_source == FeishuEventSourceMode.LONG_CONNECTION and not (
-                (self.feishu_app_id or "").strip()
-                and (self.feishu_app_secret or "").strip()
+                (self.feishu_app_id or "").strip() and (self.feishu_app_secret or "").strip()
             ):
                 raise ValueError("Real Feishu long_connection mode requires app credentials.")
-            if self.feishu_event_source == FeishuEventSourceMode.WEBHOOK and not (
-                self.feishu_verification_token or ""
-            ).strip():
+            if (
+                self.feishu_event_source == FeishuEventSourceMode.WEBHOOK
+                and not (self.feishu_verification_token or "").strip()
+            ):
                 raise ValueError("Real Feishu webhook mode requires a verification token.")
         if self.environment not in {
             RuntimeEnvironment.LOCAL,
@@ -131,6 +172,12 @@ class Settings(BaseSettings):
             raise ValueError("Development actor headers cannot be enabled in production.")
         if not 0 <= self.message_analysis_manual_review_threshold <= 1:
             raise ValueError("Message analysis manual-review threshold must be between 0 and 1.")
+        if self.backup_max_age_hours < 1 or self.codex_run_retention_days < 1:
+            raise ValueError("Backup age and Codex retention settings must be positive.")
+        if self.minimum_disk_free_bytes < 0:
+            raise ValueError("Minimum disk free bytes cannot be negative.")
+        if self.analysis_recovery_stale_seconds < 1:
+            raise ValueError("Analysis recovery stale seconds must be positive.")
         return self
 
 

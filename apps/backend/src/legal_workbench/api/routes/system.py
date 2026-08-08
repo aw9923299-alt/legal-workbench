@@ -54,6 +54,14 @@ class SystemMetricsResponse(ApiModel):
     last_candidate_at: datetime | None
     last_agent_run_update_at: datetime | None
     last_outbox_failure_at: datetime | None
+    pending_recovery: int
+    disk_free_bytes: int | None
+    disk_total_bytes: int | None
+    attachment_bytes_used: int | None
+    attachment_quota_bytes: int
+    last_backup_at: datetime | None
+    last_backup_status: str
+    last_wake_check_at: datetime | None
 
 
 class SystemHealthResponse(ApiModel):
@@ -70,8 +78,20 @@ class RecoverPendingJobsResponse(ApiModel):
     idempotent_replay: bool = False
 
 
+def _system_status_service(settings: Settings) -> SystemStatusService:
+    return SystemStatusService(
+        operations_state_root=settings.operations_state_root,
+        backup_root=settings.backup_root,
+        attachment_root=settings.feishu_attachment_root,
+        attachment_quota_bytes=settings.feishu_attachment_total_quota_bytes,
+        minimum_disk_free_bytes=settings.minimum_disk_free_bytes,
+        backup_max_age_hours=settings.backup_max_age_hours,
+        analysis_recovery_stale_seconds=settings.analysis_recovery_stale_seconds,
+    )
+
+
 async def collect_system_health(settings: Settings) -> SystemHealthResponse:
-    snapshot = await SystemStatusService().snapshot()
+    snapshot = await _system_status_service(settings).snapshot()
     health = await CodexRuntimeHealthChecker(
         command=settings.codex_command,
         expected_version=settings.codex_expected_version,
@@ -129,8 +149,10 @@ async def system_health(
 
 
 @router.get("/metrics", response_model=SystemMetricsResponse | None)
-async def system_metrics() -> SystemMetricsResponse | None:
-    snapshot = await SystemStatusService().snapshot()
+async def system_metrics(
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> SystemMetricsResponse | None:
+    snapshot = await _system_status_service(settings).snapshot()
     return (
         SystemMetricsResponse.model_validate(snapshot.metrics)
         if snapshot.metrics

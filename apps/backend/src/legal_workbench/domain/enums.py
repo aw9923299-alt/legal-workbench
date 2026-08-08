@@ -18,6 +18,19 @@ class CandidateResolutionAction(StrEnum):
     IGNORE = "ignore"
 
 
+class MatterUpdateProposalStatus(StrEnum):
+    PENDING = "pending"
+    APPROVED = "approved"
+    PARTIALLY_APPROVED = "partially_approved"
+    REJECTED = "rejected"
+    SUPERSEDED = "superseded"
+
+
+class ProposalFieldDecisionType(StrEnum):
+    APPROVE = "approve"
+    REJECT = "reject"
+
+
 class LegalRelevance(StrEnum):
     RELEVANT = "relevant"
     POSSIBLY_RELEVANT = "possibly_relevant"
@@ -96,11 +109,26 @@ class Confidentiality(StrEnum):
 class WorkItemStatus(StrEnum):
     TODO = "todo"
     IN_PROGRESS = "in_progress"
+    PAUSED = "paused"
     WAITING = "waiting"
     BLOCKED = "blocked"
     PENDING_REVIEW = "pending_review"
     DONE = "done"
     CANCELLED = "cancelled"
+
+
+class WorkItemAction(StrEnum):
+    START = "start"
+    PAUSE = "pause"
+    WAIT = "wait"
+    BLOCK = "block"
+    RESUME = "resume"
+    COMPLETE = "complete"
+    CANCEL = "cancel"
+    REOPEN = "reopen"
+    CHANGE_OWNER = "change_owner"
+    CHANGE_DEADLINE = "change_deadline"
+    CHANGE_NEXT_ACTION = "change_next_action"
 
 
 class Priority(StrEnum):
@@ -179,6 +207,15 @@ class AgentRunStatus(StrEnum):
     TIMED_OUT = "timed_out"
     CANCELLED = "cancelled"
     DEAD_LETTER = "dead_letter"
+
+
+class AgentAttemptStatus(StrEnum):
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    TIMED_OUT = "timed_out"
+    CANCELLED = "cancelled"
+    EXPIRED = "expired"
 
 
 class MessageAnalysisFailureCode(StrEnum):
@@ -303,3 +340,60 @@ class AttachmentDownloadStatus(StrEnum):
     DOWNLOADED = "downloaded"
     FAILED = "failed"
     NOT_REQUESTED = "not_requested"
+
+
+class DocumentExtractionStatus(StrEnum):
+    NOT_REQUESTED = "not_requested"
+    PENDING = "pending"
+    EXTRACTING = "extracting"
+    SUCCEEDED = "succeeded"
+    BODY_UNAVAILABLE = "body_unavailable"
+    FAILED = "failed"
+
+
+class EvaluationRuntimeType(StrEnum):
+    FAKE = "fake"
+    REAL = "real"
+
+
+class EvaluationRunStatus(StrEnum):
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+class SetupState(StrEnum):
+    NOT_CONFIGURED = "not_configured"
+    INVALID_CREDENTIALS = "invalid_credentials"
+    PERMISSION_MISSING = "permission_missing"
+    CONNECTED = "connected"
+    DISCONNECTED = "disconnected"
+    CLI_MISSING = "cli_missing"
+    VERSION_MISMATCH = "version_mismatch"
+    UNAUTHENTICATED = "unauthenticated"
+    AUTHENTICATED = "authenticated"
+    RUNTIME_UNREACHABLE = "runtime_unreachable"
+    READY = "ready"
+    NOT_EXECUTED = "not_executed"
+    PENDING = "pending"
+
+
+class IntegrationCheckStatus(StrEnum):
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    NOT_EXECUTED = "not_executed"
+
+
+class IntegrationScopeStatus(StrEnum):
+    UNAPPROVED = "unapproved"
+    ALLOWED = "allowed"
+    EXCLUDED = "excluded"
+    PAUSED = "paused"
+
+
+class IntegrationSyncMode(StrEnum):
+    MENTIONS_ONLY = "mentions_only"
+    ALL_MESSAGES = "all_messages"
+    DISABLED = "disabled"

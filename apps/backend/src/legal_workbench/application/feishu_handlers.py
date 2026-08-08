@@ -222,10 +222,15 @@ class IngestFeishuEventHandler:
                     ]
                     await uow.feishu.add_attachments(attachments)
                 if normalized.should_trigger_analysis:
+                    event_type = (
+                        "FeishuMessageAttachmentsPending"
+                        if attachments
+                        else "FeishuMessageReceived"
+                    )
                     await uow.outbox_events.add(
                         OutboxEvent(
                             id=uuid4(),
-                            event_type="FeishuMessageReceived",
+                            event_type=event_type,
                             aggregate_type="feishu_message",
                             aggregate_id=message.id,
                             payload={
@@ -233,8 +238,7 @@ class IngestFeishuEventHandler:
                                 "externalMessageId": message.message_id,
                                 "chatId": message.chat_id,
                                 "tenantKey": message.tenant_key,
-                                "forceNewRun": normalized.operation
-                                == FeishuMessageOperation.EDIT,
+                                "forceNewRun": normalized.operation == FeishuMessageOperation.EDIT,
                             },
                             correlation_id=command.correlation_id,
                         )

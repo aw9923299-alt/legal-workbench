@@ -28,3 +28,19 @@ class InvalidStateTransitionError(DomainError):
 
 class IdempotencyConflictError(DomainError):
     code = "IDEMPOTENCY_CONFLICT"
+
+
+class StaleAgentAttemptError(DomainError):
+    code = "STALE_AGENT_ATTEMPT"
+
+
+class StorageQuotaExceededError(DomainError):
+    code = "ATTACHMENT_STORAGE_QUOTA_EXCEEDED"
+
+
+class EvaluationRuntimeDisabledError(DomainError):
+    code = "REAL_EVALUATION_RUNTIME_DISABLED"
+
+
+class EvaluationFixtureConflictError(DomainError):
+    code = "EVALUATION_FIXTURE_CONFLICT"

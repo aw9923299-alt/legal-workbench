@@ -14,9 +14,22 @@ const { Title, Text, Paragraph } = Typography;
 const labels: Record<string, string> = {
   fastapi: 'FastAPI', postgresql: 'PostgreSQL', redis: 'Redis', celery_worker: 'Celery Worker',
   celery_scheduler: 'Celery Scheduler', feishu: '飞书连接', codex_cli: 'Codex CLI', codex_auth: 'Codex 认证',
+  disk: '磁盘与附件配额', backup: 'PostgreSQL 备份',
 };
 const colors: Record<string, string> = { normal: 'green', degraded: 'orange', unavailable: 'red', not_configured: 'default' };
-const statuses: Record<string, string> = { normal: '正常', degraded: '降级', unavailable: '不可用', not_configured: '未配置' };
+const statuses: Record<string, string> = { normal: '正常', degraded: '降级', unavailable: '不可用', not_configured: '未配置', unknown: '未知' };
+
+function formatBytes(value: number | null | undefined): string {
+  if (value === null || value === undefined) return '未知';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let amount = value;
+  let index = 0;
+  while (amount >= 1024 && index < units.length - 1) {
+    amount /= 1024;
+    index += 1;
+  }
+  return `${amount.toFixed(index === 0 ? 0 : 1)} ${units[index]}`;
+}
 
 function useAuditedOperation() {
   const queryClient = useQueryClient();
@@ -47,10 +60,10 @@ async function execute<T>(key: string, payload: unknown, call: (context: ReturnT
 export default function SystemStatusPage() {
   const realtime = useRealtimeStatus();
   const operation = useAuditedOperation();
-  const health = useQuery({ queryKey: ['system', 'health'], queryFn: () => legalApi.getSystemHealth(), refetchInterval: realtime.pollingInterval || 10_000 });
-  const feishu = useQuery({ queryKey: ['feishu-status'], queryFn: () => legalApi.getFeishuStatus(), refetchInterval: realtime.pollingInterval || 10_000 });
-  const deadLetters = useQuery({ queryKey: ['system', 'outbox-dead-letters'], queryFn: () => legalApi.listOutboxDeadLetters(), refetchInterval: realtime.pollingInterval || 15_000 });
-  const deadRuns = useQuery({ queryKey: ['agent-runs', 'dead_letter'], queryFn: () => legalApi.listAgentRuns('dead_letter'), refetchInterval: realtime.pollingInterval || 15_000 });
+  const health = useQuery({ queryKey: ['system', 'health'], queryFn: () => legalApi.getSystemHealth(), refetchInterval: realtime.pollingInterval });
+  const feishu = useQuery({ queryKey: ['feishu-status'], queryFn: () => legalApi.getFeishuStatus(), refetchInterval: realtime.pollingInterval });
+  const deadLetters = useQuery({ queryKey: ['system', 'outbox-dead-letters'], queryFn: () => legalApi.listOutboxDeadLetters(), refetchInterval: realtime.pollingInterval });
+  const deadRuns = useQuery({ queryKey: ['agent-runs', 'dead_letter'], queryFn: () => legalApi.listAgentRuns('dead_letter'), refetchInterval: realtime.pollingInterval });
   const confirm = (title: string, content: string, onOk: () => Promise<unknown>) => Modal.confirm({ title, content, icon: <ExclamationCircleOutlined />, okText: '确认执行', okButtonProps: { danger: true }, onOk });
   const metrics = health.data?.metrics;
 
@@ -67,12 +80,13 @@ export default function SystemStatusPage() {
           <Col xs={12} md={8} xl={6}><Card className="health-card" variant="borderless"><Space direction="vertical"><Text type="secondary">SSE 连接</Text><Tag color={realtime.connected ? 'green' : 'orange'}>{realtime.connected ? '正常' : '降级'}</Tag><Paragraph>{realtime.connected ? '实时事件流已连接。' : '有限频率轮询已启用。'}</Paragraph><Text type="secondary">最近事件：{realtime.lastEventAt ? new Date(realtime.lastEventAt).toLocaleString() : '—'}</Text></Space></Card></Col>
         </Row>
         <Row gutter={[14, 14]} style={{ marginTop: 14 }}>
-          {[['Outbox 积压', metrics?.outboxPending], ['Agent 队列', metrics?.agentQueued], ['失败任务', metrics?.failedRuns], ['Agent 死信', metrics?.agentDeadLetters], ['Outbox 死信', metrics?.outboxDeadLetters]].map(([label, value]) => <Col xs={12} md={8} xl={4} key={String(label)}><Card variant="borderless"><Statistic title={String(label)} value={Number(value ?? 0)} /></Card></Col>)}
+          {[['Outbox 积压', metrics?.outboxPending], ['Agent 队列', metrics?.agentQueued], ['待恢复任务', metrics?.pendingRecovery], ['失败任务', metrics?.failedRuns], ['Agent 死信', metrics?.agentDeadLetters], ['Outbox 死信', metrics?.outboxDeadLetters]].map(([label, value]) => <Col xs={12} md={8} xl={4} key={String(label)}><Card variant="borderless"><Statistic title={String(label)} value={metrics ? Number(value) : '未知'} /></Card></Col>)}
         </Row>
         <Row gutter={14} style={{ marginTop: 14 }}>
           <Col xs={24} xl={12}><Card title="运行与集成详情" variant="borderless"><Descriptions bordered size="small" column={1}>
             <Descriptions.Item label="Codex 状态">{health.data.codex.status}</Descriptions.Item><Descriptions.Item label="检测版本">{health.data.codex.detectedVersion ?? '—'}</Descriptions.Item><Descriptions.Item label="期望版本">{health.data.codex.expectedVersion ?? '—'}</Descriptions.Item><Descriptions.Item label="认证">{health.data.codex.authentication}</Descriptions.Item><Descriptions.Item label="Runtime 目录">{health.data.codex.runtimeDirectoryWritable ? '可写' : '不可写'}</Descriptions.Item>
-            <Descriptions.Item label="飞书模式">{feishu.data?.connectionMode ?? '—'}</Descriptions.Item><Descriptions.Item label="飞书状态">{feishu.data?.status ?? '—'}</Descriptions.Item><Descriptions.Item label="重连次数">{feishu.data?.reconnectCount ?? 0}</Descriptions.Item><Descriptions.Item label="最近成功消息">{metrics?.lastMessageAt ? new Date(metrics.lastMessageAt).toLocaleString() : '—'}</Descriptions.Item><Descriptions.Item label="最近成功 AgentRun">{metrics?.lastCompletedRunAt ? new Date(metrics.lastCompletedRunAt).toLocaleString() : '—'}</Descriptions.Item><Descriptions.Item label="最近补偿同步">{metrics?.lastReconcileAt ? new Date(metrics.lastReconcileAt).toLocaleString() : '—'}</Descriptions.Item>
+            <Descriptions.Item label="飞书模式">{feishu.data?.connectionMode ?? '—'}</Descriptions.Item><Descriptions.Item label="飞书状态">{feishu.data?.status ?? '—'}</Descriptions.Item><Descriptions.Item label="重连次数">{feishu.data?.reconnectCount ?? 0}</Descriptions.Item><Descriptions.Item label="最近入库消息">{metrics?.lastMessageAt ? new Date(metrics.lastMessageAt).toLocaleString() : '—'}</Descriptions.Item><Descriptions.Item label="最近成功 AgentRun">{metrics?.lastCompletedRunAt ? new Date(metrics.lastCompletedRunAt).toLocaleString() : '—'}</Descriptions.Item><Descriptions.Item label="最近补偿同步">{metrics?.lastReconcileAt ? new Date(metrics.lastReconcileAt).toLocaleString() : '—'}</Descriptions.Item>
+            <Descriptions.Item label="磁盘剩余">{formatBytes(metrics?.diskFreeBytes)}</Descriptions.Item><Descriptions.Item label="附件空间">{formatBytes(metrics?.attachmentBytesUsed)} / {formatBytes(metrics?.attachmentQuotaBytes)}</Descriptions.Item><Descriptions.Item label="最近备份">{metrics?.lastBackupAt ? new Date(metrics.lastBackupAt).toLocaleString() : '未知'} · {metrics?.lastBackupStatus ?? 'unknown'}</Descriptions.Item><Descriptions.Item label="最近唤醒自检">{metrics?.lastWakeCheckAt ? new Date(metrics.lastWakeCheckAt).toLocaleString() : '未知'}</Descriptions.Item>
           </Descriptions></Card></Col>
           <Col xs={24} xl={12}><Card title="恢复操作" variant="borderless"><Space direction="vertical" style={{ width: '100%' }}>
             <Button block icon={<SyncOutlined />} loading={operation.isPending} onClick={() => void confirm('重新连接飞书？', '连接器将停止并重新启动；数据库中的消息不会删除。', () => operation.mutateAsync({ key: 'system:feishu-reconnect', payload: {}, call: (context) => legalApi.reconnectFeishu(context) }))}>重新连接飞书</Button>

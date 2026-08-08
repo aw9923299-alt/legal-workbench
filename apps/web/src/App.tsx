@@ -23,8 +23,11 @@ import DashboardPage from './pages/DashboardPage';
 import InboxPage from './pages/InboxPage';
 import LibraryPage from './pages/LibraryPage';
 import MessageDetailPage from './pages/MessageDetailPage';
+import MatterUpdateProposalPage from './pages/MatterUpdateProposalPage';
 import ReviewCenterPage from './pages/ReviewCenterPage';
 import SecurityPage from './pages/SecurityPage';
+import SetupPage from './pages/SetupPage';
+import FeishuScopesPage from './pages/FeishuScopesPage';
 import SystemStatusPage from './pages/SystemStatusPage';
 import TaskCenterPage from './pages/TaskCenterPage';
 import TaskDetailPage from './pages/TaskDetailPage';
@@ -42,6 +45,8 @@ const navItems = [
   { key: '/library', icon: <DatabaseOutlined />, label: '法务事项库' },
   { key: '/agent-runs', icon: <RobotOutlined />, label: 'Agent 运行中心' },
   { key: '/security', icon: <SafetyCertificateOutlined />, label: '数据与权限' },
+  { key: '/setup', icon: <SettingOutlined />, label: '首次配置' },
+  { key: '/settings/feishu-scopes', icon: <SafetyCertificateOutlined />, label: '飞书群聊范围' },
   { key: '/system', icon: <SettingOutlined />, label: '系统状态' },
 ];
 
@@ -68,16 +73,19 @@ function CandidateRoute() {
 function RouteContent() {
   const navigate = useNavigate();
   return <Routes>
-    <Route path="/" element={<Navigate replace to="/inbox" />} />
-    <Route path="/dashboard" element={<DashboardPage onOpenTask={() => navigate('/matters')} />} />
+    <Route path="/" element={<Navigate replace to="/dashboard" />} />
+    <Route path="/dashboard" element={<DashboardPage />} />
     <Route path="/inbox" element={<InboxPage />} />
     <Route path="/inbox/:messageId" element={<MessageDetailPage />} />
     <Route path="/candidates/:candidateId" element={<CandidateRoute />} />
     <Route path="/agent-runs" element={<AgentCenterPage />} />
     <Route path="/agent-runs/:runId" element={<AgentRunDetailPage />} />
     <Route path="/system" element={<SystemStatusPage />} />
+    <Route path="/setup" element={<SetupPage />} />
+    <Route path="/settings/feishu-scopes" element={<FeishuScopesPage />} />
     <Route path="/matters" element={<TaskCenterPage onOpenMatter={(id) => navigate(`/matters/${id}`)} />} />
     <Route path="/matters/:matterId" element={<MatterDetailRoute />} />
+    <Route path="/matter-update-proposals/:proposalId" element={<MatterUpdateProposalPage />} />
     <Route path="/reviews" element={<ReviewCenterPage />} />
     <Route path="/library" element={<LibraryPage />} />
     <Route path="/security" element={<SecurityPage />} />

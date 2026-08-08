@@ -7,8 +7,18 @@ from uuid import UUID, uuid4
 import pytest
 
 from legal_workbench.application.analysis_recovery import AnalysisRecoveryService
-from legal_workbench.domain.entities import AgentRun, AuditEvent, FeishuMessage, OutboxEvent
-from legal_workbench.domain.enums import AgentRunStatus, FeishuMessageStatus
+from legal_workbench.domain.entities import (
+    AgentRun,
+    AgentRunAttempt,
+    AuditEvent,
+    FeishuMessage,
+    OutboxEvent,
+)
+from legal_workbench.domain.enums import (
+    AgentAttemptStatus,
+    AgentRunStatus,
+    FeishuMessageStatus,
+)
 
 NOW = datetime(2026, 8, 1, 8, 0, tzinfo=UTC)
 
@@ -88,6 +98,33 @@ class _RunRepo:
         return None
 
 
+class _AttemptRepo:
+    def __init__(self, attempts: list[AgentRunAttempt]) -> None:
+        self.attempts = attempts
+
+    async def expire_current(
+        self,
+        *,
+        run_id: UUID,
+        attempt_number: int,
+        finished_at: datetime,
+    ) -> bool:
+        attempt = next(
+            (
+                value
+                for value in self.attempts
+                if value.run_id == run_id
+                and value.attempt_number == attempt_number
+                and value.status == AgentAttemptStatus.RUNNING
+            ),
+            None,
+        )
+        if attempt is None:
+            return False
+        attempt.expire(now=finished_at)
+        return True
+
+
 class _OutboxRepo:
     def __init__(self) -> None:
         self.events: list[OutboxEvent] = []
@@ -120,6 +157,20 @@ class _Uow:
     ) -> None:
         self.feishu = _FeishuRepo(messages, queued)
         self.agent_runs = _RunRepo(stale)
+        self.agent_run_attempts = _AttemptRepo(
+            [
+                AgentRunAttempt.start(
+                    run_id=run.id,
+                    attempt_number=run.attempt_number,
+                    lease_token=uuid4(),
+                    worker_id=run.worker_id or "worker-stale",
+                    lease_expires_at=run.lease_expires_at or NOW,
+                    now=run.started_at or run.updated_at,
+                )
+                for run in stale
+                if run.status in {AgentRunStatus.PREPARING, AgentRunStatus.RUNNING}
+            ]
+        )
         self.outbox_events = _OutboxRepo()
         self.audit_events = _AuditRepo()
         self.locks: list[tuple[str, str]] = []
@@ -180,6 +231,7 @@ async def test_recovery_expires_worker_lease_and_requeues_retryable_run() -> Non
     assert result.dead_lettered == 0
     assert run.status == AgentRunStatus.FAILED
     assert run.failure_code == "AGENT_LEASE_EXPIRED"
+    assert uow.agent_run_attempts.attempts[0].status == AgentAttemptStatus.EXPIRED
     assert message.status == FeishuMessageStatus.ANALYSIS_FAILED
     assert len(uow.outbox_events.events) == 1
 

@@ -1,6 +1,6 @@
 FROM python:3.12-slim
 
-ARG CODEX_CLI_VERSION=0.145.0-alpha.9
+ARG CODEX_CLI_VERSION
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -10,6 +10,7 @@ WORKDIR /workspace
 
 RUN apt-get update \
     && apt-get install --no-install-recommends -y ca-certificates curl \
+    && test -n "${CODEX_CLI_VERSION}" \
     && curl -fsSL \
         https://raw.githubusercontent.com/openai/codex/main/scripts/install/install.sh \
         -o /tmp/install-codex.sh \

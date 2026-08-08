@@ -9,22 +9,28 @@ from legal_workbench.application.ports import UnitOfWork
 from legal_workbench.infrastructure.database import get_session_factory
 from legal_workbench.infrastructure.repositories import (
     SqlAlchemyAgentDefinitionRepository,
+    SqlAlchemyAgentRunAttemptRepository,
     SqlAlchemyAgentRunRepository,
     SqlAlchemyAgentRunSourceRepository,
+    SqlAlchemyAttachmentStorageQuotaRepository,
     SqlAlchemyAuditEventRepository,
     SqlAlchemyCommunicationRepository,
     SqlAlchemyContextSnapshotRepository,
     SqlAlchemyDeadlineRepository,
     SqlAlchemyDependencyRepository,
+    SqlAlchemyDocumentRepository,
     SqlAlchemyDraftArtifactRepository,
+    SqlAlchemyEvaluationRepository,
     SqlAlchemyFeishuRepository,
     SqlAlchemyIdempotencyRepository,
     SqlAlchemyLegalMatterRepository,
+    SqlAlchemyMatterUpdateProposalRepository,
     SqlAlchemyMessageCandidateRepository,
     SqlAlchemyOutboxEventRepository,
     SqlAlchemyPriorityConfirmationRepository,
     SqlAlchemyReviewPackageRepository,
     SqlAlchemyReviewRecordRepository,
+    SqlAlchemySetupRepository,
     SqlAlchemyWorkItemRepository,
 )
 
@@ -40,9 +46,13 @@ class SqlAlchemyUnitOfWork(UnitOfWork):
         self.candidates = SqlAlchemyMessageCandidateRepository(self._session)
         self.agent_definitions = SqlAlchemyAgentDefinitionRepository(self._session)
         self.agent_runs = SqlAlchemyAgentRunRepository(self._session)
+        self.agent_run_attempts = SqlAlchemyAgentRunAttemptRepository(self._session)
         self.agent_run_sources = SqlAlchemyAgentRunSourceRepository(self._session)
         self.draft_artifacts = SqlAlchemyDraftArtifactRepository(self._session)
         self.matters = SqlAlchemyLegalMatterRepository(self._session)
+        self.matter_update_proposals = SqlAlchemyMatterUpdateProposalRepository(
+            self._session
+        )
         self.work_items = SqlAlchemyWorkItemRepository(self._session)
         self.priority_confirmations = SqlAlchemyPriorityConfirmationRepository(self._session)
         self.deadlines = SqlAlchemyDeadlineRepository(self._session)
@@ -51,6 +61,10 @@ class SqlAlchemyUnitOfWork(UnitOfWork):
         self.review_records = SqlAlchemyReviewRecordRepository(self._session)
         self.communications = SqlAlchemyCommunicationRepository(self._session)
         self.feishu = SqlAlchemyFeishuRepository(self._session)
+        self.documents = SqlAlchemyDocumentRepository(self._session)
+        self.storage_quota = SqlAlchemyAttachmentStorageQuotaRepository(self._session)
+        self.evaluations = SqlAlchemyEvaluationRepository(self._session)
+        self.setup = SqlAlchemySetupRepository(self._session)
         self.audit_events = SqlAlchemyAuditEventRepository(self._session)
         self.outbox_events = SqlAlchemyOutboxEventRepository(self._session)
         self.idempotency = SqlAlchemyIdempotencyRepository(self._session)

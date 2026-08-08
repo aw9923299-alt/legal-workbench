@@ -7,8 +7,10 @@ from typing import Protocol
 from uuid import UUID
 
 from legal_workbench.domain.entities import (
+    AgentAttemptLease,
     AgentDefinition,
     AgentRun,
+    AgentRunAttempt,
     AgentRunSource,
     AgentRunStatusChange,
     AuditEvent,
@@ -16,29 +18,43 @@ from legal_workbench.domain.entities import (
     Communication,
     ContextSnapshot,
     Deadline,
+    DocumentExtraction,
+    DocumentSegment,
+    DocumentVersion,
     DraftArtifact,
+    EvaluationCase,
+    EvaluationResult,
+    EvaluationRun,
     FeishuAttachment,
     FeishuMessage,
     FeishuMessageVersion,
     FeishuRawEvent,
     IdempotencyRecord,
+    IntegrationCheckRun,
     IntegrationConnection,
+    IntegrationCredential,
+    IntegrationScope,
     LegalMatter,
+    MatterUpdateProposal,
+    MessageAttachment,
     MessageCandidate,
     OutboxEvent,
     PriorityConfirmation,
     ReviewPackage,
     ReviewRecord,
+    SystemSetting,
     WorkItem,
     WorkItemDependency,
 )
 from legal_workbench.domain.enums import (
+    AgentAttemptStatus,
     AgentRunStatus,
     CandidateMatterRelation,
     CandidateStatus,
     CommunicationStatus,
     DeadlineStatus,
     FeishuMessageStatus,
+    MatterUpdateProposalStatus,
     ReviewPackageStatus,
 )
 
@@ -85,9 +101,7 @@ class AgentRunRepository(Protocol):
     async def save(self, run: AgentRun) -> None: ...
     async def list(self, *, status: AgentRunStatus | None, limit: int) -> Sequence[AgentRun]: ...
     async def list_by_message(self, message_id: UUID) -> Sequence[AgentRun]: ...
-    async def list_status_events(
-        self, run_id: UUID
-    ) -> Sequence[AgentRunStatusChange]: ...
+    async def list_status_events(self, run_id: UUID) -> Sequence[AgentRunStatusChange]: ...
     async def list_stale(
         self,
         *,
@@ -95,6 +109,35 @@ class AgentRunRepository(Protocol):
         older_than: datetime,
         limit: int,
     ) -> Sequence[AgentRun]: ...
+
+
+class AgentRunAttemptRepository(Protocol):
+    async def add(self, attempt: AgentRunAttempt) -> None: ...
+    async def heartbeat(
+        self,
+        lease: AgentAttemptLease,
+        *,
+        heartbeat_at: datetime,
+        lease_expires_at: datetime,
+    ) -> None: ...
+    async def complete(self, lease: AgentAttemptLease, *, finished_at: datetime) -> None: ...
+    async def fail(
+        self,
+        lease: AgentAttemptLease,
+        *,
+        status: AgentAttemptStatus,
+        failure_code: str,
+        failure_message: str,
+        finished_at: datetime,
+    ) -> None: ...
+    async def expire_current(
+        self,
+        *,
+        run_id: UUID,
+        attempt_number: int,
+        finished_at: datetime,
+    ) -> bool: ...
+    async def list_by_run(self, run_id: UUID) -> Sequence[AgentRunAttempt]: ...
 
 
 class AgentRunSourceRepository(Protocol):
@@ -110,7 +153,22 @@ class LegalMatterRepository(Protocol):
     async def add(self, matter: LegalMatter) -> None: ...
     async def get(self, matter_id: UUID) -> LegalMatter | None: ...
     async def get_for_update(self, matter_id: UUID) -> LegalMatter | None: ...
+    async def save(self, matter: LegalMatter) -> None: ...
     async def list(self, *, owner_id: str | None, limit: int) -> Sequence[LegalMatter]: ...
+
+
+class MatterUpdateProposalRepository(Protocol):
+    async def add(self, proposal: MatterUpdateProposal) -> None: ...
+    async def get(self, proposal_id: UUID) -> MatterUpdateProposal | None: ...
+    async def get_for_update(self, proposal_id: UUID) -> MatterUpdateProposal | None: ...
+    async def save(self, proposal: MatterUpdateProposal) -> None: ...
+    async def list(
+        self,
+        *,
+        status: MatterUpdateProposalStatus | None,
+        matter_id: UUID | None,
+        limit: int,
+    ) -> Sequence[MatterUpdateProposal]: ...
 
 
 class WorkItemRepository(Protocol):
@@ -139,6 +197,8 @@ class DeadlineRepository(Protocol):
 
 class DependencyRepository(Protocol):
     async def add(self, dependency: WorkItemDependency) -> None: ...
+    async def get_for_update(self, dependency_id: UUID) -> WorkItemDependency | None: ...
+    async def save(self, dependency: WorkItemDependency) -> None: ...
     async def list_by_work_item(self, work_item_id: UUID) -> Sequence[WorkItemDependency]: ...
 
 
@@ -196,14 +256,11 @@ class FeishuRepository(Protocol):
     async def save_message(self, message: FeishuMessage) -> None: ...
     async def next_message_revision(self, message_id: UUID) -> int: ...
     async def add_message_version(self, version: FeishuMessageVersion) -> None: ...
-    async def list_message_versions(
-        self, message_id: UUID
-    ) -> Sequence[FeishuMessageVersion]: ...
+    async def list_message_versions(self, message_id: UUID) -> Sequence[FeishuMessageVersion]: ...
     async def add_attachments(self, attachments: Sequence[FeishuAttachment]) -> None: ...
-    async def list_pending_attachments(
-        self, message_id: UUID
-    ) -> Sequence[FeishuAttachment]: ...
+    async def list_pending_attachments(self, message_id: UUID) -> Sequence[FeishuAttachment]: ...
     async def list_attachments(self, message_id: UUID) -> Sequence[FeishuAttachment]: ...
+    async def get_attachment_for_update(self, attachment_id: UUID) -> MessageAttachment | None: ...
     async def save_attachment(self, attachment: FeishuAttachment) -> None: ...
     async def list_queued_without_active_run(self, *, limit: int) -> Sequence[FeishuMessage]: ...
     async def get_connection(
@@ -226,14 +283,86 @@ class IdempotencyRepository(Protocol):
     async def add(self, record: IdempotencyRecord) -> None: ...
 
 
+class DocumentRepository(Protocol):
+    async def find_version(
+        self, *, attachment_id: UUID, content_sha256: str
+    ) -> DocumentVersion | None: ...
+    async def next_version(self, attachment_id: UUID) -> int: ...
+    async def add_version(self, version: DocumentVersion) -> None: ...
+    async def add_extraction(self, extraction: DocumentExtraction) -> None: ...
+    async def find_latest_extraction(
+        self, document_version_id: UUID
+    ) -> DocumentExtraction | None: ...
+    async def get_extraction_for_update(self, extraction_id: UUID) -> DocumentExtraction | None: ...
+    async def save_extraction(self, extraction: DocumentExtraction) -> None: ...
+    async def get_version(self, version_id: UUID) -> DocumentVersion | None: ...
+    async def add_segments(self, segments: Sequence[DocumentSegment]) -> None: ...
+    async def list_latest_segments(
+        self, attachment_ids: Sequence[UUID]
+    ) -> Sequence[DocumentSegment]: ...
+
+
+class AttachmentStorageQuotaRepository(Protocol):
+    async def reserve(
+        self,
+        *,
+        attachment_id: UUID,
+        requested_bytes: int,
+        total_bytes: int,
+        observed_used_bytes: int,
+        expires_at: datetime,
+    ) -> UUID | None: ...
+    async def commit(self, reservation_token: UUID) -> None: ...
+    async def release(self, reservation_token: UUID) -> None: ...
+
+
+class EvaluationRepository(Protocol):
+    async def get_case(
+        self, *, suite_key: str, case_key: str, case_version: int
+    ) -> EvaluationCase | None: ...
+    async def add_case(self, case: EvaluationCase) -> None: ...
+    async def add_run(self, run: EvaluationRun) -> None: ...
+    async def get_run(self, run_id: UUID) -> EvaluationRun | None: ...
+    async def get_run_for_update(self, run_id: UUID) -> EvaluationRun | None: ...
+    async def save_run(self, run: EvaluationRun) -> None: ...
+    async def add_result(self, result: EvaluationResult) -> None: ...
+    async def list_results(self, run_id: UUID) -> Sequence[EvaluationResult]: ...
+
+
+class SetupRepository(Protocol):
+    async def get_setting(self, key: str) -> SystemSetting | None: ...
+    async def save_setting(self, value: SystemSetting) -> None: ...
+    async def get_credential(
+        self, *, provider: str, credential_kind: str
+    ) -> IntegrationCredential | None: ...
+    async def save_credential(self, value: IntegrationCredential) -> None: ...
+    async def list_scopes(self, *, provider: str) -> Sequence[IntegrationScope]: ...
+    async def find_scope(
+        self, *, provider: str, external_scope_id: str
+    ) -> IntegrationScope | None: ...
+    async def get_scope(self, scope_id: UUID) -> IntegrationScope | None: ...
+    async def get_scope_for_update(self, scope_id: UUID) -> IntegrationScope | None: ...
+    async def add_scope(self, value: IntegrationScope) -> None: ...
+    async def save_scope(self, value: IntegrationScope) -> None: ...
+    async def add_check(self, value: IntegrationCheckRun) -> None: ...
+    async def get_check(self, check_run_id: UUID) -> IntegrationCheckRun | None: ...
+    async def get_check_for_update(self, check_run_id: UUID) -> IntegrationCheckRun | None: ...
+    async def save_check(self, value: IntegrationCheckRun) -> None: ...
+    async def latest_check(
+        self, *, provider: str, check_kind: str
+    ) -> IntegrationCheckRun | None: ...
+
+
 class UnitOfWork(Protocol):
     context_snapshots: ContextSnapshotRepository
     candidates: MessageCandidateRepository
     agent_definitions: AgentDefinitionRepository
     agent_runs: AgentRunRepository
+    agent_run_attempts: AgentRunAttemptRepository
     agent_run_sources: AgentRunSourceRepository
     draft_artifacts: DraftArtifactRepository
     matters: LegalMatterRepository
+    matter_update_proposals: MatterUpdateProposalRepository
     work_items: WorkItemRepository
     priority_confirmations: PriorityConfirmationRepository
     deadlines: DeadlineRepository
@@ -242,6 +371,10 @@ class UnitOfWork(Protocol):
     review_records: ReviewRecordRepository
     communications: CommunicationRepository
     feishu: FeishuRepository
+    documents: DocumentRepository
+    storage_quota: AttachmentStorageQuotaRepository
+    evaluations: EvaluationRepository
+    setup: SetupRepository
     audit_events: AuditEventRepository
     outbox_events: OutboxEventRepository
     idempotency: IdempotencyRepository

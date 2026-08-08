@@ -23,11 +23,54 @@ export type PrioritySource = 'system' | 'agent_suggested' | 'legal_confirmed';
 export type WorkItemStatus =
   | 'todo'
   | 'in_progress'
+  | 'paused'
   | 'waiting'
   | 'blocked'
   | 'pending_review'
   | 'done'
   | 'cancelled';
+
+export type DashboardGroup =
+  | 'today_must_handle'
+  | 'overdue'
+  | 'pending_candidates'
+  | 'analysis_failed'
+  | 'waiting_others'
+  | 'upcoming_deadlines'
+  | 'pending_outbound_review'
+  | 'system_abnormal';
+
+export interface DashboardItem {
+  id: string;
+  group: DashboardGroup;
+  objectType: string;
+  title: string;
+  description: string;
+  href: string;
+  status: string;
+  createdAt: string;
+  dueAt: string | null;
+  isHardDeadline: boolean;
+  isOverdue: boolean;
+  legalRisk: LegalRisk;
+  confirmedPriority: Priority | null;
+  aiSuggestedPriority: Priority | null;
+  waitingSince: string | null;
+  waitingSeconds: number;
+  rankingReasons: string[];
+}
+
+export interface DashboardToday {
+  generatedAt: string;
+  todayMustHandle: DashboardItem[];
+  overdue: DashboardItem[];
+  pendingCandidates: DashboardItem[];
+  analysisFailed: DashboardItem[];
+  waitingOthers: DashboardItem[];
+  upcomingDeadlines: DashboardItem[];
+  pendingOutboundReview: DashboardItem[];
+  systemAbnormal: DashboardItem[];
+}
 
 export interface MessageCandidate {
   id: string;
@@ -71,7 +114,17 @@ export interface MessageJudgementResult {
   suggestedTitle: string;
   categoryCandidates: CategoryCandidate[];
   deadlineCandidates: DeadlineCandidate[];
-  confirmedFacts: Array<{ statement: string; sourceMessageId: string }>;
+  confirmedFacts: Array<{
+    statement: string;
+    sourceMessageId: string | null;
+    attachmentCitation?: {
+      attachmentId: string;
+      fileName: string;
+      pageNumber: number | null;
+      paragraphNumber: number;
+      contentHash: string;
+    } | null;
+  }>;
   inferredFacts: Array<{ statement: string; basis: string; confidence: number }>;
   missingInformation: string[];
   reasons: string[];
@@ -204,10 +257,14 @@ export interface FeishuMessageDetail extends FeishuMessageSummary {
     mimeType: string | null;
     size: number | null;
     sha256: string | null;
-    localPath: string | null;
     downloadStatus: string;
     downloadError: string | null;
     authorizedForAnalysis: boolean;
+    extractionStatus: 'not_requested' | 'pending' | 'extracting' | 'succeeded' | 'body_unavailable' | 'failed';
+    extractorVersion: string | null;
+    pageCount: number | null;
+    characterCount: number | null;
+    extractionErrorCode: string | null;
   }>;
   candidateRevisions: CandidateRevision[];
 }
@@ -227,6 +284,8 @@ export interface MessageAnalysis {
     snapshotVersion: number;
     messageIds: string[];
     attachmentIds: string[];
+    includedSegments: Array<Record<string, unknown>>;
+    excludedSegments: Array<Record<string, unknown>>;
     participantIds: string[];
     contentHash: string;
     truncated: boolean;
@@ -266,6 +325,14 @@ export interface SystemHealth {
     lastCandidateAt: string | null;
     lastAgentRunUpdateAt: string | null;
     lastOutboxFailureAt: string | null;
+    pendingRecovery: number;
+    diskFreeBytes: number | null;
+    diskTotalBytes: number | null;
+    attachmentBytesUsed: number | null;
+    attachmentQuotaBytes: number;
+    lastBackupAt: string | null;
+    lastBackupStatus: string;
+    lastWakeCheckAt: string | null;
   } | null;
   codex: {
     enabled: boolean;
@@ -277,6 +344,115 @@ export interface SystemHealth {
     runtimeDirectoryWritable: boolean;
     detail: string;
   };
+}
+
+export type SetupState =
+  | 'not_configured'
+  | 'invalid_credentials'
+  | 'permission_missing'
+  | 'connected'
+  | 'disconnected'
+  | 'cli_missing'
+  | 'version_mismatch'
+  | 'unauthenticated'
+  | 'authenticated'
+  | 'runtime_unreachable'
+  | 'ready'
+  | 'not_executed'
+  | 'pending';
+
+export interface SetupComponent {
+  state: SetupState;
+  message: string;
+  correlationId: string;
+  errorCode: string | null;
+}
+
+export interface SetupStatus {
+  generatedAt: string;
+  correlationId: string;
+  overallState: SetupState;
+  basicServices: Record<string, string>;
+  feishu: {
+    credentials: {
+      configured: boolean;
+      appIdMasked: string | null;
+      secretMasked: string | null;
+      lastValidationStatus: string | null;
+      lastErrorCode: string | null;
+    };
+    permissions: SetupComponent;
+    scopes: SetupComponent;
+    connection: SetupComponent;
+    testMessage: SetupComponent;
+    manualUnreadAcceptance: SetupComponent;
+    eventSource: string;
+    receiveDirectMessages: boolean;
+    groupMentionsOnly: boolean;
+    configuredGroupAllMessages: boolean;
+    allowedScopeCount: number;
+    excludedScopeCount: number;
+  };
+  codex: {
+    cli: SetupComponent;
+    version: SetupComponent;
+    authentication: SetupComponent;
+    smokeTest: SetupComponent;
+    expectedVersion: string;
+    detectedVersion: string | null;
+  };
+  steps: Array<{
+    number: number;
+    key: string;
+    title: string;
+    component: SetupComponent;
+  }>;
+}
+
+export interface SetupActionResult {
+  state: SetupState;
+  message: string;
+  correlationId: string;
+  errorCode: string | null;
+}
+
+export interface CodexCheckRequested {
+  checkRunId: string;
+  state: SetupState;
+  message: string;
+  correlationId: string;
+  idempotentReplay: boolean;
+}
+
+export type FeishuScopeStatus = 'unapproved' | 'allowed' | 'excluded' | 'paused';
+export type FeishuScopeSyncMode = 'mentions_only' | 'all_messages' | 'disabled';
+
+export interface FeishuScope {
+  id: string;
+  provider: 'feishu';
+  externalScopeId: string;
+  displayName: string | null;
+  status: FeishuScopeStatus;
+  syncMode: FeishuScopeSyncMode;
+  lastMessageAt: string | null;
+  lastErrorCode: string | null;
+  lastErrorMessage: string | null;
+  lastCompensatedAt: string | null;
+  lastCompensationStatus: string | null;
+  approvedBy: string | null;
+  approvedAt: string | null;
+  version: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface DeferredFeishuCompensation {
+  scope: FeishuScope;
+  state: 'not_executed';
+  errorCode: string;
+  message: string;
+  correlationId: string;
+  idempotentReplay: boolean;
 }
 
 export interface FeishuConnection {
@@ -309,6 +485,10 @@ export interface LegalMatter {
   entityIds: string[];
   legalRisk: LegalRisk;
   businessImpact: BusinessImpact;
+  priority: Priority;
+  prioritySource: PrioritySource;
+  targetDeadlineAt: string | null;
+  nextAction: string | null;
   confidentiality: 'internal' | 'confidential' | 'restricted';
   summary: string | null;
   objective: string | null;
@@ -318,6 +498,51 @@ export interface LegalMatter {
   resolvedAt: string | null;
   closedAt: string | null;
   reopenedAt: string | null;
+}
+
+export type MatterUpdateProposalStatus =
+  | 'pending'
+  | 'approved'
+  | 'partially_approved'
+  | 'rejected'
+  | 'superseded';
+
+export type MatterUpdateProposalField =
+  | 'title'
+  | 'category'
+  | 'priority'
+  | 'deadline'
+  | 'owner'
+  | 'currentStatus'
+  | 'nextAction'
+  | 'newWorkItems';
+
+export interface ProposedFieldValues {
+  currentValue: unknown;
+  messageExtractedValue: unknown;
+  aiSuggestedValue: unknown;
+}
+
+export interface MatterUpdateProposal {
+  id: string;
+  candidateId: string;
+  matterId: string;
+  baseMatterVersion: number;
+  proposedChanges: Partial<Record<MatterUpdateProposalField, ProposedFieldValues>>;
+  finalChanges: Partial<Record<MatterUpdateProposalField, unknown>>;
+  fieldDecisions: Array<{
+    fieldName: MatterUpdateProposalField;
+    decision: 'approve' | 'reject';
+    finalValue: unknown;
+  }>;
+  reason: string;
+  status: MatterUpdateProposalStatus;
+  createdBy: string;
+  reviewedBy: string | null;
+  reviewedAt: string | null;
+  rejectionReason: string | null;
+  createdAt: string;
+  version: number;
 }
 
 export interface WorkItem {
@@ -337,12 +562,15 @@ export interface WorkItem {
   waitingPartyId: string | null;
   waitingReason: string | null;
   waitingSince: string | null;
+  pausedReason: string | null;
   isBlocked: boolean;
   blockerReason: string | null;
   blockerOwnerId: string | null;
   plannedStartAt: string | null;
   plannedCompleteAt: string | null;
   completedAt: string | null;
+  cancelledAt: string | null;
+  cancelReason: string | null;
   priorityConfirmedBy: string | null;
   priorityConfirmedAt: string | null;
   sequenceOrder: number;
@@ -392,6 +620,7 @@ export interface WorkItemDependency {
   externalPartyId: string | null;
   description: string | null;
   satisfiedAt: string | null;
+  satisfiedBy: string | null;
   waivedBy: string | null;
   waivedAt: string | null;
   version: number;

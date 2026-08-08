@@ -23,9 +23,11 @@ from legal_workbench.agents.runtime import (
     AgentRuntime,
     AgentRuntimeError,
 )
+from legal_workbench.application.agent_attempts import AgentAttemptService
 from legal_workbench.application.context_snapshots import ContextSnapshotBuilder
 from legal_workbench.application.ports import UnitOfWork, UnitOfWorkFactory
 from legal_workbench.domain.entities import (
+    AgentAttemptLease,
     AgentDefinition,
     AgentRun,
     AgentRunSource,
@@ -37,6 +39,7 @@ from legal_workbench.domain.entities import (
     OutboxEvent,
 )
 from legal_workbench.domain.enums import (
+    AgentAttemptStatus,
     AgentRunSourceType,
     AgentRunStatus,
     CandidateStatus,
@@ -85,6 +88,15 @@ class MessageAnalysisError(RuntimeError):
         super().__init__(message)
         self.code = code
         self.retryable = retryable
+
+
+def _positive_snapshot_integer(value: object, *, field_name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise InvalidStateTransitionError(
+            "ContextSnapshot contains an invalid attachment citation.",
+            details={"field": field_name},
+        )
+    return value
 
 
 @dataclass(frozen=True, slots=True)
@@ -249,10 +261,10 @@ class AnalyseFeishuMessageHandler:
             return prepared.idempotent_result
         if prepared.run is None or prepared.definition is None or prepared.snapshot is None:
             raise RuntimeError("Prepared analysis is incomplete.")
-        run = await self._mark_running(prepared.run.id, command)
+        run, lease = await self._mark_running(prepared.run.id, command)
 
         async def heartbeat() -> None:
-            await self._heartbeat(run.id)
+            await self._heartbeat(run.id, lease)
 
         try:
             execution = await self._runtime.execute(
@@ -263,6 +275,7 @@ class AnalyseFeishuMessageHandler:
         except AgentRuntimeError as exc:
             await self._persist_failure(
                 run.id,
+                lease,
                 command,
                 exc,
                 input_payload=run.input_payload,
@@ -277,6 +290,7 @@ class AnalyseFeishuMessageHandler:
             )
             await self._persist_failure(
                 run.id,
+                lease,
                 command,
                 runtime_error,
                 input_payload=run.input_payload,
@@ -285,6 +299,7 @@ class AnalyseFeishuMessageHandler:
             raise runtime_error from exc
         return await self._persist_success(
             run.id,
+            lease,
             command,
             prepared.definition,
             execution.output.model_dump(by_alias=True, mode="json"),
@@ -351,16 +366,20 @@ class AnalyseFeishuMessageHandler:
                             "The queued AgentDefinition no longer exists.",
                             retryable=False,
                         )
-                    return PreparedAnalysis(
-                        run=runs[0], definition=definition, snapshot=snapshot
-                    )
+                    return PreparedAnalysis(run=runs[0], definition=definition, snapshot=snapshot)
                 if (
                     command.recover_interrupted_run
                     and runs
-                    and runs[0].status
-                    in {AgentRunStatus.PREPARING, AgentRunStatus.RUNNING}
+                    and runs[0].status in {AgentRunStatus.PREPARING, AgentRunStatus.RUNNING}
                 ):
                     interrupted = runs[0]
+                    await AgentAttemptService(
+                        uow.agent_run_attempts,
+                        lease_seconds=self._lease_seconds,
+                    ).expire_current(
+                        run_id=interrupted.id,
+                        attempt_number=interrupted.attempt_number,
+                    )
                     interrupted.failure_code = "AGENT_RUNTIME_START_FAILED"
                     interrupted.failure_message = "Worker delivery was interrupted and recovered."
                     interrupted.transition_to(AgentRunStatus.FAILED)
@@ -475,9 +494,7 @@ class AnalyseFeishuMessageHandler:
                     )
             definition = await uow.agent_definitions.get_active(MESSAGE_JUDGEMENT_KEY)
             if definition is None:
-                existing_definition = await uow.agent_definitions.get(
-                    self._default_definition.id
-                )
+                existing_definition = await uow.agent_definitions.get(self._default_definition.id)
                 if existing_definition is not None:
                     raise MessageAnalysisError(
                         "AGENT_DEFINITION_DISABLED",
@@ -525,8 +542,6 @@ class AnalyseFeishuMessageHandler:
                 agent_definition_version=definition.version,
                 prompt_version=definition.version,
                 worker_id=command.worker_id,
-                lease_expires_at=datetime.now(UTC)
-                + timedelta(seconds=self._lease_seconds),
             )
             await uow.agent_runs.add(run)
             await uow.agent_run_sources.add_many(self._sources(run, snapshot))
@@ -555,7 +570,9 @@ class AnalyseFeishuMessageHandler:
             await uow.commit()
             return PreparedAnalysis(run=run, definition=definition, snapshot=snapshot)
 
-    async def _mark_running(self, run_id: UUID, command: AnalyseFeishuMessageCommand) -> AgentRun:
+    async def _mark_running(
+        self, run_id: UUID, command: AnalyseFeishuMessageCommand
+    ) -> tuple[AgentRun, AgentAttemptLease]:
         async with self._uow_factory() as uow:
             run = await uow.agent_runs.get_for_update(run_id)
             if run is None or run.feishu_message_id is None:
@@ -573,9 +590,15 @@ class AnalyseFeishuMessageHandler:
                 )
             run.transition_to(AgentRunStatus.PREPARING)
             run.transition_to(AgentRunStatus.RUNNING)
-            run.worker_id = command.worker_id or run.worker_id
-            run.lease_expires_at = datetime.now(UTC) + timedelta(
-                seconds=self._lease_seconds
+            run.worker_id = command.worker_id or run.worker_id or "analysis-worker"
+            run.lease_expires_at = datetime.now(UTC) + timedelta(seconds=self._lease_seconds)
+            lease = await AgentAttemptService(
+                uow.agent_run_attempts,
+                lease_seconds=self._lease_seconds,
+            ).claim(
+                run_id=run.id,
+                attempt_number=run.attempt_number,
+                worker_id=run.worker_id,
             )
             message.transition_to(FeishuMessageStatus.ANALYSING)
             await uow.agent_runs.save(run)
@@ -593,23 +616,25 @@ class AnalyseFeishuMessageHandler:
                 )
             )
             await uow.commit()
-            return run
+            return run, lease
 
-    async def _heartbeat(self, run_id: UUID) -> None:
+    async def _heartbeat(self, run_id: UUID, lease: AgentAttemptLease) -> None:
         async with self._uow_factory() as uow:
             run = await uow.agent_runs.get_for_update(run_id)
             if run is None:
                 return
+            run.lease_expires_at = await AgentAttemptService(
+                uow.agent_run_attempts,
+                lease_seconds=self._lease_seconds,
+            ).heartbeat(lease)
             run.heartbeat()
-            run.lease_expires_at = datetime.now(UTC) + timedelta(
-                seconds=self._lease_seconds
-            )
             await uow.agent_runs.save(run)
             await uow.commit()
 
     async def _persist_success(
         self,
         run_id: UUID,
+        lease: AgentAttemptLease,
         command: AnalyseFeishuMessageCommand,
         definition: AgentDefinition,
         output_payload: dict[str, object],
@@ -632,6 +657,10 @@ class AnalyseFeishuMessageHandler:
             message = await uow.feishu.get_message_for_update(run.feishu_message_id)
             if message is None:
                 raise RuntimeError("FeishuMessage disappeared before result persistence.")
+            await AgentAttemptService(
+                uow.agent_run_attempts,
+                lease_seconds=self._lease_seconds,
+            ).complete(lease)
             run.transition_to(AgentRunStatus.VALIDATING)
             run.output_payload = output_payload
             run.input_payload = input_payload
@@ -671,7 +700,7 @@ class AnalyseFeishuMessageHandler:
                             for value in output.deadline_candidates
                         ],
                         related_matter_proposals=[],
-                        evidence_refs=[fact.source_message_id for fact in output.confirmed_facts],
+                        evidence_refs=self._evidence_refs(output),
                         agent_run_id=run.id,
                     )
                     candidate.feishu_message_id = message.id
@@ -709,9 +738,7 @@ class AnalyseFeishuMessageHandler:
                             value.model_dump(by_alias=True, mode="json")
                             for value in output.deadline_candidates
                         ],
-                        evidence_refs=[
-                            fact.source_message_id for fact in output.confirmed_facts
-                        ],
+                        evidence_refs=self._evidence_refs(output),
                         agent_run_id=run.id,
                         requires_manual_review=requires_manual_review,
                         analysis_payload=output_payload,
@@ -795,9 +822,7 @@ class AnalyseFeishuMessageHandler:
         analysis_payload: dict[str, object],
     ) -> None:
         existing_revisions = await uow.candidates.list_revisions(candidate_id)
-        revision_number = (
-            max((value.revision for value in existing_revisions), default=0) + 1
-        )
+        revision_number = max((value.revision for value in existing_revisions), default=0) + 1
         await uow.candidates.append_revision(
             CandidateRevision(
                 id=uuid4(),
@@ -811,6 +836,7 @@ class AnalyseFeishuMessageHandler:
     async def _persist_failure(
         self,
         run_id: UUID,
+        lease: AgentAttemptLease,
         command: AnalyseFeishuMessageCommand,
         error: AgentRuntimeError,
         *,
@@ -824,6 +850,19 @@ class AnalyseFeishuMessageHandler:
             message = await uow.feishu.get_message_for_update(run.feishu_message_id)
             if message is None:
                 return
+            attempt_status = {
+                "AGENT_RUNTIME_TIMEOUT": AgentAttemptStatus.TIMED_OUT,
+                "AGENT_RUNTIME_CANCELLED": AgentAttemptStatus.CANCELLED,
+            }.get(error.code, AgentAttemptStatus.FAILED)
+            await AgentAttemptService(
+                uow.agent_run_attempts,
+                lease_seconds=self._lease_seconds,
+            ).fail(
+                lease,
+                status=attempt_status,
+                failure_code=error.code,
+                failure_message=str(error)[:4000],
+            )
             run.raw_stdout = error.raw_stdout
             run.raw_stderr = error.raw_stderr
             run.input_payload = input_payload
@@ -899,6 +938,27 @@ class AnalyseFeishuMessageHandler:
         return proposals
 
     @staticmethod
+    def _evidence_refs(output: object) -> list[str]:
+        from legal_workbench.agents.message_judgement import MessageJudgementResult
+
+        validated = MessageJudgementResult.model_validate(output)
+        references = [
+            value.source_message_id
+            for value in validated.confirmed_facts
+            if value.source_message_id is not None
+        ]
+        references.extend(
+            "attachment:"
+            f"{citation.attachment_id}:"
+            f"page:{citation.page_number or 'none'}:"
+            f"paragraph:{citation.paragraph_number}:"
+            f"sha256:{citation.content_hash}"
+            for value in validated.confirmed_facts
+            if (citation := value.attachment_citation) is not None
+        )
+        return list(dict.fromkeys(references))
+
+    @staticmethod
     def _sources(run: AgentRun, snapshot: ContextSnapshot) -> list[AgentRunSource]:
         sources = [
             AgentRunSource(
@@ -952,6 +1012,55 @@ class AnalyseFeishuMessageHandler:
                     source_hash=sha256(attachment_id.encode("utf-8")).hexdigest(),
                     display_name=f"Attachment metadata {attachment_id}",
                     citation_metadata={"metadataOnly": True},
+                )
+            )
+        for segment in snapshot.included_segments:
+            attachment_value = segment.get("attachmentId")
+            file_name_value = segment.get("fileName")
+            content_hash_value = segment.get("contentHash")
+            if (
+                not isinstance(attachment_value, str)
+                or not attachment_value
+                or not isinstance(file_name_value, str)
+                or not file_name_value
+                or not isinstance(content_hash_value, str)
+                or len(content_hash_value) != 64
+            ):
+                raise InvalidStateTransitionError(
+                    "ContextSnapshot contains an invalid attachment citation."
+                )
+            attachment_id = attachment_value
+            file_name = file_name_value
+            page_value = segment.get("pageNumber")
+            page_number = (
+                _positive_snapshot_integer(page_value, field_name="pageNumber")
+                if page_value is not None
+                else None
+            )
+            paragraph_number = _positive_snapshot_integer(
+                segment["paragraphNumber"], field_name="paragraphNumber"
+            )
+            content_hash = content_hash_value
+            locator = (
+                f"{attachment_id}:page:{page_number or 'none'}:"
+                f"paragraph:{paragraph_number}"
+            )
+            sources.append(
+                AgentRunSource(
+                    id=uuid4(),
+                    agent_run_id=run.id,
+                    source_type=AgentRunSourceType.ATTACHMENT,
+                    source_id=locator,
+                    source_version=f"page:{page_number or 'none'}:paragraph:{paragraph_number}",
+                    source_hash=content_hash,
+                    display_name=file_name,
+                    citation_metadata={
+                        "segment": True,
+                        "attachmentId": attachment_id,
+                        "fileName": file_name,
+                        "pageNumber": page_number,
+                        "paragraphNumber": paragraph_number,
+                    },
                 )
             )
         return sources

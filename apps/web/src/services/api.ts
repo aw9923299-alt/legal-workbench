@@ -3,8 +3,11 @@ import type {
   AgentRunRecord,
   CandidateStatus,
   CandidateRevision,
+  DashboardToday,
   Deadline,
   LegalMatter,
+  MatterUpdateProposal,
+  MatterUpdateProposalField,
   MessageCandidate,
   MessageAnalysis,
   FeishuConnection,
@@ -18,7 +21,14 @@ import type {
   ReviewRecord,
   WorkItem,
   WorkItemDependency,
+  WorkItemStatus,
   SystemHealth,
+  SetupStatus,
+  SetupActionResult,
+  CodexCheckRequested,
+  DeferredFeishuCompensation,
+  FeishuScope,
+  FeishuScopeSyncMode,
 } from '../types/api';
 
 export const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? '/api/v1';
@@ -229,6 +239,10 @@ export interface ConfirmCandidateInput {
 }
 
 export const legalApi = {
+  getDashboardToday(): Promise<DashboardToday> {
+    return request('/dashboard/today');
+  },
+
   listMessages(filters: {
     statuses?: FeishuMessageStatus[];
     search?: string;
@@ -251,6 +265,19 @@ export const legalApi = {
 
   getMessage(messageId: string): Promise<FeishuMessageDetail> {
     return request(`/feishu/messages/${messageId}`);
+  },
+
+  setAttachmentAnalysisAuthorization(
+    messageId: string,
+    attachmentId: string,
+    authorized: boolean,
+    mutation?: MutationContext,
+  ): Promise<FeishuMessageDetail['attachments'][number] & { idempotentReplay: boolean }> {
+    return request(
+      `/feishu/messages/${messageId}/attachments/${attachmentId}/analysis-authorization`,
+      { method: 'POST', body: JSON.stringify({ authorized }) },
+      { write: true, mutation },
+    );
   },
 
   listCandidates(status = 'pending_confirmation'): Promise<MessageCandidate[]> {
@@ -277,6 +304,56 @@ export const legalApi = {
     idempotentReplay: boolean;
   }> {
     return request(`/inbox/candidates/${candidateId}/resolve`, {
+      method: 'POST', body: JSON.stringify(input),
+    }, { write: true, mutation });
+  },
+
+  createMatterUpdateProposal(candidateId: string, input: {
+    candidateVersion: number;
+    matterId: string;
+    proposedChanges: Record<string, {
+      currentValue: unknown;
+      messageExtractedValue: unknown;
+      aiSuggestedValue: unknown;
+    }>;
+    reason: string;
+  }, mutation?: MutationContext): Promise<{
+    proposalId: string;
+    candidateId: string;
+    matterId: string;
+    status: 'pending';
+    version: number;
+    idempotentReplay: boolean;
+  }> {
+    return request(`/inbox/candidates/${candidateId}/matter-update-proposals`, {
+      method: 'POST', body: JSON.stringify(input),
+    }, { write: true, mutation });
+  },
+
+  getMatterUpdateProposal(proposalId: string): Promise<MatterUpdateProposal> {
+    return request(`/matter-update-proposals/${proposalId}`);
+  },
+
+  reviewMatterUpdateProposal(proposalId: string, input: {
+    proposalVersion: number;
+    matterVersion: number;
+    decisions: Array<{
+      fieldName: MatterUpdateProposalField;
+      decision: 'approve' | 'reject';
+      finalValue: unknown;
+    }>;
+    rejectionReason?: string;
+  }, mutation?: MutationContext): Promise<{
+    proposalId: string;
+    matterId: string;
+    status: 'approved' | 'partially_approved' | 'rejected';
+    proposalVersion: number;
+    matterVersion: number;
+    workItemIds: string[];
+    deadlineId: string | null;
+    idempotentReplay: boolean;
+  }> {
+    return request(`/matter-update-proposals/${proposalId}/review`, {
       method: 'POST', body: JSON.stringify(input),
     }, { write: true, mutation });
   },
@@ -343,6 +420,75 @@ export const legalApi = {
     return request('/system/health');
   },
 
+  getSetupStatus(): Promise<SetupStatus> {
+    return request('/setup/status');
+  },
+
+  validateFeishuSetup(input: {
+    appId?: string;
+    appSecret?: string;
+  }): Promise<SetupActionResult> {
+    return request('/setup/feishu/validate', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }, { write: true });
+  },
+
+  startFeishuSetup(): Promise<SetupActionResult> {
+    return request('/setup/feishu/start', { method: 'POST' }, { write: true });
+  },
+
+  stopFeishuSetup(): Promise<SetupActionResult> {
+    return request('/setup/feishu/stop', { method: 'POST' }, { write: true });
+  },
+
+  validateCodexSetup(mutation?: MutationContext): Promise<CodexCheckRequested> {
+    return request('/setup/codex/validate', { method: 'POST' }, { write: true, mutation });
+  },
+
+  smokeTestCodexSetup(mutation?: MutationContext): Promise<CodexCheckRequested> {
+    return request('/setup/codex/smoke-test', { method: 'POST' }, { write: true, mutation });
+  },
+
+  listFeishuScopes(): Promise<FeishuScope[]> {
+    return request('/settings/feishu-scopes');
+  },
+
+  registerFeishuScope(input: {
+    chatId: string;
+    displayName?: string;
+  }, mutation?: MutationContext): Promise<FeishuScope> {
+    return request('/settings/feishu-scopes', {
+      method: 'POST', body: JSON.stringify(input),
+    }, { write: true, mutation });
+  },
+
+  changeFeishuScope(
+    scopeId: string,
+    version: number,
+    input: {
+      action: 'allow' | 'exclude' | 'pause' | 'resume';
+      syncMode?: FeishuScopeSyncMode;
+    },
+    mutation?: MutationContext,
+  ): Promise<FeishuScope> {
+    return request(`/settings/feishu-scopes/${scopeId}`, {
+      method: 'PATCH',
+      headers: { 'If-Match': String(version) },
+      body: JSON.stringify(input),
+    }, { write: true, mutation });
+  },
+
+  compensateFeishuScope(
+    scopeId: string,
+    version: number,
+    mutation?: MutationContext,
+  ): Promise<DeferredFeishuCompensation> {
+    return request(`/settings/feishu-scopes/${scopeId}/compensate`, {
+      method: 'POST', headers: { 'If-Match': String(version) },
+    }, { write: true, mutation });
+  },
+
   getFeishuStatus(): Promise<FeishuConnection> {
     return request('/integrations/feishu/status');
   },
@@ -407,6 +553,36 @@ export const legalApi = {
     return request(`/work-items/${workItemId}`);
   },
 
+  applyWorkItemAction(workItemId: string, action: 'start' | 'pause' | 'wait' | 'block' | 'resume' | 'complete' | 'cancel' | 'reopen', version: number, input: {
+    reason?: string;
+    waitingPartyId?: string;
+    blockerOwnerId?: string;
+  }, mutation?: MutationContext): Promise<{ workItemId: string; status: WorkItemStatus; version: number; idempotentReplay: boolean }> {
+    return request(`/work-items/${workItemId}/${action}`, {
+      method: 'POST',
+      headers: { 'If-Match': String(version) },
+      body: JSON.stringify(input),
+    }, { write: true, mutation });
+  },
+
+  changeWorkItemOwner(workItemId: string, version: number, input: { ownerId: string; reason?: string }, mutation?: MutationContext): Promise<{ workItemId: string; status: WorkItemStatus; version: number; idempotentReplay: boolean }> {
+    return request(`/work-items/${workItemId}/owner`, {
+      method: 'PATCH', headers: { 'If-Match': String(version) }, body: JSON.stringify(input),
+    }, { write: true, mutation });
+  },
+
+  changeWorkItemDeadline(workItemId: string, version: number, input: { deadline: string; reason?: string }, mutation?: MutationContext): Promise<{ workItemId: string; status: WorkItemStatus; version: number; idempotentReplay: boolean }> {
+    return request(`/work-items/${workItemId}/deadline`, {
+      method: 'PATCH', headers: { 'If-Match': String(version) }, body: JSON.stringify(input),
+    }, { write: true, mutation });
+  },
+
+  changeWorkItemNextAction(workItemId: string, version: number, input: { nextAction: string; reason?: string }, mutation?: MutationContext): Promise<{ workItemId: string; status: WorkItemStatus; version: number; idempotentReplay: boolean }> {
+    return request(`/work-items/${workItemId}/next-action`, {
+      method: 'PATCH', headers: { 'If-Match': String(version) }, body: JSON.stringify(input),
+    }, { write: true, mutation });
+  },
+
   confirmPriority(workItemId: string, input: {
     workItemVersion: number;
     confirmedPriority: Priority;
@@ -444,15 +620,28 @@ export const legalApi = {
   },
 
   createDependency(workItemId: string, input: {
+    workItemVersion: number;
     dependencyType: string;
     dependsOnWorkItemId?: string;
     externalPartyId?: string;
     description?: string;
-  }): Promise<{ dependencyId: string }> {
+  }, mutation?: MutationContext): Promise<{ dependencyId: string; workItemVersion: number }> {
+    const { workItemVersion, ...body } = input;
     return request(`/work-items/${workItemId}/dependencies`, {
       method: 'POST',
-      body: JSON.stringify(input),
-    }, { write: true });
+      headers: { 'If-Match': String(workItemVersion) },
+      body: JSON.stringify(body),
+    }, { write: true, mutation });
+  },
+
+  resolveDependency(workItemId: string, dependencyId: string, workItemVersion: number, dependencyVersion: number, reason?: string, mutation?: MutationContext): Promise<{
+    workItemId: string; dependencyId: string; workItemVersion: number; dependencyVersion: number; status: string; idempotentReplay: boolean;
+  }> {
+    return request(`/work-items/${workItemId}/dependencies/${dependencyId}/resolve`, {
+      method: 'POST',
+      headers: { 'If-Match': String(workItemVersion) },
+      body: JSON.stringify({ dependencyVersion, reason }),
+    }, { write: true, mutation });
   },
 
   listDependencies(workItemId: string): Promise<WorkItemDependency[]> {

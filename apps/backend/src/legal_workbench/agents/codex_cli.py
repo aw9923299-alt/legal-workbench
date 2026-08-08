@@ -35,6 +35,12 @@ def _json(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True)
 
 
+def _context_integer(value: object, *, default: int | None) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int):
+        return default
+    return value
+
+
 class CodexCliRuntime:
     def __init__(
         self,
@@ -91,12 +97,9 @@ class CodexCliRuntime:
                 }[health.status]
                 raise AgentRuntimeError(code, health.detail, retryable=False)
             self._runtime_version = health.detected_version
-        if (
-            definition.input_schema
-            != MessageJudgementInput.model_json_schema(by_alias=True)
-            or definition.output_schema
-            != MessageJudgementResult.model_json_schema(by_alias=True)
-        ):
+        if definition.input_schema != MessageJudgementInput.model_json_schema(
+            by_alias=True
+        ) or definition.output_schema != MessageJudgementResult.model_json_schema(by_alias=True):
             raise AgentRuntimeError(
                 "AGENT_DEFINITION_DISABLED",
                 "Agent schemas do not match the runtime contract for this version.",
@@ -121,6 +124,8 @@ class CodexCliRuntime:
                 "messageIds": context.snapshot.message_ids,
                 "participantIds": context.snapshot.participant_ids,
                 "attachmentIds": context.snapshot.attachment_ids,
+                "includedSegments": context.snapshot.included_segments,
+                "excludedSegments": context.snapshot.excluded_segments,
                 "threadMetadata": context.snapshot.thread_metadata,
                 "content": context.snapshot.content,
                 "builderVersion": context.snapshot.builder_version,
@@ -138,6 +143,11 @@ class CodexCliRuntime:
                 "repositoryAccess": False,
                 "shellWriteAccess": False,
                 "allowedMessageIds": context.snapshot.message_ids,
+                "allowedAttachmentIds": [
+                    str(value.get("attachmentId"))
+                    for value in context.snapshot.included_segments
+                    if value.get("attachmentId")
+                ],
             },
         }
         try:
@@ -355,7 +365,11 @@ class CodexCliRuntime:
                 raw_stderr=stderr,
             )
         try:
-            output = self._validate_output(output_path, context.snapshot.message_ids)
+            output = self._validate_output(
+                output_path,
+                context.snapshot.message_ids,
+                context.snapshot.included_segments,
+            )
         except AgentRuntimeError as exc:
             exc.raw_stdout = stdout
             exc.raw_stderr = stderr
@@ -399,12 +413,8 @@ class CodexCliRuntime:
                     )
                     repair_error.repair_attempted = True
                     raise
-                combined_stdout = self._combine_logs(
-                    stdout, repaired.raw_stdout, marker="repair"
-                )
-                combined_stderr = self._combine_logs(
-                    stderr, repaired.raw_stderr, marker="repair"
-                )
+                combined_stdout = self._combine_logs(stdout, repaired.raw_stdout, marker="repair")
+                combined_stderr = self._combine_logs(stderr, repaired.raw_stderr, marker="repair")
                 self._write(stdout_path, combined_stdout)
                 self._write(stderr_path, combined_stderr)
                 return AgentExecutionResult(
@@ -540,7 +550,10 @@ class CodexCliRuntime:
             await process.wait()
 
     def _validate_output(
-        self, output_path: Path, authorized_message_ids: Sequence[str]
+        self,
+        output_path: Path,
+        authorized_message_ids: Sequence[str],
+        included_segments: Sequence[dict[str, object]],
     ) -> MessageJudgementResult:
         if not output_path.exists():
             raise AgentRuntimeError(
@@ -578,7 +591,21 @@ class CodexCliRuntime:
                 validation_errors=errors,
             ) from exc
         try:
-            validate_confirmed_fact_sources(result, set(authorized_message_ids))
+            citations = {
+                (
+                    str(value.get("attachmentId") or ""),
+                    str(value.get("fileName") or ""),
+                    _context_integer(value.get("pageNumber"), default=None),
+                    _context_integer(value.get("paragraphNumber"), default=0) or 0,
+                    str(value.get("contentHash") or ""),
+                )
+                for value in included_segments
+            }
+            validate_confirmed_fact_sources(
+                result,
+                set(authorized_message_ids),
+                citations,
+            )
             validate_message_judgement_business_rules(result)
         except DomainValidationError as exc:
             raise AgentRuntimeError(

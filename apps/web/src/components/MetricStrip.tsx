@@ -7,13 +7,14 @@ interface MetricProps {
   hint: string;
   tone: 'critical' | 'warning' | 'neutral' | 'info';
   icon: ReactNode;
+  onClick?: () => void;
 }
 
 export default function MetricStrip({ items }: { items: MetricProps[] }) {
   return (
     <section className="metric-strip">
       {items.map((item) => (
-        <button key={item.label} className={`metric-cell metric-${item.tone}`}>
+        <button type="button" key={item.label} className={`metric-cell metric-${item.tone}`} onClick={item.onClick}>
           <span className="metric-icon">{item.icon}</span>
           <span className="metric-copy">
             <span className="metric-label">{item.label}</span>

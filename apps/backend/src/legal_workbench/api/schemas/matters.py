@@ -31,6 +31,10 @@ class LegalMatterResponse(ApiModel):
     entity_ids: list[str]
     legal_risk: LegalRisk
     business_impact: BusinessImpact
+    priority: Priority
+    priority_source: PrioritySource
+    target_deadline_at: datetime | None
+    next_action: str | None
     confidentiality: Confidentiality
     summary: str | None
     objective: str | None
@@ -71,12 +75,15 @@ class WorkItemResponse(ApiModel):
     waiting_party_id: str | None
     waiting_reason: str | None
     waiting_since: datetime | None
+    paused_reason: str | None
     is_blocked: bool
     blocker_reason: str | None
     blocker_owner_id: str | None
     planned_start_at: datetime | None
     planned_complete_at: datetime | None
     completed_at: datetime | None
+    cancelled_at: datetime | None
+    cancel_reason: str | None
     priority_confirmed_by: str | None
     priority_confirmed_at: datetime | None
     sequence_order: int

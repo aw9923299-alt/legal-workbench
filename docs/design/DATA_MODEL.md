@@ -60,7 +60,7 @@ interface FeishuMessage {
 - `(tenant_id, event_id)`；
 - `(tenant_id, message_id)`；消息正文变化进入不可变 `FeishuMessageVersion`，不覆盖历史审计。
 
-`integration_connections` 持久化连接模式、状态、最近连接/断开/事件、错误、重连次数和最近补偿结果。`feishu_message_versions` 为每次创建、编辑或撤回追加修订；`feishu_attachments` 保存 file key、名称、MIME、大小、SHA-256、本地路径、下载状态和 `authorized_for_analysis`。迁移 `20260801_0005` 可降级并保留 0004 原有消息行。
+`integration_connections` 持久化连接模式、状态、最近连接/断开/事件、错误、重连次数和最近补偿结果。`feishu_message_versions` 为每次创建、编辑或撤回追加修订。迁移 `20260803_0008` 将原 `feishu_attachments` 原地重命名为 `message_attachments` 并保留历史行，增加提取状态、Extractor版本、页数、字符数和稳定错误码；`document_versions`、`document_extractions`、`document_segments` 分别保存文件版本、每次解析结果和带页码/段落/偏移/哈希的正文片段，`storage_quota_reservations` 用 PostgreSQL 协调并发下载配额。降级恢复原附件表名和原有行。
 
 ## 2.2 FileAsset
 
@@ -99,6 +99,8 @@ interface ContextSnapshot {
   messageIds: string[];
   participantIds: string[];
   attachmentIds: string[];
+  includedSegments: Array<Record<string, unknown>>;
+  excludedSegments: Array<Record<string, unknown>>;
   threadMetadata: Record<string, unknown>;
   permissionSnapshot: Record<string, unknown>;
   content: Record<string, unknown>;
@@ -115,7 +117,7 @@ interface ContextSnapshot {
 }
 ```
 
-快照一经创建不可修改。当前消息必选，父消息、根消息和同线程最近消息由确定性规则限量选取；附件仅记录元数据。复用哈希同时包含消息/附件版本、上下文排序、Builder 版本和选择策略版本；消息数、单条字符、总字符和附件数的截断原因及原始/纳入大小均持久化。`(source_type, source_id, content_hash)` 唯一，并通过事务级 advisory lock 避免并发重复。
+快照一经创建不可修改。当前消息必选，父消息、根消息和同线程最近消息由确定性规则限量选取；只有人工授权且提取成功的附件片段可进入快照，并受片段数量、单段字符和总字符限制。纳入与排除的定位及原因均持久化。复用哈希同时包含消息/附件版本、授权/提取状态、片段引用、上下文排序、Builder 版本和选择策略版本；消息数、单条字符、总字符、附件数及附件片段的截断原因与原始/纳入大小均持久化。`(source_type, source_id, content_hash)` 唯一，并通过事务级 advisory lock 避免并发重复。
 
 0004 迁移不会按旧版客户端提供的 `content_hash/source_ids` 合并历史审计行；每条旧快照以自身 UUID 回填 `source_id`，因此重复旧数据仍被完整保留。0003 Candidate 中可能存在的外部 `agent_run_id` 先保存到 `analysis_payload.legacyAgentRunId`，downgrade 时恢复。
 
@@ -191,6 +193,10 @@ interface LegalMatter {
   entityIds: string[];
   legalRisk: 'critical' | 'high' | 'medium' | 'low' | 'pending';
   businessImpact: 'company' | 'department' | 'project' | 'general';
+  priority: 'urgent' | 'high' | 'medium' | 'low';
+  prioritySource: 'system' | 'agent_suggested' | 'legal_confirmed';
+  targetDeadlineAt?: string;
+  nextAction?: string;
   confidentiality: 'internal' | 'confidential' | 'restricted';
   summary?: string;
   objective?: string;
@@ -204,6 +210,8 @@ interface LegalMatter {
 ```
 
 `workStatus` 是事项整体工作态势，不替代 `WorkItem` 状态。
+
+迁移 `20260803_0009` 增加 Matter 的人工确认优先级、目标期限和下一步行动，并新增 `matter_update_proposals`。Proposal 保存创建时的 `base_matter_version`、固定结构的建议值、逐字段决定和法务最终值；状态为 `pending/approved/partially_approved/rejected/superseded`。任何批准都必须在同一事务中锁定 Proposal 和 Matter 并核对两个版本，迟到审核不能覆盖新 Matter 版本。
 
 ## 2.6 MatterSourceLink
 
@@ -240,6 +248,7 @@ interface WorkItem {
   status:
     | 'todo'
     | 'in_progress'
+    | 'paused'
     | 'waiting'
     | 'blocked'
     | 'pending_review'
@@ -257,12 +266,15 @@ interface WorkItem {
   waitingPartyId?: string;
   waitingReason?: string;
   waitingSince?: string;
+  pausedReason?: string;
   isBlocked: boolean;
   blockerReason?: string;
   blockerOwnerId?: string;
   plannedStartAt?: string;
   plannedCompleteAt?: string;
   completedAt?: string;
+  cancelledAt?: string;
+  cancelReason?: string;
   version: number;
 }
 ```
@@ -416,7 +428,7 @@ interface AgentRun {
 
 ### 2.12.1 AgentRunSource
 
-`AgentRunSource` 只追加记录本次实际授权使用的来源：`feishu_message`、`context_snapshot`、`attachment`、`knowledge_document`、`historical_matter`、`approved_example`。消息研判当前记录快照、当前/父/线程消息及附件元数据，并保留来源版本、SHA-256 和引用元数据。
+`AgentRunSource` 只追加记录本次实际授权使用的来源：`feishu_message`、`context_snapshot`、`attachment`、`knowledge_document`、`historical_matter`、`approved_example`。消息研判记录快照、当前/父/线程消息、附件元数据，并为每个实际纳入的附件片段追加一条真实内容哈希和页码/段落定位来源；不保存或返回本地文件路径。
 
 ## 2.13 DraftArtifact
 
@@ -570,6 +582,10 @@ interface RuleCandidate {
 }
 ```
 
+## 2.19 EvaluationCase / EvaluationRun / EvaluationResult
+
+`EvaluationCase` 以 `(suiteKey, caseKey, caseVersion)` 唯一，同一版本的内容哈希不允许变化，且当前只接受 `synthetic_non_sensitive` Fixture。`EvaluationRun` 固定保存 Runtime 类型、Agent key/版本、请求人、Correlation ID、开始/结束时间、终态和聚合指标；`EvaluationResult` 每个 Run/Case 只允许一行，保存严格输出、逐维分数、候选创建标志、Schema 首次通过、耗时、重试、Runtime 版本和失败码。评估表不修改 Prompt、AgentDefinition、Candidate、Matter 或 WorkItem。
+
 ## 3. 值来源模型
 
 推荐对重要字段使用来源元数据：
@@ -614,12 +630,14 @@ open/resolved → cancelled
 
 ```text
 todo → in_progress → pending_review → done
-        ├→ waiting ───────────┤
-        └→ blocked ───────────┤
-任何未完成状态 → cancelled
+        ├→ paused ─────┐
+        ├→ waiting ────┼→ in_progress
+        └→ blocked ────┘
+任何非终态 → cancelled
+done/cancelled → todo（reopen，必须填写原因）
 ```
 
-进入 `waiting` 必须存在开放 `Dependency`；进入 `pending_review` 必须存在待审 `ReviewPackage`。
+进入 `waiting` 必须存在开放 `Dependency`；恢复 waiting 前必须先解决全部开放依赖；完成前不得存在开放依赖。暂停、等待、阻塞、取消和重新打开均记录原因，阻塞还必须记录责任人。负责人、计划完成时间和下一步行动的变更与状态迁移一样经过领域服务、版本检查、审计和 Outbox。
 
 ## 4.4 AgentRun
 
@@ -652,7 +670,7 @@ pending_send → sending → sent
 
 1. 没有 `MessageCandidate` 确认记录，不创建来源为 AI 识别的正式事项。
 2. 人工确认字段不能被 Codex 直接覆盖，只能产生新提案。
-3. `WorkItem.status = waiting` 时必须存在开放依赖和下一次处理时间。
+3. `WorkItem.status = waiting` 时必须存在开放依赖；存在开放依赖时不得恢复或完成。
 4. `AgentRun` 必须绑定不可变 `ContextSnapshot`。
 5. `DraftArtifact` 不能直接成为 `Communication`。
 6. `Communication` 必须绑定已批准的 `ReviewRecord`，且内容哈希一致。
@@ -693,12 +711,31 @@ outbox_events
 outbox_dead_letters
 integration_connections
 feishu_message_versions
-feishu_attachments
+message_attachments
+document_versions
+document_extractions
+document_segments
+storage_quota_reservations
+matter_update_proposals
 agent_run_status_events
 candidate_revisions
+evaluation_cases
+evaluation_runs
+evaluation_results
+system_settings
+integration_credentials
+integration_scopes
+integration_check_runs
 ```
 
 使用 `version` 字段进行乐观锁；异步事件采用事务 Outbox，避免数据库提交成功但队列消息丢失。
+
+### Setup 与集成元数据
+
+- `system_settings` 只保存非敏感类型化配置和修改人；Codex 精确版本仍只有 `CODEX_CLI_VERSION` 一个部署来源。
+- `integration_credentials` 只保存 `secret_ref`、`configured`、掩码和最近验证状态；实际 Secret 不进入 PostgreSQL。
+- `integration_scopes` 中未知群默认 `unapproved/disabled`，只有人工授权后进入 `allowed`；允许、排除和暂停状态是业务事实。
+- `integration_check_runs` 追加保存 Codex 验证/冒烟状态、版本、失败码、Correlation ID 和时间，不保存凭证或完整测试正文。
 
 
 ### 持久化约定

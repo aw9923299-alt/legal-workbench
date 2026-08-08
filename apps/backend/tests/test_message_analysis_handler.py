@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import TracebackType
 from uuid import UUID, uuid4
 
@@ -19,8 +19,10 @@ from legal_workbench.application.message_analysis import (
     AnalyseFeishuMessageHandler,
 )
 from legal_workbench.domain.entities import (
+    AgentAttemptLease,
     AgentDefinition,
     AgentRun,
+    AgentRunAttempt,
     AgentRunSource,
     AuditEvent,
     CandidateRevision,
@@ -30,11 +32,14 @@ from legal_workbench.domain.entities import (
     OutboxEvent,
 )
 from legal_workbench.domain.enums import (
+    AgentAttemptStatus,
     AgentDefinitionStatus,
+    AgentRunSourceType,
     AgentRunStatus,
     CandidateStatus,
     FeishuMessageStatus,
 )
+from legal_workbench.domain.errors import StaleAgentAttemptError
 
 
 def output_payload(
@@ -129,6 +134,10 @@ class FeishuRepository:
     ) -> Sequence[FeishuMessage]:
         return [message]
 
+    async def list_attachments(self, message_id: UUID) -> Sequence[object]:
+        del message_id
+        return []
+
     async def save_message(self, message: FeishuMessage) -> None:
         self.state.messages[message.id] = message
 
@@ -178,6 +187,82 @@ class RunRepository:
         )
 
 
+class AttemptRepository:
+    def __init__(self, state: FakeState) -> None:
+        self.state = state
+
+    async def add(self, attempt: AgentRunAttempt) -> None:
+        self.state.attempts.append(attempt)
+
+    async def complete(self, lease: AgentAttemptLease, *, finished_at: datetime) -> None:
+        self._find(lease).complete(lease, now=finished_at)
+
+    async def heartbeat(
+        self,
+        lease: AgentAttemptLease,
+        *,
+        heartbeat_at: datetime,
+        lease_expires_at: datetime,
+    ) -> None:
+        self._find(lease).heartbeat(
+            lease,
+            heartbeat_at=heartbeat_at,
+            lease_expires_at=lease_expires_at,
+        )
+
+    async def fail(
+        self,
+        lease: AgentAttemptLease,
+        *,
+        status: AgentAttemptStatus,
+        failure_code: str,
+        failure_message: str,
+        finished_at: datetime,
+    ) -> None:
+        self._find(lease).fail(
+            lease,
+            status=status,
+            failure_code=failure_code,
+            failure_message=failure_message,
+            now=finished_at,
+        )
+
+    async def expire_current(
+        self,
+        *,
+        run_id: UUID,
+        attempt_number: int,
+        finished_at: datetime,
+    ) -> bool:
+        attempt = next(
+            (
+                value
+                for value in self.state.attempts
+                if value.run_id == run_id
+                and value.attempt_number == attempt_number
+                and value.status == AgentAttemptStatus.RUNNING
+            ),
+            None,
+        )
+        if attempt is None:
+            return False
+        attempt.expire(now=finished_at)
+        return True
+
+    def _find(self, lease: AgentAttemptLease) -> AgentRunAttempt:
+        attempt = next(
+            (
+                value
+                for value in self.state.attempts
+                if value.run_id == lease.run_id and value.attempt_number == lease.attempt_number
+            ),
+            None,
+        )
+        if attempt is None:
+            raise StaleAgentAttemptError("The Agent Attempt does not exist.")
+        return attempt
+
+
 class SourceRepository:
     def __init__(self, state: FakeState) -> None:
         self.state = state
@@ -216,9 +301,7 @@ class CandidateRepository:
 
     async def list_revisions(self, candidate_id: UUID) -> Sequence[CandidateRevision]:
         return [
-            value
-            for value in self.state.candidate_revisions
-            if value.candidate_id == candidate_id
+            value for value in self.state.candidate_revisions if value.candidate_id == candidate_id
         ]
 
 
@@ -230,13 +313,21 @@ class AppendRepository:
         self.values.append(value)
 
 
+class DocumentRepository:
+    async def list_latest_segments(self, attachment_ids: Sequence[UUID]) -> Sequence[object]:
+        del attachment_ids
+        return []
+
+
 class FakeUnitOfWork:
     def __init__(self, state: FakeState) -> None:
         self.state = state
         self.context_snapshots = SnapshotRepository(state)
         self.feishu = FeishuRepository(state)
+        self.documents = DocumentRepository()
         self.agent_definitions = DefinitionRepository(state)
         self.agent_runs = RunRepository(state)
+        self.agent_run_attempts = AttemptRepository(state)
         self.agent_run_sources = SourceRepository(state)
         self.candidates = CandidateRepository(state)
         self.audit_events = AppendRepository(state.audit_events)
@@ -267,6 +358,7 @@ class FakeState:
         self.snapshots: dict[UUID, ContextSnapshot] = {}
         self.definitions: dict[UUID, AgentDefinition] = {}
         self.runs: dict[UUID, AgentRun] = {}
+        self.attempts: list[AgentRunAttempt] = []
         self.sources: list[AgentRunSource] = []
         self.candidates: dict[UUID, MessageCandidate] = {}
         self.candidate_revisions: list[CandidateRevision] = []
@@ -351,6 +443,50 @@ async def test_valid_output_commits_before_runtime_and_creates_candidate(tmp_pat
     assert len(state.candidate_revisions) == 1
     assert any(isinstance(event, AuditEvent) for event in state.audit_events)
     assert any(isinstance(event, OutboxEvent) for event in state.outbox_events)
+
+
+@pytest.mark.asyncio
+async def test_included_attachment_segment_becomes_a_hashed_run_source(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    state = FakeState(tmp_path)
+    message = make_message()
+    state.messages[message.id] = message
+    result = await make_handler(state, FakeRuntime(state)).execute(
+        AnalyseFeishuMessageCommand(
+            message_id=message.id,
+            actor_id="system",
+            actor_source="worker",
+            correlation_id="corr-attachment-source",
+        )
+    )
+    run = state.runs[result.agent_run_id]
+    snapshot = state.snapshots[run.context_snapshot_id]
+    snapshot.included_segments = [
+        {
+            "attachmentId": "11111111-1111-4111-8111-111111111111",
+            "fileName": "合同.pdf",
+            "pageNumber": 2,
+            "paragraphNumber": 3,
+            "contentHash": "c" * 64,
+        }
+    ]
+
+    sources = AnalyseFeishuMessageHandler._sources(run, snapshot)
+    segment_source = next(
+        value
+        for value in sources
+        if value.source_type == AgentRunSourceType.ATTACHMENT
+        and value.citation_metadata.get("segment") is True
+    )
+
+    assert segment_source.source_hash == "c" * 64
+    assert segment_source.source_id.endswith("page:2:paragraph:3")
+    assert segment_source.citation_metadata == {
+        "segment": True,
+        "attachmentId": "11111111-1111-4111-8111-111111111111",
+        "fileName": "合同.pdf",
+        "pageNumber": 2,
+        "paragraphNumber": 3,
+    }
 
 
 @pytest.mark.asyncio
@@ -586,3 +722,52 @@ async def test_redelivered_worker_recovers_running_attempt(tmp_path) -> None:  #
     assert prepared.run.attempt_number == 2
     assert len(state.runs) == 1
     assert runtime.calls == 1
+
+
+class LateWorkerRuntime(FakeRuntime):
+    async def execute(self, definition, run, context):  # type: ignore[no-untyped-def]
+        execution = await super().execute(definition, run, context)
+        if state_attempts := self.state.attempts:
+            first = state_attempts[-1]
+        else:
+            first = AgentRunAttempt.start(
+                run_id=run.id,
+                attempt_number=run.attempt_number,
+                lease_token=uuid4(),
+                worker_id="worker-late",
+                lease_expires_at=datetime.now(UTC) + timedelta(seconds=60),
+            )
+            self.state.attempts.append(first)
+        first.expire(now=datetime.now(UTC))
+        run.attempt_number += 1
+        self.state.attempts.append(
+            AgentRunAttempt.start(
+                run_id=run.id,
+                attempt_number=run.attempt_number,
+                lease_token=uuid4(),
+                worker_id="worker-current",
+                lease_expires_at=datetime.now(UTC) + timedelta(seconds=60),
+            )
+        )
+        return execution
+
+
+@pytest.mark.asyncio
+async def test_late_worker_cannot_create_candidate_for_newer_attempt(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    state = FakeState(tmp_path)
+    message = make_message()
+    state.messages[message.id] = message
+
+    with pytest.raises(StaleAgentAttemptError):
+        await make_handler(state, LateWorkerRuntime(state)).execute(
+            AnalyseFeishuMessageCommand(
+                message_id=message.id,
+                actor_id="system",
+                actor_source="worker",
+                correlation_id="corr-late-worker",
+                worker_id="worker-late",
+            )
+        )
+
+    assert state.candidates == {}
+    assert state.attempts[-1].status == AgentAttemptStatus.RUNNING

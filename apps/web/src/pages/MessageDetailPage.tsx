@@ -35,6 +35,7 @@ export default function MessageDetailPage() {
   const [createOpen, setCreateOpen] = useState(false);
   const [linkAction, setLinkAction] = useState<'link_existing' | 'update_existing'>();
   const [matterId, setMatterId] = useState<string>();
+  const [updateReason, setUpdateReason] = useState('消息包含已有事项的新进展，提交法务审核。');
   const [form] = Form.useForm<HumanForm>();
   const detail = useQuery({ queryKey: ['inbox', 'detail', messageId], queryFn: () => legalApi.getMessage(messageId), enabled: Boolean(messageId), refetchInterval: realtime.pollingInterval });
   const analysis = useQuery({ queryKey: ['inbox', 'analysis', messageId], queryFn: () => legalApi.getMessageAnalysis(messageId), enabled: Boolean(messageId), refetchInterval: realtime.pollingInterval });
@@ -60,6 +61,31 @@ export default function MessageDetailPage() {
     },
     onSuccess: () => { message.success('已要求重新分析，历史版本保留'); invalidate(); },
     onError: (error) => message.error(error instanceof Error ? error.message : '重新分析失败'),
+  });
+  const authorizeAttachment = useMutation({
+    mutationFn: async ({ attachmentId, authorized }: { attachmentId: string; authorized: boolean }) => {
+      const key = `attachment-authorization:${attachmentId}:${authorized}`;
+      const payload = { authorized };
+      const context = getOrCreateMutationContext(key, payload);
+      try {
+        const result = await legalApi.setAttachmentAnalysisAuthorization(
+          messageId,
+          attachmentId,
+          authorized,
+          context,
+        );
+        clearMutationContext(key);
+        return result;
+      } catch (error) {
+        if (isDefinitiveMutationFailure(error)) clearMutationContext(key);
+        throw error;
+      }
+    },
+    onSuccess: (_result, variables) => {
+      message.success(variables.authorized ? '已授权附件正文；请点击重新分析生成新版本' : '已撤销附件正文授权');
+      void detail.refetch();
+    },
+    onError: (error) => message.error(error instanceof Error ? error.message : '附件授权失败'),
   });
   const resolve = useMutation({
     mutationFn: async ({ action, selectedMatter }: { action: 'link_existing' | 'update_existing' | 'information_only' | 'ignore'; selectedMatter?: string }) => {
@@ -117,6 +143,46 @@ export default function MessageDetailPage() {
     onSuccess: (result) => { message.success(`已创建事项 ${result.matterNumber}`); setCreateOpen(false); navigate(`/matters/${result.matterId}`); },
     onError: (error) => message.error(error instanceof Error ? error.message : '创建事项失败'),
   });
+  const createProposal = useMutation({
+    mutationFn: async () => {
+      if (!candidate.data || !matterId) throw new Error('请选择要更新的 Matter');
+      const requestedFields = [
+        'title', 'category', 'priority', 'deadline', 'owner',
+        'currentStatus', 'nextAction', 'newWorkItems',
+      ];
+      const proposedChanges = Object.fromEntries(requestedFields.map((field) => [field, {
+        currentValue: null,
+        messageExtractedValue: null,
+        aiSuggestedValue: null,
+      }]));
+      const payload = {
+        candidateVersion: candidate.data.version,
+        matterId,
+        proposedChanges,
+        reason: updateReason,
+      };
+      const key = `matter-update-proposal:${candidate.data.id}:${matterId}`;
+      const context = getOrCreateMutationContext(key, payload);
+      try {
+        const response = await legalApi.createMatterUpdateProposal(
+          candidate.data.id,
+          payload,
+          context,
+        );
+        clearMutationContext(key);
+        return response;
+      } catch (error) {
+        if (isDefinitiveMutationFailure(error)) clearMutationContext(key);
+        throw error;
+      }
+    },
+    onSuccess: (response) => {
+      message.success('更新建议已提交，Matter 尚未修改');
+      setLinkAction(undefined);
+      navigate(`/matter-update-proposals/${response.proposalId}`);
+    },
+    onError: (error) => message.error(error instanceof Error ? error.message : '提交更新建议失败'),
+  });
 
   const openCreate = () => {
     const result = analysis.data?.analysisResult;
@@ -155,7 +221,43 @@ export default function MessageDetailPage() {
             <Divider>线程上下文</Divider>
             <Timeline items={detail.data.contextMessages.map((value) => ({ children: <><Text strong>{value.senderId ?? '未知发送人'}</Text><Paragraph>{value.plainText || value.unsupportedReason || '无正文'}</Paragraph></> }))} />
             <Divider>附件元数据</Divider>
-            <List dataSource={detail.data.attachments} locale={{ emptyText: '无附件' }} renderItem={(file) => <List.Item><List.Item.Meta title={file.fileName} description={`${file.mimeType ?? '未知类型'} · ${file.size ?? '未知大小'} · ${file.downloadStatus}`} /><Tag color={file.authorizedForAnalysis ? 'green' : 'default'}>{file.authorizedForAnalysis ? '已授权分析' : '未授权正文'}</Tag></List.Item>} />
+            <List
+              dataSource={detail.data.attachments}
+              locale={{ emptyText: '无附件' }}
+              renderItem={(file) => (
+                <List.Item
+                  id={`attachment-${file.id}`}
+                  actions={file.downloadStatus === 'downloaded' ? [
+                    <Button
+                      key="authorization"
+                      size="small"
+                      loading={authorizeAttachment.isPending}
+                      onClick={() => authorizeAttachment.mutate({
+                        attachmentId: file.id,
+                        authorized: !file.authorizedForAnalysis,
+                      })}
+                    >
+                      {file.authorizedForAnalysis ? '撤销正文授权' : '授权正文给 Codex'}
+                    </Button>,
+                  ] : undefined}
+                >
+                  <List.Item.Meta
+                    title={file.fileName}
+                    description={[
+                      file.mimeType ?? '未知类型',
+                      file.size ?? '未知大小',
+                      `下载 ${file.downloadStatus}`,
+                      `解析 ${file.extractionStatus}`,
+                      file.extractionStatus === 'body_unavailable' ? '正文暂不可解析' : null,
+                      file.extractionErrorCode,
+                    ].filter(Boolean).join(' · ')}
+                  />
+                  <Tag color={file.authorizedForAnalysis ? 'green' : 'default'}>
+                    {file.authorizedForAnalysis ? '已授权分析' : '未授权正文'}
+                  </Tag>
+                </List.Item>
+              )}
+            />
             <Collapse items={[
               { key: 'versions', label: `编辑/撤回历史（${detail.data.versions.length}）`, children: <Timeline items={detail.data.versions.map((version) => ({ children: `v${version.revision} · ${version.isRecalled ? '已撤回' : version.plainText || '无正文'} · ${new Date(version.createdAt).toLocaleString()}` }))} /> },
               { key: 'raw', label: '查看受控原始 Payload', children: <pre className="agent-json">{JSON.stringify(detail.data.rawPayload, null, 2)}</pre> },
@@ -203,9 +305,14 @@ export default function MessageDetailPage() {
         <Form.Item name="nextAction" label="下一步行动" rules={[{ required: true }]}><Input.TextArea rows={3} /></Form.Item>
       </Form>
     </Modal>
-    <Modal open={Boolean(linkAction)} title={linkAction === 'update_existing' ? '更新已有 Matter' : '关联已有 Matter'} okText="确认" confirmLoading={resolve.isPending} onCancel={() => setLinkAction(undefined)} onOk={() => linkAction && matterId && resolve.mutate({ action: linkAction, selectedMatter: matterId })} okButtonProps={{ disabled: !matterId }}>
-      <Alert type="info" showIcon message={linkAction === 'update_existing' ? '本操作登记 Candidate 为已有事项更新，不会静默改写事项字段。' : '本操作建立可审计关联。'} />
+    <Modal open={Boolean(linkAction)} title={linkAction === 'update_existing' ? '提交已有 Matter 更新建议' : '关联已有 Matter'} okText={linkAction === 'update_existing' ? '生成待审建议' : '确认关联'} confirmLoading={resolve.isPending || createProposal.isPending} onCancel={() => setLinkAction(undefined)} onOk={() => {
+      if (!linkAction || !matterId) return;
+      if (linkAction === 'update_existing') createProposal.mutate();
+      else resolve.mutate({ action: linkAction, selectedMatter: matterId });
+    }} okButtonProps={{ disabled: !matterId || (linkAction === 'update_existing' && !updateReason.trim()) }}>
+      <Alert type="info" showIcon message={linkAction === 'update_existing' ? '只生成待法务审核的更新建议；不会在此步骤修改 Matter。' : '本操作建立可审计关联。'} />
       <Select showSearch style={{ width: '100%', marginTop: 16 }} placeholder="选择 Matter" value={matterId} onChange={setMatterId} loading={matters.isLoading} options={matters.data?.map((matter) => ({ value: matter.id, label: `${matter.matterNumber} · ${matter.title}` }))} />
+      {linkAction === 'update_existing' && <Input.TextArea style={{ marginTop: 16 }} rows={3} value={updateReason} onChange={(event) => setUpdateReason(event.target.value)} placeholder="说明为什么需要更新事项" />}
     </Modal>
   </div>;
 }

@@ -6,6 +6,7 @@ from typing import Any
 from uuid import UUID
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     CheckConstraint,
     DateTime,
@@ -29,6 +30,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from legal_workbench.domain.enums import (
+    AgentAttemptStatus,
     AgentDefinitionStatus,
     AgentRunSourceType,
     AgentRunStatus,
@@ -44,15 +46,22 @@ from legal_workbench.domain.enums import (
     DeadlineType,
     DependencyStatus,
     DependencyType,
+    DocumentExtractionStatus,
     DraftArtifactStatus,
+    EvaluationRunStatus,
+    EvaluationRuntimeType,
     FeishuEventStatus,
     FeishuMessageStatus,
+    IntegrationCheckStatus,
     IntegrationConnectionMode,
     IntegrationConnectionStatus,
+    IntegrationScopeStatus,
+    IntegrationSyncMode,
     LegalRelevance,
     LegalRisk,
     MatterCategory,
     MatterLifecycleStatus,
+    MatterUpdateProposalStatus,
     MatterWorkStatus,
     MessageRole,
     Priority,
@@ -115,6 +124,12 @@ class ContextSnapshotModel(UuidPrimaryKeyMixin, TimestampMixin, Base):
         JSONB, nullable=False, default=list, server_default=JSON_EMPTY_LIST
     )
     attachment_ids: Mapped[list[str]] = mapped_column(
+        JSONB, nullable=False, default=list, server_default=JSON_EMPTY_LIST
+    )
+    included_segments: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB, nullable=False, default=list, server_default=JSON_EMPTY_LIST
+    )
+    excluded_segments: Mapped[list[dict[str, Any]]] = mapped_column(
         JSONB, nullable=False, default=list, server_default=JSON_EMPTY_LIST
     )
     relevant_matter_ids: Mapped[list[str]] = mapped_column(
@@ -264,6 +279,14 @@ class LegalMatterModel(UuidPrimaryKeyMixin, TimestampMixin, VersionedMixin, Base
     business_impact: Mapped[BusinessImpact] = mapped_column(
         enum_type(BusinessImpact, name="business_impact", length=20), nullable=False
     )
+    priority: Mapped[Priority] = mapped_column(
+        enum_type(Priority, name="matter_priority", length=16), nullable=False
+    )
+    priority_source: Mapped[PrioritySource] = mapped_column(
+        enum_type(PrioritySource, name="matter_priority_source", length=24), nullable=False
+    )
+    target_deadline_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    next_action: Mapped[str | None] = mapped_column(Text)
     confidentiality: Mapped[Confidentiality] = mapped_column(
         enum_type(Confidentiality, name="confidentiality", length=20), nullable=False
     )
@@ -285,6 +308,44 @@ class LegalMatterModel(UuidPrimaryKeyMixin, TimestampMixin, VersionedMixin, Base
     candidate_links: Mapped[list[CandidateMatterLinkModel]] = relationship(
         back_populates="matter", cascade="all, delete-orphan"
     )
+
+
+class MatterUpdateProposalModel(UuidPrimaryKeyMixin, TimestampMixin, VersionedMixin, Base):
+    __tablename__ = "matter_update_proposals"
+    __table_args__ = (
+        Index("ix_matter_update_proposals_status_created", "status", "created_at"),
+        Index("ix_matter_update_proposals_matter_status", "matter_id", "status"),
+    )
+
+    candidate_id: Mapped[UUID] = mapped_column(
+        ForeignKey("message_candidates.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    matter_id: Mapped[UUID] = mapped_column(
+        ForeignKey("legal_matters.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    base_matter_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    proposed_changes: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=JSON_EMPTY_OBJECT
+    )
+    final_changes: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=JSON_EMPTY_OBJECT
+    )
+    field_decisions: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB, nullable=False, default=list, server_default=JSON_EMPTY_LIST
+    )
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[MatterUpdateProposalStatus] = mapped_column(
+        enum_type(
+            MatterUpdateProposalStatus,
+            name="matter_update_proposal_status",
+            length=24,
+        ),
+        nullable=False,
+    )
+    created_by: Mapped[str] = mapped_column(String(160), nullable=False)
+    reviewed_by: Mapped[str | None] = mapped_column(String(160))
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    rejection_reason: Mapped[str | None] = mapped_column(Text)
 
 
 class WorkItemModel(UuidPrimaryKeyMixin, TimestampMixin, VersionedMixin, Base):
@@ -325,6 +386,7 @@ class WorkItemModel(UuidPrimaryKeyMixin, TimestampMixin, VersionedMixin, Base):
     waiting_party_id: Mapped[str | None] = mapped_column(String(160))
     waiting_reason: Mapped[str | None] = mapped_column(Text)
     waiting_since: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    paused_reason: Mapped[str | None] = mapped_column(Text)
     is_blocked: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default=FALSE_DEFAULT
     )
@@ -333,6 +395,8 @@ class WorkItemModel(UuidPrimaryKeyMixin, TimestampMixin, VersionedMixin, Base):
     planned_start_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     planned_complete_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    cancel_reason: Mapped[str | None] = mapped_column(Text)
     priority_confirmed_by: Mapped[str | None] = mapped_column(String(160))
     priority_confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     sequence_order: Mapped[int] = mapped_column(
@@ -537,6 +601,7 @@ class WorkItemDependencyModel(UuidPrimaryKeyMixin, TimestampMixin, VersionedMixi
     external_party_id: Mapped[str | None] = mapped_column(String(160))
     description: Mapped[str | None] = mapped_column(Text)
     satisfied_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    satisfied_by: Mapped[str | None] = mapped_column(String(160))
     waived_by: Mapped[str | None] = mapped_column(String(160))
     waived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
@@ -801,13 +866,14 @@ class FeishuMessageVersionModel(UuidPrimaryKeyMixin, Base):
     )
 
 
-class FeishuAttachmentModel(UuidPrimaryKeyMixin, TimestampMixin, Base):
-    __tablename__ = "feishu_attachments"
+class MessageAttachmentModel(UuidPrimaryKeyMixin, TimestampMixin, Base):
+    __tablename__ = "message_attachments"
     __table_args__ = (
         UniqueConstraint(
-            "message_version_id", "file_key", name="uq_feishu_attachments_version_file"
+            "message_version_id", "file_key", name="uq_message_attachments_version_file"
         ),
-        Index("ix_feishu_attachments_status_created", "download_status", "created_at"),
+        Index("ix_message_attachments_status_created", "download_status", "created_at"),
+        Index("ix_message_attachments_extraction_status", "extraction_status", "created_at"),
     )
 
     feishu_message_id: Mapped[UUID] = mapped_column(
@@ -830,6 +896,145 @@ class FeishuAttachmentModel(UuidPrimaryKeyMixin, TimestampMixin, Base):
     authorized_for_analysis: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default=FALSE_DEFAULT
     )
+    extraction_status: Mapped[DocumentExtractionStatus] = mapped_column(
+        enum_type(
+            DocumentExtractionStatus,
+            name="message_attachment_extraction_status",
+            length=24,
+        ),
+        nullable=False,
+        default=DocumentExtractionStatus.NOT_REQUESTED,
+        server_default=DocumentExtractionStatus.NOT_REQUESTED.value,
+    )
+    extractor_version: Mapped[str | None] = mapped_column(String(80))
+    page_count: Mapped[int | None] = mapped_column(Integer)
+    character_count: Mapped[int | None] = mapped_column(Integer)
+    extraction_error_code: Mapped[str | None] = mapped_column(String(100))
+
+
+FeishuAttachmentModel = MessageAttachmentModel
+
+
+class DocumentVersionModel(UuidPrimaryKeyMixin, Base):
+    __tablename__ = "document_versions"
+    __table_args__ = (
+        UniqueConstraint(
+            "attachment_id",
+            "version",
+            name="uq_document_versions_attachment_version",
+        ),
+        UniqueConstraint(
+            "attachment_id",
+            "content_sha256",
+            name="uq_document_versions_attachment_sha256",
+        ),
+        Index("ix_document_versions_attachment_created", "attachment_id", "created_at"),
+    )
+
+    attachment_id: Mapped[UUID] = mapped_column(
+        ForeignKey("message_attachments.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    content_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    file_name: Mapped[str] = mapped_column(String(500), nullable=False)
+    mime_type: Mapped[str] = mapped_column(String(160), nullable=False)
+    size: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    local_path: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class DocumentExtractionModel(UuidPrimaryKeyMixin, Base):
+    __tablename__ = "document_extractions"
+    __table_args__ = (
+        Index(
+            "ix_document_extractions_version_created",
+            "document_version_id",
+            "created_at",
+        ),
+        Index("ix_document_extractions_status_started", "status", "started_at"),
+    )
+
+    document_version_id: Mapped[UUID] = mapped_column(
+        ForeignKey("document_versions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    status: Mapped[DocumentExtractionStatus] = mapped_column(
+        enum_type(
+            DocumentExtractionStatus,
+            name="document_extraction_status",
+            length=24,
+        ),
+        nullable=False,
+    )
+    extractor_version: Mapped[str] = mapped_column(String(80), nullable=False)
+    page_count: Mapped[int | None] = mapped_column(Integer)
+    character_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    error_code: Mapped[str | None] = mapped_column(String(100))
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class DocumentSegmentModel(UuidPrimaryKeyMixin, Base):
+    __tablename__ = "document_segments"
+    __table_args__ = (
+        UniqueConstraint(
+            "extraction_id",
+            "paragraph_number",
+            name="uq_document_segments_extraction_paragraph",
+        ),
+        Index(
+            "ix_document_segments_attachment_order",
+            "attachment_id",
+            "page_number",
+            "paragraph_number",
+        ),
+    )
+
+    extraction_id: Mapped[UUID] = mapped_column(
+        ForeignKey("document_extractions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    attachment_id: Mapped[UUID] = mapped_column(
+        ForeignKey("message_attachments.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    page_number: Mapped[int | None] = mapped_column(Integer)
+    paragraph_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    start_offset: Mapped[int] = mapped_column(Integer, nullable=False)
+    end_offset: Mapped[int] = mapped_column(Integer, nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class StorageQuotaReservationModel(UuidPrimaryKeyMixin, TimestampMixin, Base):
+    __tablename__ = "storage_quota_reservations"
+    __table_args__ = (
+        UniqueConstraint("reservation_token", name="uq_storage_quota_reservations_token"),
+        Index("ix_storage_quota_reservations_status_expiry", "status", "expires_at"),
+    )
+
+    attachment_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("message_attachments.id", ondelete="SET NULL"), nullable=True
+    )
+    reservation_token: Mapped[UUID] = mapped_column(nullable=False)
+    requested_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
 class AgentDefinitionModel(UuidPrimaryKeyMixin, TimestampMixin, Base):
@@ -929,9 +1134,38 @@ class AgentRunModel(UuidPrimaryKeyMixin, TimestampMixin, VersionedMixin, Base):
     )
     token_usage: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     worker_id: Mapped[str | None] = mapped_column(String(160), index=True)
-    lease_expires_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), index=True
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+
+
+class AgentRunAttemptModel(UuidPrimaryKeyMixin, Base):
+    __tablename__ = "agent_run_attempts"
+    __table_args__ = (
+        CheckConstraint("attempt_number > 0", name="attempt_number"),
+        UniqueConstraint("agent_run_id", "attempt_number", name="uq_agent_run_attempts_number"),
+        UniqueConstraint("lease_token", name="uq_agent_run_attempts_lease_token"),
+        Index(
+            "ix_agent_run_attempts_status_expiry",
+            "status",
+            "lease_expires_at",
+        ),
     )
+
+    agent_run_id: Mapped[UUID] = mapped_column(
+        ForeignKey("agent_runs.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    attempt_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    lease_token: Mapped[UUID] = mapped_column(nullable=False)
+    worker_id: Mapped[str] = mapped_column(String(160), nullable=False)
+    status: Mapped[AgentAttemptStatus] = mapped_column(
+        enum_type(AgentAttemptStatus, name="agent_attempt_status", length=20),
+        nullable=False,
+    )
+    lease_expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    heartbeat_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    failure_code: Mapped[str | None] = mapped_column(String(80))
+    failure_message: Mapped[str | None] = mapped_column(Text)
 
 
 class AgentRunStatusEventModel(UuidPrimaryKeyMixin, Base):
@@ -959,9 +1193,7 @@ class AgentRunStatusEventModel(UuidPrimaryKeyMixin, Base):
 class CandidateRevisionModel(UuidPrimaryKeyMixin, Base):
     __tablename__ = "candidate_revisions"
     __table_args__ = (
-        UniqueConstraint(
-            "candidate_id", "revision", name="uq_candidate_revisions_revision"
-        ),
+        UniqueConstraint("candidate_id", "revision", name="uq_candidate_revisions_revision"),
         Index("ix_candidate_revisions_candidate_created", "candidate_id", "created_at"),
     )
 
@@ -1048,3 +1280,192 @@ class OutboxDeadLetterModel(UuidPrimaryKeyMixin, Base):
     )
     requeued_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     requeued_event_id: Mapped[UUID | None] = mapped_column()
+
+
+class EvaluationCaseModel(UuidPrimaryKeyMixin, Base):
+    __tablename__ = "evaluation_cases"
+    __table_args__ = (
+        UniqueConstraint(
+            "suite_key",
+            "case_key",
+            "case_version",
+            name="uq_evaluation_cases_identity",
+        ),
+        CheckConstraint("case_version > 0", name="evaluation_case_version_positive"),
+        CheckConstraint(
+            "data_classification = 'synthetic_non_sensitive'",
+            name="evaluation_case_synthetic_only",
+        ),
+        Index("ix_evaluation_cases_suite", "suite_key", "case_key"),
+    )
+
+    suite_key: Mapped[str] = mapped_column(String(120), nullable=False)
+    case_key: Mapped[str] = mapped_column(String(120), nullable=False)
+    case_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    agent_key: Mapped[str] = mapped_column(String(80), nullable=False)
+    input_payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    expected_output: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    data_classification: Mapped[str] = mapped_column(String(40), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class EvaluationRunModel(UuidPrimaryKeyMixin, Base):
+    __tablename__ = "evaluation_runs"
+    __table_args__ = (
+        CheckConstraint("suite_version > 0", name="evaluation_suite_version_positive"),
+        Index("ix_evaluation_runs_suite_created", "suite_key", "created_at"),
+        Index("ix_evaluation_runs_status_created", "status", "created_at"),
+    )
+
+    suite_key: Mapped[str] = mapped_column(String(120), nullable=False)
+    suite_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    runtime_type: Mapped[EvaluationRuntimeType] = mapped_column(
+        enum_type(EvaluationRuntimeType, name="evaluation_runtime_type", length=16),
+        nullable=False,
+    )
+    agent_key: Mapped[str] = mapped_column(String(80), nullable=False)
+    agent_definition_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    status: Mapped[EvaluationRunStatus] = mapped_column(
+        enum_type(EvaluationRunStatus, name="evaluation_run_status", length=20), nullable=False
+    )
+    requested_by: Mapped[str] = mapped_column(String(160), nullable=False)
+    correlation_id: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    allow_real_runtime: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=FALSE_DEFAULT
+    )
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    metrics: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=JSON_EMPTY_OBJECT
+    )
+    failure_code: Mapped[str | None] = mapped_column(String(80))
+    failure_message: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class EvaluationResultModel(UuidPrimaryKeyMixin, Base):
+    __tablename__ = "evaluation_results"
+    __table_args__ = (
+        UniqueConstraint(
+            "evaluation_run_id",
+            "evaluation_case_id",
+            name="uq_evaluation_results_run_case",
+        ),
+        CheckConstraint("duration_ms >= 0", name="evaluation_result_duration_nonnegative"),
+        CheckConstraint("retry_count >= 0", name="evaluation_result_retry_nonnegative"),
+        Index("ix_evaluation_results_run", "evaluation_run_id", "created_at"),
+    )
+
+    evaluation_run_id: Mapped[UUID] = mapped_column(
+        ForeignKey("evaluation_runs.id", ondelete="CASCADE"), nullable=False
+    )
+    evaluation_case_id: Mapped[UUID] = mapped_column(
+        ForeignKey("evaluation_cases.id", ondelete="RESTRICT"), nullable=False
+    )
+    result_payload: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=JSON_EMPTY_OBJECT
+    )
+    scores: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=JSON_EMPTY_OBJECT
+    )
+    expected_relevant: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    candidate_created: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    schema_first_pass: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    duration_ms: Mapped[int] = mapped_column(Integer, nullable=False)
+    retry_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    failure_code: Mapped[str | None] = mapped_column(String(80))
+    runtime_version: Mapped[str | None] = mapped_column(String(80))
+    runtime_execution_id: Mapped[UUID | None] = mapped_column()
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class SystemSettingModel(UuidPrimaryKeyMixin, TimestampMixin, VersionedMixin, Base):
+    __tablename__ = "system_settings"
+
+    key: Mapped[str] = mapped_column(String(160), nullable=False, unique=True)
+    value: Mapped[Any] = mapped_column(JSONB, nullable=False)
+    value_type: Mapped[str] = mapped_column(String(24), nullable=False)
+    updated_by: Mapped[str] = mapped_column(String(160), nullable=False)
+
+
+class IntegrationCredentialModel(UuidPrimaryKeyMixin, TimestampMixin, VersionedMixin, Base):
+    __tablename__ = "integration_credentials"
+    __table_args__ = (
+        UniqueConstraint("provider", "credential_kind", name="uq_integration_credential"),
+    )
+
+    provider: Mapped[str] = mapped_column(String(40), nullable=False)
+    credential_kind: Mapped[str] = mapped_column(String(80), nullable=False)
+    secret_ref: Mapped[str | None] = mapped_column(String(120))
+    configured: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=FALSE_DEFAULT
+    )
+    masked_hint: Mapped[str | None] = mapped_column(String(40))
+    last_validated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_validation_status: Mapped[str | None] = mapped_column(String(40))
+    last_error_code: Mapped[str | None] = mapped_column(String(100))
+
+
+class IntegrationScopeModel(UuidPrimaryKeyMixin, TimestampMixin, VersionedMixin, Base):
+    __tablename__ = "integration_scopes"
+    __table_args__ = (
+        UniqueConstraint("provider", "external_scope_id", name="uq_integration_scope"),
+        Index("ix_integration_scopes_provider_status", "provider", "status"),
+    )
+
+    provider: Mapped[str] = mapped_column(String(40), nullable=False)
+    external_scope_id: Mapped[str] = mapped_column(String(200), nullable=False)
+    display_name: Mapped[str | None] = mapped_column(String(240))
+    status: Mapped[IntegrationScopeStatus] = mapped_column(
+        enum_type(IntegrationScopeStatus, name="integration_scope_status", length=20),
+        nullable=False,
+    )
+    sync_mode: Mapped[IntegrationSyncMode] = mapped_column(
+        enum_type(IntegrationSyncMode, name="integration_sync_mode", length=24),
+        nullable=False,
+    )
+    last_message_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_error_code: Mapped[str | None] = mapped_column(String(100))
+    last_error_message: Mapped[str | None] = mapped_column(Text)
+    last_compensated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_compensation_status: Mapped[str | None] = mapped_column(String(40))
+    approved_by: Mapped[str | None] = mapped_column(String(160))
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class IntegrationCheckRunModel(UuidPrimaryKeyMixin, Base):
+    __tablename__ = "integration_check_runs"
+    __table_args__ = (
+        Index(
+            "ix_integration_check_runs_provider_kind_created",
+            "provider",
+            "check_kind",
+            "created_at",
+        ),
+        Index("ix_integration_check_runs_status", "status", "created_at"),
+    )
+
+    provider: Mapped[str] = mapped_column(String(40), nullable=False)
+    check_kind: Mapped[str] = mapped_column(String(80), nullable=False)
+    status: Mapped[IntegrationCheckStatus] = mapped_column(
+        enum_type(IntegrationCheckStatus, name="integration_check_status", length=20),
+        nullable=False,
+    )
+    requested_by: Mapped[str] = mapped_column(String(160), nullable=False)
+    correlation_id: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    state: Mapped[str] = mapped_column(String(40), nullable=False, server_default="pending")
+    error_code: Mapped[str | None] = mapped_column(String(100))
+    detail: Mapped[str | None] = mapped_column(Text)
+    runtime_version: Mapped[str | None] = mapped_column(String(80))
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )

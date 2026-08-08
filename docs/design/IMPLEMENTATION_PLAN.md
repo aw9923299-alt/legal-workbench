@@ -73,13 +73,13 @@ legal-workbench/
 
 - 一条Candidate生成多个WorkItem；
 - 优先级和完成时间确认；
-- 前端 API 查询层与消息研判相关加载/错误/重试状态。
+- 前端 API 查询层与消息研判相关加载/错误/重试状态；
 - 统一 `resolve` API 支持关联、登记更新、仅供知悉和忽略，所有动作保留人工身份、幂等和审计；
 - React Router + TanStack Query 的 AI 收件箱、消息详情、AgentRun 列表/详情和系统状态页；
 - SSE 五类事件、断线退避和有限轮询回退；
 - Candidate 分析版本对比、人工创建/关联 Matter 和死信恢复操作。
 
-部分实现：`update_existing` 当前登记 Candidate 与既有 Matter 的更新关系，不直接修改事项字段；与本闭环无关的旧页面仍可能保留演示数据。
+`update_existing` 已由阶段 4.5 的 MatterUpdateProposal 人工审核闭环替代；运行时 Mock 数据和 Mock 适配器已由阶段 4.7 删除。
 
 验收：刷新可恢复；人工确认值不被自动覆盖；端到端测试覆盖主流程。
 
@@ -104,7 +104,23 @@ legal-workbench/
 
 已通过模拟验证：断线重试与优雅退出、标准化、版本表/附件表、配置 fail-closed、迁移升降级和 PostgreSQL 主链路。
 
-尚未验证/实现：当前环境没有飞书测试应用凭证，未进行真实长连接/远端补偿；加密 Webhook 尚未实现；附件正文解析不在本轮范围。
+后续增量：迁移 `20260803_0008` 已增加附件文档版本、隔离正文提取、片段、总磁盘配额和人工正文授权；真实飞书测试消息、官方长连接/远端补偿仍按用户要求后置，加密 Webhook 尚未实现。
+
+## 阶段4.5：Candidate 到 Matter 更新建议（本轮已完成）
+
+迁移 `20260803_0009` 已增加 `matter_update_proposals` 及 Matter 人工确认优先级、目标期限和下一步行动。`update_existing` 不再通过通用 resolve 接口登记后结束，而是生成待审 Proposal；审核页稳定展示当前值、消息提取值、AI 建议值和法务最终值。批准/部分批准使用 Proposal + Matter 双版本校验，并将字段、Deadline、WorkItem、审计、Outbox 和幂等记录一次提交。PostgreSQL 集成测试已覆盖实际持久化；Matter 版本冲突时不会修改 Proposal 或 Matter。
+
+## 阶段4.6：WorkItem 全生命周期（本轮已完成）
+
+迁移 `20260803_0010` 增加 `paused` 状态、暂停/取消原因和依赖解决人。`start/pause/wait/block/resume/complete/cancel/reopen/change_owner/change_deadline/change_next_action/add_dependency/resolve_dependency` 全部由领域层校验，API 写操作要求认证、幂等键、Correlation ID 和 `If-Match`。等待/恢复/完成严格检查开放依赖，成功写入在同一 PostgreSQL 事务内保存版本、审计、Outbox 和幂等结果。事项详情页已提供对应人工操作，不允许前端直接写状态字符串。
+
+## 阶段4.7：今日工作台确定性队列（本轮已完成）
+
+`GET /api/v1/dashboard/today` 从 Candidate、AgentRun、Message、Matter、WorkItem、Deadline、ReviewPackage、Outbox 死信、集成连接及实时健康状态生成八类真实队列。排序严格使用硬期限、逾期、法律风险、人工确认优先级、等待时长、创建时间和稳定 ID；Codex/AI 优先级仅单独展示。React 首页已切换为 TanStack Query 数据、加载/空/失败/Correlation ID/重试状态和真实对象链接，`/` 进入 `/dashboard`；旧 `data/mock.ts`、`services/adapters.ts` 及其专用原型组件已删除。
+
+## 阶段4.8：人工审核与 WorkItem 操作界面（本轮已完成）
+
+Matter 更新页把当前值、消息提取值、AI 建议值和法务最终值稳定分栏，并要求每个建议字段显式批准或拒绝；409 版本冲突不会丢失法务草稿，会刷新 Proposal/Matter 并明确提示未写入。事项详情页根据服务器状态展示合法 WorkItem 生命周期、负责人、期限、下一步和依赖操作，所有正式写入仍经领域层、`If-Match`、幂等键和审计，成功后刷新 Matter、WorkItem 与今日工作台。
 
 ## 阶段5：Codex Runtime与消息研判 Agent（本轮已完成）
 
@@ -112,7 +128,7 @@ legal-workbench/
 
 - AgentDefinition/AgentRun/AgentRunSource/DraftArtifact 模型与版本；
 - 独立运行目录、无工具白名单、受控来源与 Schema/业务校验；
-- ContextSnapshot v2 确定性选取、版本/排序复用键、多维限界与 `message_judgement@2.0.0`；
+- ContextSnapshot v2 确定性选取、版本/排序复用键、多维限界、附件片段引用与 `message_judgement@2.1.0`；
 - Codex CLI 版本/隔离认证健康检查、Prompt 注入边界和一次 Schema 修复重试；
 - AgentRun 心跳、租约、只追加状态历史、超时、尝试、错误分类、指数退避和死信；
 - Candidate revision 历史及 Redis/Worker 丢失后的 PostgreSQL 定时恢复；
@@ -120,7 +136,23 @@ legal-workbench/
 
 已通过模拟验证：11 类消息 Fake Runtime + PostgreSQL 冒烟、Prompt 注入、截断、输出修复、Candidate revision、队列/租约/死信恢复和 0006 迁移往返。
 
-尚未验证/实现：当前宿主 CLI 版本与容器固定版本不一致，隔离 Worker 无 API Key，因此真实 Codex 推理未执行；事项归并、任务规划、优先级建议和结果汇总 Agent 不在本轮范围。
+尚未验证/实现：宿主与容器 CLI 版本已统一，但隔离 Worker 无 Codex 认证，因此真实 Codex 推理未执行；事项归并、任务规划、优先级建议和结果汇总 Agent 不在本轮范围。
+
+## 阶段5.1：消息研判质量评估（本轮已完成）
+
+迁移 `20260803_0011` 新增不可变版本化 `evaluation_cases`、`evaluation_runs` 和 `evaluation_results`。11 类合成非敏感 Fixture 覆盖合同、劳动、知产、闲聊、仅供知悉、事项更新、明确/模糊期限、Prompt 注入、超长消息和附件。评估持久化 Runtime/AgentDefinition 版本、严格输出、逐维分数、耗时、Schema 首次通过、失败和重试，并聚合相关性、分类、期限、角色、事实、引用、推断误报、缺失信息及无关消息误建 Candidate 等指标。API 默认 Fake 且要求认证、幂等键和 Correlation ID；真实 Codex 只允许持有认证的专用 CLI Runner 在客户端和服务端双门禁下执行，不在 API 进程运行，也不自动修改 Prompt 或 AgentDefinition。
+
+## 阶段5.2：本地初始化向导（本轮已完成）
+
+迁移 `20260803_0012` 新增 `system_settings`、`integration_credentials`、`integration_scopes` 和 `integration_check_runs`。`/setup` 九步页面显示基础服务、飞书凭证/权限/范围/连接、Codex 版本/认证、测试消息和完成状态，并从后端恢复。Secret 只允许本地私有目录原子保存，API/数据库只返回配置标记和掩码。Codex 检查经 Outbox 进入隔离 Worker；真实飞书验证、测试消息和官方长连接按用户要求保留 `not_executed`，不声称通过。
+
+## 阶段5.3：飞书群聊授权范围（本轮已完成）
+
+`/settings/feishu-scopes` 从 PostgreSQL 展示已知群、最近消息、最近错误、最近补偿及当前版本。未知群只允许登记为 `unapproved/disabled`；允许 @机器人、允许指定群全部消息、排除、暂停和恢复均进入领域状态机，使用 `If-Match`、幂等键、Actor 和追加审计。手工补偿在真实飞书阶段延后时只保存 `not_executed / REAL_FEISHU_PHASE_DEFERRED`，不会发起远端请求或展示为同步成功。单元/API、React 和真实 PostgreSQL 集成测试覆盖版本冲突及审计持久化。
+
+## 阶段5.4：Mac 常驻运行与系统状态（本轮已完成代码）
+
+`scripts/legal_workbench_ops.py` 提供基础服务安全启停、每次唤醒健康检查、PostgreSQL 事实恢复、带跨进程排他锁的 custom dump 每日备份、Codex 运行目录保留、磁盘配额和 no-follow 脱敏诊断包。`/system/health` 与 React 系统页新增磁盘、附件用量/配额、最近备份、最近唤醒和精确待恢复任务；无飞书消息来源或有效租约不会被误判为可恢复任务。`infra/launchd` 提供登录/每 5 分钟 Supervisor 和每日备份模板，自动恢复使用 `mac-supervisor / local_supervisor` 审计身份，输出由 5 MiB 滚动运维日志统一承接。真实飞书在唤醒检查中继续记录 `not_executed / REAL_FEISHU_PHASE_DEFERRED`。代码、自动化和主机实际备份/诊断/唤醒脚本已验证；launchd 安装、真实睡眠/唤醒与独立库恢复演练仍需当前 Mac 人工确认。
 
 ## 阶段6：知识库
 
