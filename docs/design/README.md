@@ -12,7 +12,8 @@
 6. [`API_CONTRACTS.md`](./API_CONTRACTS.md)：HTTP、事件和错误契约；
 7. [`DEPLOYMENT.md`](./DEPLOYMENT.md)：Docker Compose、Mac守护、备份和恢复；
 8. [`IMPLEMENTATION_PLAN.md`](./IMPLEMENTATION_PLAN.md)：阶段、顺序和验收；
-9. [`DECISIONS.md`](./DECISIONS.md)：已确认的ADR。
+9. [`DECISIONS.md`](./DECISIONS.md)：已确认的ADR；
+10. [`../superpowers/specs/2026-08-08-feishu-personal-sync-design.md`](../superpowers/specs/2026-08-08-feishu-personal-sync-design.md)：个人飞书 User OAuth、消息与云文档同步设计基线。
 
 ## 当前技术基线
 

@@ -11,7 +11,12 @@ from legal_workbench.domain.entities import (
     IdempotencyRecord,
     IntegrationScope,
 )
-from legal_workbench.domain.enums import IntegrationScopeStatus, IntegrationSyncMode
+from legal_workbench.domain.enums import (
+    IntegrationIdentityType,
+    IntegrationScopeStatus,
+    IntegrationScopeType,
+    IntegrationSyncMode,
+)
 from legal_workbench.domain.errors import EntityVersionConflictError
 
 
@@ -118,6 +123,35 @@ async def test_new_chat_is_unapproved_and_disabled_until_legal_allows_it() -> No
     assert scope.status == IntegrationScopeStatus.UNAPPROVED
     assert scope.sync_mode == IntegrationSyncMode.DISABLED
     assert len(state.audit_events.values) == 1
+
+
+@pytest.mark.asyncio
+async def test_user_group_discovery_creates_unapproved_identity_bound_scopes() -> None:
+    state = State()
+    service = FeishuScopeService(state.factory)
+    authorization_id = UUID("00000000-0000-0000-0000-000000000301")
+
+    class Client:
+        async def list_chats(
+            self, *, authorization_id: UUID, page_token: str | None = None
+        ) -> tuple[tuple[dict[str, object], ...], str | None]:
+            assert page_token is None
+            return (({"chat_id": "oc_discovered", "name": "发现的法务群"}),), None
+
+    scopes = await service.discover_user_groups(
+        authorization_id=authorization_id,
+        client=Client(),
+        actor_id="legal",
+        correlation_id="corr-discover",
+    )
+
+    assert len(scopes) == 1
+    scope = scopes[0]
+    assert scope.status == IntegrationScopeStatus.UNAPPROVED
+    assert scope.sync_mode == IntegrationSyncMode.DISABLED
+    assert scope.identity_type == IntegrationIdentityType.USER
+    assert scope.scope_type == IntegrationScopeType.GROUP
+    assert scope.authorization_id == authorization_id
 
 
 @pytest.mark.asyncio

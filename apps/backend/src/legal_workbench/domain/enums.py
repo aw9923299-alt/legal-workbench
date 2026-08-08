@@ -397,3 +397,23 @@ class IntegrationSyncMode(StrEnum):
     MENTIONS_ONLY = "mentions_only"
     ALL_MESSAGES = "all_messages"
     DISABLED = "disabled"
+
+
+class FeishuUserAuthorizationStatus(StrEnum):
+    CONNECTED = "connected"
+    REFRESHING = "refreshing"
+    REAUTH_REQUIRED = "reauth_required"
+    EXPIRED = "expired"
+    PERMISSION_MISSING = "permission_missing"
+    REVOKED = "revoked"
+    DEGRADED = "degraded"
+
+
+class IntegrationIdentityType(StrEnum):
+    APP = "app"
+    USER = "user"
+
+
+class IntegrationScopeType(StrEnum):
+    GROUP = "group"
+    P2P = "p2p"

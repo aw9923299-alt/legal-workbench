@@ -1,8 +1,11 @@
 import asyncio
+from datetime import timedelta
 from hashlib import sha256
 from pathlib import Path
 from typing import Any
 from uuid import UUID
+
+import httpx
 
 from legal_workbench.agents.codex_cli import CodexCliRuntime
 from legal_workbench.agents.codex_health import CodexRuntimeHealthChecker
@@ -15,6 +18,17 @@ from legal_workbench.application.evaluations import (
     EvaluationFixtureCase,
     RealCodexEvaluationExecutor,
 )
+from legal_workbench.application.feishu_documents import (
+    FeishuDocumentSyncService,
+    FeishuFolderSubscriptionService,
+    FeishuFolderSyncService,
+)
+from legal_workbench.application.feishu_handlers import IngestFeishuEventHandler
+from legal_workbench.application.feishu_personal_sync import (
+    PersonalMessageSyncService,
+    UserMessageIngestionAdapter,
+)
+from legal_workbench.application.feishu_user_auth import FeishuUserTokenProvider
 from legal_workbench.application.message_analysis import (
     AnalyseFeishuMessageCommand,
     AnalyseFeishuMessageHandler,
@@ -24,10 +38,13 @@ from legal_workbench.application.setup import execute_codex_setup_check
 from legal_workbench.config import get_settings
 from legal_workbench.infrastructure.celery_app import celery_app
 from legal_workbench.infrastructure.outbox import OutboxDispatcher
+from legal_workbench.infrastructure.secrets import LocalSecretProvider
 from legal_workbench.infrastructure.unit_of_work import SqlAlchemyUnitOfWorkFactory
 from legal_workbench.integrations.document_extractors import (
     IsolatedExtractionProcessRunner,
 )
+from legal_workbench.integrations.feishu_user_client import FeishuUserClient
+from legal_workbench.integrations.feishu_user_oauth import FeishuOAuthHttpClient
 
 
 class _CodexSmokeExecutor:
@@ -103,6 +120,125 @@ def recover_analysis() -> dict[str, int]:
         "staleRunsRequeued": result.stale_runs_requeued,
         "deadLettered": result.dead_lettered,
     }
+
+
+async def _sync_personal_feishu_scopes() -> dict[str, object]:
+    settings = get_settings()
+    if not settings.enable_real_feishu:
+        return {"state": "not_executed", "scopeCount": 0, "failedScopeIds": []}
+    uow_factory = SqlAlchemyUnitOfWorkFactory()
+    secret_provider = LocalSecretProvider(settings.setup_secret_root)
+    async with uow_factory() as uow:
+        app_id_setting = await uow.setup.get_setting("feishu.app_id")
+        credential = await uow.setup.get_credential(
+            provider="feishu", credential_kind="app_secret"
+        )
+        scopes = await uow.setup.list_scopes(provider="feishu")
+        authorizations = await uow.feishu_user_authorizations.list_authorizations()
+        folder_subscriptions = (
+            await uow.documents.list_feishu_document_subscriptions(active_only=True)
+        )
+    app_id = (
+        str(app_id_setting.value)
+        if app_id_setting is not None
+        else str(settings.feishu_app_id or "")
+    ).strip()
+    app_secret = str(settings.feishu_app_secret or "").strip()
+    if not app_secret and credential and credential.secret_ref:
+        app_secret = secret_provider.read(credential.secret_ref)
+    if not app_id or not app_secret:
+        return {
+            "state": "not_executed",
+            "scopeCount": 0,
+            "failedScopeIds": [],
+            "errorCode": "feishu_app_credentials_missing",
+        }
+    authorizations_by_id = {value.id: value for value in authorizations}
+    eligible = [
+        value
+        for value in scopes
+        if value.identity_type.value == "user"
+        and value.status.value == "allowed"
+        and value.authorization_id in authorizations_by_id
+    ]
+    failed: list[str] = []
+    failed_folder_subscriptions: list[str] = []
+    ingested = 0
+    synchronized_documents = 0
+    async with httpx.AsyncClient(
+        timeout=httpx.Timeout(settings.feishu_request_timeout_seconds)
+    ) as http_client:
+        oauth_client = FeishuOAuthHttpClient(
+            app_id=app_id,
+            app_secret=app_secret,
+            http_client=http_client,
+            base_url=settings.feishu_api_base_url.removesuffix("/open-apis"),
+        )
+        user_client = FeishuUserClient(
+            token_provider=FeishuUserTokenProvider(
+                uow_factory,
+                oauth_client=oauth_client,
+                secret_provider=secret_provider,
+            ),
+            http_client=http_client,
+            base_url=settings.feishu_api_base_url,
+        )
+        service = PersonalMessageSyncService(
+            uow_factory,
+            user_client=user_client,
+            ingestion_adapter=UserMessageIngestionAdapter(
+                IngestFeishuEventHandler(uow_factory)
+            ),
+            overlap=timedelta(minutes=settings.feishu_user_sync_overlap_minutes),
+            document_sync=FeishuDocumentSyncService(
+                uow_factory,
+                client=user_client,
+            ),
+        )
+        folder_service = FeishuFolderSubscriptionService(
+            uow_factory,
+            folder_sync=FeishuFolderSyncService(
+                client=user_client,
+                document_sync=FeishuDocumentSyncService(
+                    uow_factory,
+                    client=user_client,
+                ),
+            ),
+        )
+        for scope in eligible:
+            assert scope.authorization_id is not None
+            authorization = authorizations_by_id[scope.authorization_id]
+            try:
+                result = await service.sync_scope(
+                    scope=scope,
+                    tenant_key=authorization.tenant_key,
+                    authorization_open_id=authorization.open_id,
+                )
+                ingested += result.ingested_count
+            except Exception:
+                failed.append(str(scope.id))
+        for subscription in folder_subscriptions:
+            try:
+                folder_result = await folder_service.sync_subscription(subscription.id)
+                synchronized_documents += folder_result.discovered_documents
+            except Exception:
+                failed_folder_subscriptions.append(str(subscription.id))
+    return {
+        "state": (
+            "partial" if failed or failed_folder_subscriptions else "completed"
+        ),
+        "scopeCount": len(eligible),
+        "ingestedCount": ingested,
+        "failedScopeIds": failed,
+        "folderSubscriptionCount": len(folder_subscriptions),
+        "synchronizedDocumentCount": synchronized_documents,
+        "failedFolderSubscriptionIds": failed_folder_subscriptions,
+    }
+
+
+@celery_app.task(name="feishu.sync_personal")  # type: ignore[untyped-decorator]
+def sync_personal_feishu() -> dict[str, object]:
+    return asyncio.run(_sync_personal_feishu_scopes())
 
 
 @celery_app.task(name="setup.codex_check")  # type: ignore[untyped-decorator]

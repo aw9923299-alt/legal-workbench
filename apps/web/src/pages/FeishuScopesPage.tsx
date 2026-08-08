@@ -1,35 +1,46 @@
 import {
+  CloudOutlined,
+  FolderOpenOutlined,
+  LinkOutlined,
   PauseCircleOutlined,
   PlusOutlined,
   ReloadOutlined,
   SafetyCertificateOutlined,
+  SearchOutlined,
   StopOutlined,
   SyncOutlined,
+  UserOutlined,
 } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Alert,
   Button,
   Card,
+  Checkbox,
+  Col,
+  Divider,
   Form,
   Input,
+  InputNumber,
+  List,
+  Row,
+  Select,
   Space,
+  Statistic,
   Table,
   Tag,
   Typography,
   message,
 } from 'antd';
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { QueryState } from '../components/QueryState';
-import {
-  ApiError,
-  createMutationContext,
-  legalApi,
-} from '../services/api';
+import { ApiError, createMutationContext, legalApi } from '../services/api';
 import type {
-  DeferredFeishuCompensation,
+  FeishuDocumentSearchResult,
+  FeishuIdentityType,
   FeishuScope,
   FeishuScopeSyncMode,
+  FeishuScopeType,
 } from '../types/api';
 
 const { Title, Text } = Typography;
@@ -48,243 +59,367 @@ const statusColor = {
 };
 const syncModeLabel: Record<FeishuScopeSyncMode, string> = {
   mentions_only: '仅 @机器人',
-  all_messages: '指定群全部消息',
+  all_messages: '采集范围内消息',
   disabled: '不同步',
 };
+const authorizationStatusLabel = {
+  connected: '已连接',
+  refreshing: '刷新中',
+  reauth_required: '需要重新授权',
+  expired: '授权已过期',
+  permission_missing: '权限不足',
+  revoked: '已撤销',
+  degraded: '连接异常',
+};
 
-type ScopeMutation =
-  | { kind: 'register'; chatId: string; displayName?: string }
-  | {
-    kind: 'change';
-    scope: FeishuScope;
-    action: 'allow' | 'exclude' | 'pause' | 'resume';
-    syncMode?: FeishuScopeSyncMode;
+function readableError(error: unknown): string {
+  if (error instanceof ApiError) {
+    return [error.message, error.code, error.correlationId].filter(Boolean).join(' · ');
   }
-  | { kind: 'compensate'; scope: FeishuScope };
+  return error instanceof Error ? error.message : '请求失败';
+}
 
-function ErrorEvidence({ error }: { error: ApiError }) {
-  return <Space direction="vertical" size={2}>
-    <Text>{error.message}</Text>
-    {error.code && <Text type="danger">错误码：{error.code}</Text>}
-    {error.correlationId && <Text>Correlation ID：{error.correlationId}</Text>}
-  </Space>;
+function documentIdentity(value: FeishuDocumentSearchResult) {
+  return {
+    token: value.token ?? value.objToken ?? value.docToken ?? '',
+    type: (value.type ?? value.docType ?? 'docx').toLowerCase(),
+    title: value.title ?? value.name ?? '未命名文档',
+    url: value.url ?? '',
+  };
 }
 
 export default function FeishuScopesPage() {
   const queryClient = useQueryClient();
-  const [form] = Form.useForm<{ chatId: string; displayName?: string }>();
-  const [deferred, setDeferred] = useState<DeferredFeishuCompensation>();
+  const [scopeForm] = Form.useForm();
+  const [documentForm] = Form.useForm();
+  const [folderForm] = Form.useForm();
+  const [authorizationUrl, setAuthorizationUrl] = useState<string>();
+  const [documentResults, setDocumentResults] = useState<FeishuDocumentSearchResult[]>([]);
+
+  const authorizations = useQuery({
+    queryKey: ['settings', 'feishu-user-authorizations'],
+    queryFn: () => legalApi.listFeishuUserAuthorizations(),
+  });
   const scopes = useQuery({
     queryKey: ['settings', 'feishu-scopes'],
     queryFn: () => legalApi.listFeishuScopes(),
   });
-  const mutation = useMutation<
-    FeishuScope | DeferredFeishuCompensation,
-    Error,
-    ScopeMutation
-  >({
-    mutationFn: (value: ScopeMutation) => {
-      const context = createMutationContext();
-      if (value.kind === 'register') {
-        return legalApi.registerFeishuScope(
-          { chatId: value.chatId, displayName: value.displayName },
-          context,
-        );
-      }
-      if (value.kind === 'compensate') {
-        return legalApi.compensateFeishuScope(
-          value.scope.id,
-          value.scope.version,
-          context,
-        );
-      }
-      return legalApi.changeFeishuScope(
-        value.scope.id,
-        value.scope.version,
-        { action: value.action, syncMode: value.syncMode },
-        context,
-      );
-    },
-    onSuccess: (result, variables) => {
-      const scope = 'scope' in result ? result.scope : result;
-      queryClient.setQueryData<FeishuScope[]>(
-        ['settings', 'feishu-scopes'],
-        (current = []) => {
-          const next = current.filter((item) => item.id !== scope.id);
-          return [...next, scope].sort((left, right) => (
-            left.displayName ?? left.externalScopeId
-          ).localeCompare(right.displayName ?? right.externalScopeId, 'zh-CN'));
-        },
-      );
-      if (variables.kind === 'compensate' && 'state' in result) {
-        setDeferred(result);
-        message.warning('补偿请求已记录，但真实同步未执行。');
-      } else {
-        setDeferred(undefined);
-        message.success('群聊范围决定已写入 PostgreSQL 和审计记录。');
-      }
-      if (variables.kind === 'register') form.resetFields();
+  const activeAuthorization = authorizations.data?.find((item) => item.status === 'connected');
+  const subscriptions = useQuery({
+    queryKey: ['settings', 'feishu-folder-subscriptions', activeAuthorization?.id],
+    queryFn: () => legalApi.listFeishuFolderSubscriptions(activeAuthorization?.id),
+    enabled: Boolean(activeAuthorization),
+  });
+
+  const refreshAll = () => {
+    void Promise.all([authorizations.refetch(), scopes.refetch(), subscriptions.refetch()]);
+  };
+  const invalidateScopes = () => queryClient.invalidateQueries({
+    queryKey: ['settings', 'feishu-scopes'],
+  });
+
+  const authorize = useMutation({
+    mutationFn: () => legalApi.startFeishuUserAuthorization(
+      `${window.location.origin}/api/v1/integrations/feishu-user/callback`,
+      createMutationContext(),
+    ),
+    onSuccess: (result) => setAuthorizationUrl(result.authorizationUrl),
+  });
+  const revoke = useMutation({
+    mutationFn: (authorizationId: string) => legalApi.revokeFeishuUserAuthorization(
+      authorizationId,
+      createMutationContext(),
+    ),
+    onSuccess: () => {
+      message.success('个人授权已撤销，本地 Token Secret 已删除。');
+      void queryClient.invalidateQueries({ queryKey: ['settings', 'feishu-user-authorizations'] });
     },
   });
-  const apiError = mutation.error instanceof ApiError ? mutation.error : undefined;
+  const discover = useMutation({
+    mutationFn: (authorizationId: string) => legalApi.discoverFeishuUserScopes(
+      authorizationId,
+      createMutationContext(),
+    ),
+    onSuccess: (items) => {
+      message.success(`发现 ${items.length} 个群聊，均以未批准状态保存。`);
+      void invalidateScopes();
+    },
+  });
+  const register = useMutation({
+    mutationFn: (values: {
+      chatId: string;
+      displayName?: string;
+      identityType: FeishuIdentityType;
+      scopeType: FeishuScopeType;
+      backfillDays: number;
+    }) => legalApi.registerFeishuScope({
+      ...values,
+      authorizationId: values.identityType === 'user' ? activeAuthorization?.id : undefined,
+    }, createMutationContext()),
+    onSuccess: () => {
+      scopeForm.resetFields();
+      message.success('数据范围已登记为未批准，等待人工 Allow / Exclude。');
+      void invalidateScopes();
+    },
+  });
+  const changeScope = useMutation({
+    mutationFn: (value: {
+      scope: FeishuScope;
+      action: 'allow' | 'exclude' | 'pause' | 'resume';
+      syncMode?: FeishuScopeSyncMode;
+    }) => legalApi.changeFeishuScope(
+      value.scope.id,
+      value.scope.version,
+      { action: value.action, syncMode: value.syncMode },
+      createMutationContext(),
+    ),
+    onSuccess: () => void invalidateScopes(),
+  });
+  const synchronize = useMutation({
+    mutationFn: (scope: FeishuScope) => legalApi.syncFeishuUserScope(
+      scope.id,
+      createMutationContext(),
+    ),
+    onSuccess: (result) => {
+      message.success(`同步完成：统一 Ingestion 接收 ${result.ingestedCount} 条消息。`);
+      void invalidateScopes();
+    },
+  });
+  const documentSearch = useMutation({
+    mutationFn: (values: { query: string }) => {
+      if (!activeAuthorization) throw new Error('请先授权个人飞书账号。');
+      return legalApi.searchFeishuUserDocuments(activeAuthorization.id, values.query);
+    },
+    onSuccess: setDocumentResults,
+  });
+  const documentImport = useMutation({
+    mutationFn: (value: FeishuDocumentSearchResult) => {
+      if (!activeAuthorization) throw new Error('请先授权个人飞书账号。');
+      const document = documentIdentity(value);
+      if (document.type !== 'docx' || !document.token || !document.url) {
+        throw new Error('首期仅导入官方 API 可返回 Markdown 的 docx 文档。');
+      }
+      return legalApi.importFeishuUserDocument(document.token, {
+        authorizationId: activeAuthorization.id,
+        documentType: 'docx',
+        title: document.title,
+        sourceUrl: document.url,
+      }, createMutationContext());
+    },
+    onSuccess: (result) => message.success(
+      result.createdVersion
+        ? `已创建文档版本并写入 ${result.segmentCount} 个 Segment。`
+        : '文档内容未变化，未创建重复版本。',
+    ),
+  });
+  const subscribeFolder = useMutation({
+    mutationFn: (values: { folderToken: string; recursive?: boolean }) => {
+      if (!activeAuthorization) throw new Error('请先授权个人飞书账号。');
+      return legalApi.subscribeFeishuFolder(values.folderToken, {
+        authorizationId: activeAuthorization.id,
+        recursive: Boolean(values.recursive),
+      }, createMutationContext());
+    },
+    onSuccess: () => {
+      folderForm.resetFields();
+      message.success('文件夹订阅已写入 PostgreSQL；不会镜像全部云空间。');
+      void subscriptions.refetch();
+    },
+  });
 
-  const change = (
-    scope: FeishuScope,
-    action: 'allow' | 'exclude' | 'pause' | 'resume',
-    syncMode?: FeishuScopeSyncMode,
-  ) => mutation.mutate({ kind: 'change', scope, action, syncMode });
+  const operationError = useMemo(() => [
+    authorize.error,
+    revoke.error,
+    discover.error,
+    register.error,
+    changeScope.error,
+    synchronize.error,
+    documentSearch.error,
+    documentImport.error,
+    subscribeFolder.error,
+  ].find(Boolean), [
+    authorize.error,
+    changeScope.error,
+    discover.error,
+    documentImport.error,
+    documentSearch.error,
+    register.error,
+    revoke.error,
+    subscribeFolder.error,
+    synchronize.error,
+  ]);
 
-  return <div className="page feishu-scopes-page">
+  const scopeActions = (item: FeishuScope) => <Space wrap>
+    {(item.status === 'unapproved' || item.status === 'excluded') && <Button size="small" icon={<SafetyCertificateOutlined />} onClick={() => changeScope.mutate({ scope: item, action: 'allow', syncMode: item.identityType === 'user' ? 'all_messages' : 'mentions_only' })}>允许采集</Button>}
+    {item.status === 'allowed' && <Button size="small" icon={<PauseCircleOutlined />} onClick={() => changeScope.mutate({ scope: item, action: 'pause' })}>暂停</Button>}
+    {item.status === 'paused' && <Button size="small" onClick={() => changeScope.mutate({ scope: item, action: 'resume', syncMode: item.identityType === 'user' ? 'all_messages' : 'mentions_only' })}>恢复</Button>}
+    {item.status !== 'excluded' && <Button danger size="small" onClick={() => changeScope.mutate({ scope: item, action: 'exclude' })}>排除</Button>}
+    {item.identityType === 'user' && item.status === 'allowed' && <Button size="small" icon={<SyncOutlined />} loading={synchronize.isPending} onClick={() => synchronize.mutate(item)}>立即同步</Button>}
+  </Space>;
+
+  return <div className="page feishu-personal-page">
     <div className="page-title-row">
       <div>
-        <span className="eyebrow">FEISHU SCOPE CONTROL</span>
-        <Title level={2}>飞书群聊授权范围</Title>
-        <Text type="secondary">敏感群默认不接入。所有允许、排除、暂停和恢复均由法务人工确认并使用版本锁。</Text>
+        <span className="eyebrow">FEISHU PERSONAL DATA SOURCES</span>
+        <Title level={2}>飞书个人数据源</Title>
+        <Text type="secondary">个人消息与云文档只读同步；采集、Codex 分析和正式外发保持三道独立门禁。</Text>
       </div>
-      <Button icon={<ReloadOutlined />} onClick={() => void scopes.refetch()}>刷新</Button>
+      <Button icon={<ReloadOutlined />} onClick={refreshAll}>刷新</Button>
     </div>
 
     <Alert
+      className="data-boundary-banner data-boundary-banner--pending"
       type="warning"
       showIcon
-      message="真实飞书消息与官方长连接仍为未执行"
-      description="当前页面管理可审计的授权事实。手动补偿只记录请求，不调用飞书接口，也不会显示为同步成功。"
-      style={{ marginBottom: 16 }}
+      message="本机真实飞书能力尚未验收"
+      description="无真实 OAuth 凭证的能力保持 not_executed。页面只展示 PostgreSQL 中的同步事实，不把接口入口或模拟数据写成已通过。"
     />
-    {deferred && <Alert
-      type="warning"
-      showIcon
-      closable
-      onClose={() => setDeferred(undefined)}
-      message={`${deferred.state} · ${deferred.errorCode}`}
-      description={<Space direction="vertical" size={2}>
-        <Text>{deferred.message}</Text>
-        <Text>Correlation ID：{deferred.correlationId}</Text>
-      </Space>}
-      style={{ marginBottom: 16 }}
-    />}
-    {apiError && <Alert
+    {operationError && <Alert
       type="error"
       showIcon
-      message="范围操作失败"
-      description={<ErrorEvidence error={apiError} />}
-      style={{ marginBottom: 16 }}
+      closable
+      message="飞书个人数据源操作失败"
+      description={readableError(operationError)}
+      style={{ marginBottom: 14 }}
+    />}
+    {authorizationUrl && <Alert
+      type="info"
+      showIcon
+      closable
+      onClose={() => setAuthorizationUrl(undefined)}
+      message="授权请求已创建"
+      description="在飞书官方页面确认授权后，回调会把 Token 仅写入 LocalSecretProvider。"
+      action={<Button type="primary" href={authorizationUrl}>前往飞书授权</Button>}
+      style={{ marginBottom: 14 }}
     />}
 
-    <Card title="登记已知测试群" variant="borderless" style={{ marginBottom: 16 }}>
-      <Form
-        form={form}
-        layout="inline"
-        onFinish={(values) => mutation.mutate({ kind: 'register', ...values })}
-      >
-        <Form.Item
-          name="chatId"
-          label="chat_id"
-          rules={[{ required: true, message: '请输入 chat_id' }]}
-        >
-          <Input placeholder="oc_..." autoComplete="off" />
-        </Form.Item>
-        <Form.Item name="displayName" label="群名称">
-          <Input placeholder="仅作为本地显示名称" autoComplete="off" />
-        </Form.Item>
-        <Form.Item>
-          <Button
-            htmlType="submit"
-            icon={<PlusOutlined />}
-            loading={mutation.isPending}
-          >登记为未批准</Button>
-        </Form.Item>
-      </Form>
-    </Card>
-
-    <Card title={`已知群聊（${scopes.data?.length ?? 0}）`} variant="borderless">
-      <QueryState
-        loading={scopes.isLoading}
-        error={scopes.error}
-        empty={!scopes.data?.length}
-        emptyDescription="尚无已知群聊。可先手工登记测试群；真实事件发现功能仍在延后阶段。"
-        onRetry={() => void scopes.refetch()}
-      >
-        <Table<FeishuScope>
-          rowKey="id"
-          dataSource={scopes.data}
-          pagination={false}
-          scroll={{ x: 1220 }}
-          columns={[
-            {
-              title: '群聊',
-              width: 220,
-              render: (_, item) => <Space direction="vertical" size={1}>
-                <Text strong>{item.displayName ?? '未命名群聊'}</Text>
-                <Text code>{item.externalScopeId}</Text>
-                <Text type="secondary">版本 {item.version}</Text>
-              </Space>,
-            },
-            {
-              title: '授权',
-              width: 100,
-              render: (_, item) => <Tag color={statusColor[item.status]}>{statusLabel[item.status]}</Tag>,
-            },
-            {
-              title: '同步范围',
-              width: 140,
-              render: (_, item) => <Tag>{syncModeLabel[item.syncMode]}</Tag>,
-            },
-            {
-              title: '最近状态',
-              width: 260,
-              render: (_, item) => <Space direction="vertical" size={1}>
-                <Text>最近消息：{item.lastMessageAt ? new Date(item.lastMessageAt).toLocaleString() : '—'}</Text>
-                <Text type={item.lastErrorCode ? 'danger' : 'secondary'}>
-                  最近错误：{item.lastErrorCode ?? '—'}
-                  {item.lastErrorMessage ? ` · ${item.lastErrorMessage}` : ''}
-                </Text>
-                <Text>最近补偿：{item.lastCompensatedAt ? new Date(item.lastCompensatedAt).toLocaleString() : '—'} · {item.lastCompensationStatus ?? '—'}</Text>
-              </Space>,
-            },
-            {
-              title: '人工操作',
-              width: 470,
-              render: (_, item) => <Space wrap>
-                {(item.status === 'unapproved' || item.status === 'excluded') && <>
-                  <Button
-                    size="small"
-                    icon={<SafetyCertificateOutlined />}
-                    loading={mutation.isPending}
-                    onClick={() => change(item, 'allow', 'mentions_only')}
-                  >仅 @机器人</Button>
-                  <Button
-                    size="small"
-                    loading={mutation.isPending}
-                    onClick={() => change(item, 'allow', 'all_messages')}
-                  >允许全部消息</Button>
-                </>}
-                {item.status === 'allowed' && <Button
-                  size="small"
-                  icon={<PauseCircleOutlined />}
-                  onClick={() => change(item, 'pause')}
-                >暂停</Button>}
-                {item.status === 'paused' && <>
-                  <Button size="small" onClick={() => change(item, 'resume', 'mentions_only')}>恢复仅 @</Button>
-                  <Button size="small" onClick={() => change(item, 'resume', 'all_messages')}>恢复全部</Button>
-                </>}
-                {item.status !== 'excluded' && <Button
-                  danger
-                  size="small"
-                  icon={<StopOutlined />}
-                  onClick={() => change(item, 'exclude')}
-                >排除</Button>}
-                <Button
-                  size="small"
-                  icon={<SyncOutlined />}
-                  loading={mutation.isPending}
-                  onClick={() => mutation.mutate({ kind: 'compensate', scope: item })}
-                >记录补偿请求</Button>
-              </Space>,
-            },
-          ]}
-        />
+    <section className="feishu-account-section">
+      <div className="section-heading">
+        <div><Title level={4}>个人账号授权</Title><Text type="secondary">保留 App/Bot 接入，同时增加只读 User OAuth 身份。</Text></div>
+        {!activeAuthorization && <Button
+          type="primary"
+          icon={<UserOutlined />}
+          loading={authorize.isPending}
+          onClick={() => authorize.mutate()}
+        >授权个人飞书账号</Button>}
+      </div>
+      <QueryState loading={authorizations.isLoading} error={authorizations.error} onRetry={() => void authorizations.refetch()}>
+        <div className="feishu-account-grid">
+          {(authorizations.data ?? []).map((item) => <Card key={item.id} className="feishu-account-card" variant="borderless">
+            <div className="feishu-account-card__main">
+              <div className="feishu-source-icon"><UserOutlined /></div>
+              <div>
+                <Space wrap><Text strong>{item.displayName ?? item.openId}</Text><Tag color={item.status === 'connected' ? 'green' : 'orange'}>{authorizationStatusLabel[item.status]}</Tag></Space>
+                <Text type="secondary">{item.tenantKey} · Token 版本只以 Secret Reference 保存</Text>
+                <Text type="secondary">访问到期：{new Date(item.accessExpiresAt).toLocaleString()}</Text>
+              </div>
+            </div>
+            <Space wrap>
+              {item.status === 'connected' && <Button icon={<SearchOutlined />} loading={discover.isPending} onClick={() => discover.mutate(item.id)}>发现群聊</Button>}
+              <Button danger icon={<StopOutlined />} loading={revoke.isPending} onClick={() => revoke.mutate(item.id)}>撤销授权</Button>
+            </Space>
+          </Card>)}
+          {!authorizations.isLoading && !authorizations.data?.length && <Card className="feishu-empty-card" variant="borderless"><Text type="secondary">尚未授权个人账号。现有 App/Bot 接入不受影响。</Text></Card>}
+        </div>
       </QueryState>
-    </Card>
+    </section>
+
+    <div className="feishu-source-stats">
+      <Row gutter={[0, 0]}>
+        <Col xs={12} md={6}><Statistic title="User 授权" value={authorizations.data?.filter((item) => item.status === 'connected').length ?? 0} /></Col>
+        <Col xs={12} md={6}><Statistic title="消息范围" value={scopes.data?.filter((item) => item.identityType === 'user').length ?? 0} /></Col>
+        <Col xs={12} md={6}><Statistic title="已允许" value={scopes.data?.filter((item) => item.identityType === 'user' && item.status === 'allowed').length ?? 0} /></Col>
+        <Col xs={12} md={6}><Statistic title="文件夹订阅" value={subscriptions.data?.filter((item) => item.active).length ?? 0} /></Col>
+      </Row>
+    </div>
+
+    <Row gutter={[14, 14]} align="top">
+      <Col xs={24} xl={16}>
+        <Card className="feishu-source-card" title="消息范围与同步" variant="borderless">
+          <Form
+            className="feishu-scope-form"
+            form={scopeForm}
+            layout="vertical"
+            initialValues={{ identityType: 'user', scopeType: 'group', backfillDays: 7 }}
+            onFinish={(values) => register.mutate(values)}
+          >
+            <Form.Item name="chatId" label="已知 chat_id" rules={[{ required: true }]}><Input placeholder="oc_... / P2P chat_id" autoComplete="off" /></Form.Item>
+            <Form.Item name="displayName" label="本地名称"><Input placeholder="仅用于工作台显示" /></Form.Item>
+            <Form.Item name="identityType" label="身份"><Select options={[{ value: 'user', label: 'User OAuth' }, { value: 'app', label: 'App / Bot' }]} /></Form.Item>
+            <Form.Item name="scopeType" label="类型"><Select options={[{ value: 'group', label: '群聊' }, { value: 'p2p', label: 'P2P' }]} /></Form.Item>
+            <Form.Item name="backfillDays" label="首次回溯（天）"><InputNumber min={0} max={90} /></Form.Item>
+            <Form.Item label=" "><Button htmlType="submit" icon={<PlusOutlined />} loading={register.isPending}>登记为未批准</Button></Form.Item>
+          </Form>
+          <Divider />
+          <QueryState
+            loading={scopes.isLoading}
+            error={scopes.error}
+            empty={!scopes.data?.length}
+            emptyDescription="尚无飞书数据范围。可手工登记已知 P2P / 群聊，或授权后发现群聊。"
+            onRetry={() => void scopes.refetch()}
+          >
+            <Table<FeishuScope>
+              className="feishu-scope-table"
+              rowKey="id"
+              dataSource={scopes.data}
+              pagination={false}
+              scroll={{ x: 720 }}
+              columns={[
+                { title: '范围', width: 190, render: (_, item) => <Space direction="vertical" size={1}><Text strong>{item.displayName ?? '未命名范围'}</Text><Text code>{item.externalScopeId}</Text><Space><Tag>{item.identityType === 'user' ? 'User' : 'App/Bot'}</Tag><Tag>{item.scopeType === 'p2p' ? 'P2P' : '群聊'}</Tag></Space></Space> },
+                { title: '采集决定', width: 140, render: (_, item) => <Space direction="vertical" size={2}><Tag color={statusColor[item.status]}>{statusLabel[item.status]}</Tag><Text type="secondary">{syncModeLabel[item.syncMode]} · 回溯 {item.backfillDays} 天</Text></Space> },
+                { title: '最近事实', width: 160, render: (_, item) => <Space direction="vertical" size={1}><Text>{item.lastMessageAt ? new Date(item.lastMessageAt).toLocaleString() : '尚无同步消息'}</Text><Text type={item.lastErrorCode ? 'danger' : 'secondary'}>{item.lastErrorCode ?? '无已记录错误'}</Text></Space> },
+                { title: '人工操作', width: 230, render: (_, item) => scopeActions(item) },
+              ]}
+            />
+            <div className="feishu-scope-mobile-list">
+              {(scopes.data ?? []).map((item) => <article key={item.id} className="feishu-scope-mobile-card">
+                <div className="feishu-scope-mobile-card__heading">
+                  <div><Text strong>{item.displayName ?? '未命名范围'}</Text><Text code>{item.externalScopeId}</Text></div>
+                  <Tag color={statusColor[item.status]}>{statusLabel[item.status]}</Tag>
+                </div>
+                <dl>
+                  <div><dt>身份 / 类型</dt><dd>{item.identityType === 'user' ? 'User' : 'App/Bot'} · {item.scopeType === 'p2p' ? 'P2P' : '群聊'}</dd></div>
+                  <div><dt>同步范围</dt><dd>{syncModeLabel[item.syncMode]} · 回溯 {item.backfillDays} 天</dd></div>
+                  <div><dt>最近事实</dt><dd>{item.lastMessageAt ? new Date(item.lastMessageAt).toLocaleString() : '尚无同步消息'}{item.lastErrorCode ? ` · ${item.lastErrorCode}` : ''}</dd></div>
+                </dl>
+                <div className="feishu-scope-mobile-card__actions">{scopeActions(item)}</div>
+              </article>)}
+            </div>
+          </QueryState>
+        </Card>
+      </Col>
+
+      <Col xs={24} xl={8}>
+        <Card className="feishu-source-card" title={<Space><CloudOutlined />云文档</Space>} variant="borderless">
+          <Text type="secondary">手动搜索导入，或订阅明确选择的文件夹；不会默认镜像全部云空间。</Text>
+          <Form className="feishu-document-form" form={documentForm} layout="inline" onFinish={(values) => documentSearch.mutate(values)}>
+            <Form.Item name="query" rules={[{ required: true }]}><Input prefix={<SearchOutlined />} placeholder="搜索我的飞书文档" /></Form.Item>
+            <Form.Item><Button htmlType="submit" loading={documentSearch.isPending}>搜索</Button></Form.Item>
+          </Form>
+          {documentResults.length > 0 && <List
+            className="feishu-document-results"
+            dataSource={documentResults}
+            renderItem={(item) => {
+              const document = documentIdentity(item);
+              return <List.Item actions={[<Button key="import" size="small" icon={<LinkOutlined />} disabled={document.type !== 'docx'} loading={documentImport.isPending} onClick={() => documentImport.mutate(item)}>导入</Button>]}>
+                <List.Item.Meta title={document.title} description={`${document.type || '未知类型'} · ${document.token || '无 token'}`} />
+              </List.Item>;
+            }}
+          />}
+          <Divider />
+          <Title level={5}>文件夹订阅</Title>
+          <Form form={folderForm} layout="vertical" onFinish={(values) => subscribeFolder.mutate(values)}>
+            <Form.Item name="folderToken" label="folder_token" rules={[{ required: true }]}><Input prefix={<FolderOpenOutlined />} placeholder="只填写明确选择的法务文件夹" /></Form.Item>
+            <Form.Item name="recursive" valuePropName="checked"><Checkbox>递归同步子文件夹</Checkbox></Form.Item>
+            <Button htmlType="submit" loading={subscribeFolder.isPending}>订阅文件夹</Button>
+          </Form>
+          {(subscriptions.data?.length ?? 0) > 0 && <List
+            className="feishu-folder-list"
+            dataSource={subscriptions.data}
+            renderItem={(item) => <List.Item><List.Item.Meta title={<Space><Text code>{item.folderToken}</Text><Tag color={item.active ? 'green' : 'default'}>{item.active ? '启用' : '停用'}</Tag></Space>} description={`${item.recursive ? '递归' : '仅当前层'} · 最近同步 ${item.lastSyncedAt ? new Date(item.lastSyncedAt).toLocaleString() : '—'} · 版本 ${item.version}`} /></List.Item>}
+          />}
+        </Card>
+      </Col>
+    </Row>
   </div>;
 }

@@ -6,6 +6,7 @@ from hashlib import sha256
 from uuid import UUID, uuid4
 
 from legal_workbench.application.commands import IngestFeishuEventCommand
+from legal_workbench.application.feishu_documents import extract_feishu_document_links
 from legal_workbench.application.ports import UnitOfWorkFactory
 from legal_workbench.application.results import FeishuEventIngestedResult
 from legal_workbench.domain.entities import (
@@ -50,6 +51,9 @@ def _new_message(
     normalized: NormalizedMessage,
     supported: bool,
     unsupported_reason: str | None,
+    analysis_disposition: str,
+    analysis_policy_version: str,
+    analysis_reasons: tuple[str, ...],
 ) -> FeishuMessage:
     attachment_payload: list[dict[str, object]] = [
         {
@@ -86,6 +90,13 @@ def _new_message(
         edited_at=normalized.edited_at,
         recalled_at=normalized.recalled_at,
         unsupported_reason=unsupported_reason,
+        analysis_disposition=analysis_disposition,
+        analysis_policy_version=analysis_policy_version,
+        analysis_reasons=list(analysis_reasons),
+        detected_document_links=[
+            {"documentType": value.document_type, "token": value.token, "url": value.url}
+            for value in extract_feishu_document_links(normalized.plain_text)
+        ],
     )
 
 
@@ -110,9 +121,17 @@ class IngestFeishuEventHandler:
                         "The Feishu event ID was reused with a different payload.",
                         details={"eventId": command.event_id},
                     )
+                existing_message = (
+                    await uow.feishu.get_message(
+                        tenant_key=tenant_key,
+                        message_id=normalized.external_message_id,
+                    )
+                    if normalized.external_message_id
+                    else None
+                )
                 return FeishuEventIngestedResult(
                     event_id=existing.id,
-                    message_id=None,
+                    message_id=existing_message.id if existing_message else None,
                     duplicate=True,
                 )
 
@@ -147,6 +166,9 @@ class IngestFeishuEventHandler:
                         normalized=normalized.message,
                         supported=normalized.supported,
                         unsupported_reason=normalized.unsupported_reason,
+                        analysis_disposition=normalized.analysis_disposition,
+                        analysis_policy_version=normalized.analysis_policy_version,
+                        analysis_reasons=normalized.analysis_reasons,
                     )
                 elif normalized.message is not None and existing_message is not None:
                     message = existing_message
@@ -171,6 +193,19 @@ class IngestFeishuEventHandler:
                     message.edited_at = normalized.message.edited_at
                     message.content_hash = _payload_hash(normalized.message.raw_payload)
                     message.unsupported_reason = normalized.unsupported_reason
+                    message.analysis_disposition = normalized.analysis_disposition
+                    message.analysis_policy_version = normalized.analysis_policy_version
+                    message.analysis_reasons = list(normalized.analysis_reasons)
+                    message.detected_document_links = [
+                        {
+                            "documentType": value.document_type,
+                            "token": value.token,
+                            "url": value.url,
+                        }
+                        for value in extract_feishu_document_links(
+                            normalized.message.plain_text
+                        )
+                    ]
                     message.version += 1
                 elif normalized.operation == FeishuMessageOperation.RECALL and existing_message:
                     message = existing_message
@@ -261,6 +296,9 @@ class IngestFeishuEventHandler:
                         "supported": normalized.supported,
                         "messageVersionId": str(message_version.id) if message_version else None,
                         "attachmentCount": len(attachments),
+                        "detectedDocumentLinkCount": (
+                            len(message.detected_document_links) if message else 0
+                        ),
                     },
                     correlation_id=command.correlation_id,
                 )

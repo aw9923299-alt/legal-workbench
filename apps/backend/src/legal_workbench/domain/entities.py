@@ -29,10 +29,13 @@ from legal_workbench.domain.enums import (
     EvaluationRuntimeType,
     FeishuEventStatus,
     FeishuMessageStatus,
+    FeishuUserAuthorizationStatus,
     IntegrationCheckStatus,
     IntegrationConnectionMode,
     IntegrationConnectionStatus,
+    IntegrationIdentityType,
     IntegrationScopeStatus,
+    IntegrationScopeType,
     IntegrationSyncMode,
     LegalRelevance,
     LegalRisk,
@@ -1604,6 +1607,114 @@ class IntegrationConnection:
     updated_at: datetime = field(default_factory=utc_now)
 
 
+@dataclass(slots=True)
+class FeishuOAuthAttempt:
+    id: UUID
+    state_hash: str
+    code_verifier_ref: str
+    redirect_uri: str
+    scopes: tuple[str, ...]
+    requested_by: str
+    expires_at: datetime
+    used_at: datetime | None = None
+    created_at: datetime = field(default_factory=utc_now)
+
+    def __post_init__(self) -> None:
+        require_aware(self.expires_at, field_name="OAuth attempt expiry")
+        if len(self.state_hash) != 64 or not self.code_verifier_ref:
+            raise DomainValidationError("OAuth attempt metadata is invalid.")
+
+    def consume(self, *, now: datetime | None = None) -> None:
+        consumed_at = now or utc_now()
+        if self.used_at is not None:
+            raise InvalidStateTransitionError("OAuth state was already consumed.")
+        if consumed_at >= self.expires_at:
+            raise InvalidStateTransitionError("OAuth state has expired.")
+        self.used_at = consumed_at
+
+
+@dataclass(slots=True)
+class FeishuUserAuthorization:
+    id: UUID
+    open_id: str
+    union_id: str | None
+    tenant_key: str
+    display_name: str | None
+    scopes: tuple[str, ...]
+    access_token_ref: str
+    refresh_token_ref: str
+    access_expires_at: datetime
+    refresh_expires_at: datetime
+    token_version: int
+    status: FeishuUserAuthorizationStatus
+    last_refreshed_at: datetime | None = None
+    last_error_code: str | None = None
+    created_at: datetime = field(default_factory=utc_now)
+    updated_at: datetime = field(default_factory=utc_now)
+
+    def __post_init__(self) -> None:
+        require_aware(self.access_expires_at, field_name="User access token expiry")
+        require_aware(self.refresh_expires_at, field_name="User refresh token expiry")
+        if not self.open_id.strip() or not self.tenant_key.strip():
+            raise DomainValidationError("Feishu user identity is required.")
+        if not self.access_token_ref or not self.refresh_token_ref or self.token_version < 1:
+            raise DomainValidationError("Feishu user token references are invalid.")
+
+    def rotate(
+        self,
+        *,
+        access_token_ref: str,
+        refresh_token_ref: str,
+        access_expires_at: datetime,
+        refresh_expires_at: datetime,
+        scopes: tuple[str, ...],
+        now: datetime | None = None,
+    ) -> None:
+        changed_at = now or utc_now()
+        require_aware(access_expires_at, field_name="User access token expiry")
+        require_aware(refresh_expires_at, field_name="User refresh token expiry")
+        self.access_token_ref = access_token_ref
+        self.refresh_token_ref = refresh_token_ref
+        self.access_expires_at = access_expires_at
+        self.refresh_expires_at = refresh_expires_at
+        self.scopes = scopes
+        self.token_version += 1
+        self.status = FeishuUserAuthorizationStatus.CONNECTED
+        self.last_refreshed_at = changed_at
+        self.last_error_code = None
+        self.updated_at = changed_at
+
+
+@dataclass(slots=True)
+class FeishuSyncCheckpoint:
+    id: UUID
+    authorization_id: UUID
+    scope_id: UUID
+    watermark: datetime | None = None
+    page_token: str | None = None
+    consecutive_failures: int = 0
+    last_error_code: str | None = None
+    last_started_at: datetime | None = None
+    last_succeeded_at: datetime | None = None
+    updated_at: datetime = field(default_factory=utc_now)
+
+    def succeed(self, *, watermark: datetime, now: datetime | None = None) -> None:
+        require_aware(watermark, field_name="Sync checkpoint watermark")
+        changed_at = now or utc_now()
+        self.watermark = watermark
+        self.page_token = None
+        self.consecutive_failures = 0
+        self.last_error_code = None
+        self.last_succeeded_at = changed_at
+        self.updated_at = changed_at
+
+    def fail(self, *, error_code: str, now: datetime | None = None) -> None:
+        changed_at = now or utc_now()
+        self.consecutive_failures += 1
+        self.last_error_code = error_code
+        self.updated_at = changed_at
+
+
 @dataclass(frozen=True, slots=True)
 class FeishuMessageVersion:
     id: UUID
@@ -1682,13 +1793,14 @@ class ExtractedDocument:
 @dataclass(frozen=True, slots=True)
 class DocumentVersion:
     id: UUID
-    attachment_id: UUID
+    attachment_id: UUID | None
     version: int
     content_sha256: str
     file_name: str
     mime_type: str
     size: int
     local_path: str
+    feishu_document_id: UUID | None = None
     created_at: datetime = field(default_factory=utc_now)
 
     def __post_init__(self) -> None:
@@ -1696,6 +1808,8 @@ class DocumentVersion:
             raise DomainValidationError("Document version metadata is invalid.")
         if len(self.content_sha256) != 64:
             raise DomainValidationError("Document version SHA-256 is invalid.")
+        if (self.attachment_id is None) == (self.feishu_document_id is None):
+            raise DomainValidationError("Document version must have exactly one source.")
 
 
 @dataclass(slots=True)
@@ -1743,13 +1857,14 @@ class DocumentExtraction:
 class DocumentSegment:
     id: UUID
     extraction_id: UUID
-    attachment_id: UUID
+    attachment_id: UUID | None
     page_number: int | None
     paragraph_number: int
     start_offset: int
     end_offset: int
     content: str
     content_hash: str
+    feishu_document_id: UUID | None = None
     created_at: datetime = field(default_factory=utc_now)
 
     @classmethod
@@ -1757,8 +1872,9 @@ class DocumentSegment:
         cls,
         *,
         extraction_id: UUID,
-        attachment_id: UUID,
+        attachment_id: UUID | None,
         segment: ExtractedSegment,
+        feishu_document_id: UUID | None = None,
     ) -> DocumentSegment:
         return cls(
             id=uuid4(),
@@ -1770,7 +1886,45 @@ class DocumentSegment:
             end_offset=segment.end_offset,
             content=segment.content,
             content_hash=segment.content_hash,
+            feishu_document_id=feishu_document_id,
         )
+
+
+@dataclass(slots=True)
+class FeishuDocument:
+    id: UUID
+    authorization_id: UUID
+    document_token: str
+    document_type: str
+    title: str | None
+    source_url: str
+    last_content_hash: str | None = None
+    last_synced_at: datetime | None = None
+    last_error_code: str | None = None
+    created_at: datetime = field(default_factory=utc_now)
+    updated_at: datetime = field(default_factory=utc_now)
+
+    def __post_init__(self) -> None:
+        if not self.document_token.strip() or self.document_type not in {"docx", "wiki"}:
+            raise DomainValidationError("Feishu document identity is invalid.")
+
+
+@dataclass(slots=True)
+class FeishuDocumentSubscription:
+    id: UUID
+    authorization_id: UUID
+    folder_token: str
+    recursive: bool
+    active: bool = True
+    version: int = 1
+    last_synced_at: datetime | None = None
+    last_error_code: str | None = None
+    created_at: datetime = field(default_factory=utc_now)
+    updated_at: datetime = field(default_factory=utc_now)
+
+    def __post_init__(self) -> None:
+        if not self.folder_token.strip():
+            raise DomainValidationError("A Feishu folder token is required.")
 
 
 @dataclass(slots=True)
@@ -1805,6 +1959,10 @@ class FeishuMessage:
     edited_at: datetime | None = None
     recalled_at: datetime | None = None
     unsupported_reason: str | None = None
+    analysis_disposition: str = "analyze"
+    analysis_policy_version: str = "legacy-app-event-v1"
+    analysis_reasons: list[str] = field(default_factory=list)
+    detected_document_links: list[dict[str, str]] = field(default_factory=list)
 
     _TRANSITIONS: ClassVar[dict[FeishuMessageStatus, set[FeishuMessageStatus]]] = {
         FeishuMessageStatus.RECEIVED: {FeishuMessageStatus.QUEUED_FOR_ANALYSIS},
@@ -2061,6 +2219,11 @@ class IntegrationScope:
     display_name: str | None
     status: IntegrationScopeStatus = IntegrationScopeStatus.UNAPPROVED
     sync_mode: IntegrationSyncMode = IntegrationSyncMode.DISABLED
+    identity_type: IntegrationIdentityType = IntegrationIdentityType.APP
+    scope_type: IntegrationScopeType = IntegrationScopeType.GROUP
+    authorization_id: UUID | None = None
+    backfill_days: int = 7
+    high_value_legal: bool = False
     last_message_at: datetime | None = None
     last_error_code: str | None = None
     last_error_message: str | None = None
@@ -2075,6 +2238,10 @@ class IntegrationScope:
     def __post_init__(self) -> None:
         if not self.provider.strip() or not self.external_scope_id.strip():
             raise DomainValidationError("Integration scope identity is required.")
+        if self.identity_type == IntegrationIdentityType.USER and self.authorization_id is None:
+            raise DomainValidationError("A user scope requires an authorization.")
+        if self.backfill_days not in {7, 30, 90}:
+            raise DomainValidationError("Scope backfill must be 7, 30 or 90 days.")
 
     def allow(
         self,

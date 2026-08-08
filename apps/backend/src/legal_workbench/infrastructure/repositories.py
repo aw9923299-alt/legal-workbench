@@ -8,6 +8,7 @@ from hashlib import sha256
 from uuid import UUID, uuid4
 
 from sqlalchemy import Select, exists, func, or_, select, update
+from sqlalchemy.dialects import postgresql
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.elements import ColumnElement
 
@@ -31,9 +32,14 @@ from legal_workbench.domain.entities import (
     EvaluationResult,
     EvaluationRun,
     FeishuAttachment,
+    FeishuDocument,
+    FeishuDocumentSubscription,
     FeishuMessage,
     FeishuMessageVersion,
+    FeishuOAuthAttempt,
     FeishuRawEvent,
+    FeishuSyncCheckpoint,
+    FeishuUserAuthorization,
     IdempotencyRecord,
     IntegrationCheckRun,
     IntegrationConnection,
@@ -87,9 +93,15 @@ from legal_workbench.infrastructure.models import (
     EvaluationResultModel,
     EvaluationRunModel,
     FeishuAttachmentModel,
+    FeishuDocumentModel,
+    FeishuDocumentSubscriptionModel,
     FeishuEventModel,
+    FeishuMessageDocumentLinkModel,
     FeishuMessageModel,
     FeishuMessageVersionModel,
+    FeishuOAuthAttemptModel,
+    FeishuSyncCheckpointModel,
+    FeishuUserAuthorizationModel,
     IdempotencyRecordModel,
     IntegrationCheckRunModel,
     IntegrationConnectionModel,
@@ -1765,6 +1777,10 @@ class SqlAlchemyFeishuRepository:
             analysis_attempts=message.analysis_attempts,
             failure_code=message.failure_code,
             failure_message=message.failure_message,
+            analysis_disposition=message.analysis_disposition,
+            analysis_policy_version=message.analysis_policy_version,
+            analysis_reasons=message.analysis_reasons,
+            detected_document_links=message.detected_document_links,
             version=message.version,
         )
         self._tracked_messages[message.id] = model
@@ -1893,6 +1909,10 @@ class SqlAlchemyFeishuRepository:
         model.analysis_attempts = message.analysis_attempts
         model.failure_code = message.failure_code
         model.failure_message = message.failure_message
+        model.analysis_disposition = message.analysis_disposition
+        model.analysis_policy_version = message.analysis_policy_version
+        model.analysis_reasons = message.analysis_reasons
+        model.detected_document_links = message.detected_document_links
         model.event_id = message.event_id
         model.message_type = message.message_type
         model.content = message.content
@@ -2168,6 +2188,10 @@ class SqlAlchemyFeishuRepository:
             edited_at=model.edited_at,
             recalled_at=model.recalled_at,
             unsupported_reason=model.unsupported_reason,
+            analysis_disposition=model.analysis_disposition,
+            analysis_policy_version=model.analysis_policy_version,
+            analysis_reasons=model.analysis_reasons,
+            detected_document_links=model.detected_document_links,
         )
 
 
@@ -2261,6 +2285,160 @@ class SqlAlchemyDocumentRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
         self._tracked_extractions: dict[UUID, DocumentExtractionModel] = {}
+        self._tracked_feishu_documents: dict[UUID, FeishuDocumentModel] = {}
+        self._tracked_feishu_document_subscriptions: dict[
+            UUID, FeishuDocumentSubscriptionModel
+        ] = {}
+
+    async def find_feishu_document(
+        self, *, authorization_id: UUID, document_token: str
+    ) -> FeishuDocument | None:
+        model = await self._session.scalar(
+            select(FeishuDocumentModel).where(
+                FeishuDocumentModel.authorization_id == authorization_id,
+                FeishuDocumentModel.document_token == document_token,
+            )
+        )
+        if model is None:
+            return None
+        self._tracked_feishu_documents[model.id] = model
+        return self._feishu_document_to_domain(model)
+
+    async def add_feishu_document(self, value: FeishuDocument) -> None:
+        model = FeishuDocumentModel(
+            id=value.id,
+            authorization_id=value.authorization_id,
+            document_token=value.document_token,
+            document_type=value.document_type,
+            title=value.title,
+            source_url=value.source_url,
+            last_content_hash=value.last_content_hash,
+            last_synced_at=value.last_synced_at,
+            last_error_code=value.last_error_code,
+            created_at=value.created_at,
+            updated_at=value.updated_at,
+        )
+        self._tracked_feishu_documents[value.id] = model
+        self._session.add(model)
+
+    async def save_feishu_document(self, value: FeishuDocument) -> None:
+        model = self._tracked_feishu_documents.get(value.id)
+        if model is None:
+            model = await self._session.get(FeishuDocumentModel, value.id)
+        if model is None:
+            raise RuntimeError(f"Feishu document {value.id} is not tracked")
+        model.document_type = value.document_type
+        model.title = value.title
+        model.source_url = value.source_url
+        model.last_content_hash = value.last_content_hash
+        model.last_synced_at = value.last_synced_at
+        model.last_error_code = value.last_error_code
+        model.updated_at = value.updated_at
+
+    async def add_feishu_message_document_link(
+        self, *, message_id: UUID, document_id: UUID, source_url: str
+    ) -> None:
+        statement = postgresql.insert(FeishuMessageDocumentLinkModel).values(
+            id=uuid4(),
+            feishu_message_id=message_id,
+            feishu_document_id=document_id,
+            source_url=source_url,
+        )
+        statement = statement.on_conflict_do_nothing(
+            constraint="uq_feishu_message_document_link"
+        )
+        await self._session.execute(statement)
+
+    async def get_feishu_document_subscription(
+        self, *, authorization_id: UUID, folder_token: str
+    ) -> FeishuDocumentSubscription | None:
+        model = await self._session.scalar(
+            select(FeishuDocumentSubscriptionModel).where(
+                FeishuDocumentSubscriptionModel.authorization_id == authorization_id,
+                FeishuDocumentSubscriptionModel.folder_token == folder_token,
+            )
+        )
+        if model is None:
+            return None
+        self._tracked_feishu_document_subscriptions[model.id] = model
+        return self._feishu_document_subscription_to_domain(model)
+
+    async def get_feishu_document_subscription_by_id(
+        self, subscription_id: UUID
+    ) -> FeishuDocumentSubscription | None:
+        model = await self._session.get(FeishuDocumentSubscriptionModel, subscription_id)
+        if model is None:
+            return None
+        self._tracked_feishu_document_subscriptions[model.id] = model
+        return self._feishu_document_subscription_to_domain(model)
+
+    async def list_feishu_document_subscriptions(
+        self, *, authorization_id: UUID | None = None, active_only: bool = False
+    ) -> Sequence[FeishuDocumentSubscription]:
+        statement = select(FeishuDocumentSubscriptionModel)
+        if authorization_id is not None:
+            statement = statement.where(
+                FeishuDocumentSubscriptionModel.authorization_id == authorization_id
+            )
+        if active_only:
+            statement = statement.where(FeishuDocumentSubscriptionModel.active.is_(True))
+        statement = statement.order_by(FeishuDocumentSubscriptionModel.created_at)
+        models = (await self._session.execute(statement)).scalars().all()
+        for model in models:
+            self._tracked_feishu_document_subscriptions[model.id] = model
+        return [self._feishu_document_subscription_to_domain(model) for model in models]
+
+    async def add_feishu_document_subscription(
+        self, value: FeishuDocumentSubscription
+    ) -> None:
+        model = FeishuDocumentSubscriptionModel(
+            id=value.id,
+            authorization_id=value.authorization_id,
+            folder_token=value.folder_token,
+            recursive=value.recursive,
+            active=value.active,
+            version=value.version,
+            last_synced_at=value.last_synced_at,
+            last_error_code=value.last_error_code,
+            created_at=value.created_at,
+            updated_at=value.updated_at,
+        )
+        self._tracked_feishu_document_subscriptions[value.id] = model
+        self._session.add(model)
+
+    async def save_feishu_document_subscription(
+        self, value: FeishuDocumentSubscription
+    ) -> None:
+        model = self._tracked_feishu_document_subscriptions.get(value.id)
+        if model is None:
+            model = await self._session.get(FeishuDocumentSubscriptionModel, value.id)
+        if model is None:
+            raise RuntimeError(f"Feishu document subscription {value.id} is not tracked")
+        model.recursive = value.recursive
+        model.active = value.active
+        model.last_synced_at = value.last_synced_at
+        model.last_error_code = value.last_error_code
+        model.updated_at = value.updated_at
+        model.version = value.version
+
+    async def find_feishu_document_version(
+        self, *, document_id: UUID, content_sha256: str
+    ) -> DocumentVersion | None:
+        model = await self._session.scalar(
+            select(DocumentVersionModel).where(
+                DocumentVersionModel.feishu_document_id == document_id,
+                DocumentVersionModel.content_sha256 == content_sha256,
+            )
+        )
+        return None if model is None else self._version_to_domain(model)
+
+    async def next_feishu_document_version(self, document_id: UUID) -> int:
+        value = await self._session.scalar(
+            select(func.coalesce(func.max(DocumentVersionModel.version), 0)).where(
+                DocumentVersionModel.feishu_document_id == document_id
+            )
+        )
+        return int(value or 0) + 1
 
     async def find_version(
         self, *, attachment_id: UUID, content_sha256: str
@@ -2283,6 +2461,7 @@ class SqlAlchemyDocumentRepository:
             DocumentVersionModel(
                 id=version.id,
                 attachment_id=version.attachment_id,
+                feishu_document_id=version.feishu_document_id,
                 version=version.version,
                 content_sha256=version.content_sha256,
                 file_name=version.file_name,
@@ -2358,6 +2537,7 @@ class SqlAlchemyDocumentRepository:
                     id=value.id,
                     extraction_id=value.extraction_id,
                     attachment_id=value.attachment_id,
+                    feishu_document_id=value.feishu_document_id,
                     page_number=value.page_number,
                     paragraph_number=value.paragraph_number,
                     start_offset=value.start_offset,
@@ -2409,6 +2589,7 @@ class SqlAlchemyDocumentRepository:
                     end_offset=model.end_offset,
                     content=model.content,
                     content_hash=model.content_hash,
+                    feishu_document_id=model.feishu_document_id,
                     created_at=model.created_at,
                 )
             )
@@ -2419,6 +2600,7 @@ class SqlAlchemyDocumentRepository:
         return DocumentVersion(
             id=model.id,
             attachment_id=model.attachment_id,
+            feishu_document_id=model.feishu_document_id,
             version=model.version,
             content_sha256=model.content_sha256,
             file_name=model.file_name,
@@ -2426,6 +2608,39 @@ class SqlAlchemyDocumentRepository:
             size=model.size,
             local_path=model.local_path,
             created_at=model.created_at,
+        )
+
+    @staticmethod
+    def _feishu_document_to_domain(model: FeishuDocumentModel) -> FeishuDocument:
+        return FeishuDocument(
+            id=model.id,
+            authorization_id=model.authorization_id,
+            document_token=model.document_token,
+            document_type=model.document_type,
+            title=model.title,
+            source_url=model.source_url,
+            last_content_hash=model.last_content_hash,
+            last_synced_at=model.last_synced_at,
+            last_error_code=model.last_error_code,
+            created_at=model.created_at,
+            updated_at=model.updated_at,
+        )
+
+    @staticmethod
+    def _feishu_document_subscription_to_domain(
+        model: FeishuDocumentSubscriptionModel,
+    ) -> FeishuDocumentSubscription:
+        return FeishuDocumentSubscription(
+            id=model.id,
+            authorization_id=model.authorization_id,
+            folder_token=model.folder_token,
+            recursive=model.recursive,
+            active=model.active,
+            version=model.version,
+            last_synced_at=model.last_synced_at,
+            last_error_code=model.last_error_code,
+            created_at=model.created_at,
+            updated_at=model.updated_at,
         )
 
     @staticmethod
@@ -2612,6 +2827,233 @@ class SqlAlchemyEvaluationRepository:
         )
 
 
+class SqlAlchemyFeishuPersonalSyncRepository:
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+        self._tracked: dict[UUID, FeishuSyncCheckpointModel] = {}
+
+    async def get_checkpoint_for_update(
+        self, *, authorization_id: UUID, scope_id: UUID
+    ) -> FeishuSyncCheckpoint | None:
+        model = await self._session.scalar(
+            select(FeishuSyncCheckpointModel)
+            .where(
+                FeishuSyncCheckpointModel.authorization_id == authorization_id,
+                FeishuSyncCheckpointModel.scope_id == scope_id,
+            )
+            .with_for_update()
+        )
+        if model is None:
+            return None
+        self._tracked[model.id] = model
+        return self._to_domain(model)
+
+    async def add_checkpoint(self, value: FeishuSyncCheckpoint) -> None:
+        model = FeishuSyncCheckpointModel(
+            id=value.id,
+            authorization_id=value.authorization_id,
+            scope_id=value.scope_id,
+            watermark=value.watermark,
+            page_token=value.page_token,
+            consecutive_failures=value.consecutive_failures,
+            last_error_code=value.last_error_code,
+            last_started_at=value.last_started_at,
+            last_succeeded_at=value.last_succeeded_at,
+            updated_at=value.updated_at,
+        )
+        self._tracked[value.id] = model
+        self._session.add(model)
+
+    async def save_checkpoint(self, value: FeishuSyncCheckpoint) -> None:
+        model = self._tracked.get(value.id)
+        if model is None:
+            model = await self._session.get(FeishuSyncCheckpointModel, value.id)
+        if model is None:
+            raise RuntimeError(f"Feishu checkpoint {value.id} is not tracked")
+        model.watermark = value.watermark
+        model.page_token = value.page_token
+        model.consecutive_failures = value.consecutive_failures
+        model.last_error_code = value.last_error_code
+        model.last_started_at = value.last_started_at
+        model.last_succeeded_at = value.last_succeeded_at
+        model.updated_at = value.updated_at
+
+    @staticmethod
+    def _to_domain(model: FeishuSyncCheckpointModel) -> FeishuSyncCheckpoint:
+        return FeishuSyncCheckpoint(
+            id=model.id,
+            authorization_id=model.authorization_id,
+            scope_id=model.scope_id,
+            watermark=model.watermark,
+            page_token=model.page_token,
+            consecutive_failures=model.consecutive_failures,
+            last_error_code=model.last_error_code,
+            last_started_at=model.last_started_at,
+            last_succeeded_at=model.last_succeeded_at,
+            updated_at=model.updated_at,
+        )
+
+
+class SqlAlchemyFeishuUserAuthorizationRepository:
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+        self._attempts: dict[UUID, FeishuOAuthAttemptModel] = {}
+        self._authorizations: dict[UUID, FeishuUserAuthorizationModel] = {}
+
+    async def add_oauth_attempt(self, value: FeishuOAuthAttempt) -> None:
+        self._session.add(
+            FeishuOAuthAttemptModel(
+                id=value.id,
+                state_hash=value.state_hash,
+                code_verifier_ref=value.code_verifier_ref,
+                redirect_uri=value.redirect_uri,
+                scopes=list(value.scopes),
+                requested_by=value.requested_by,
+                expires_at=value.expires_at,
+                used_at=value.used_at,
+                created_at=value.created_at,
+            )
+        )
+
+    async def get_oauth_attempt_for_update(
+        self, state_hash: str
+    ) -> FeishuOAuthAttempt | None:
+        model = await self._session.scalar(
+            select(FeishuOAuthAttemptModel)
+            .where(FeishuOAuthAttemptModel.state_hash == state_hash)
+            .with_for_update()
+        )
+        if model is None:
+            return None
+        self._attempts[model.id] = model
+        return self._attempt_to_domain(model)
+
+    async def save_oauth_attempt(self, value: FeishuOAuthAttempt) -> None:
+        model = self._attempts.get(value.id)
+        if model is None:
+            model = await self._session.get(FeishuOAuthAttemptModel, value.id)
+        if model is None:
+            raise RuntimeError(f"OAuth attempt {value.id} is not tracked")
+        model.used_at = value.used_at
+
+    async def add_authorization(self, value: FeishuUserAuthorization) -> None:
+        self._session.add(self._authorization_to_model(value))
+
+    async def get_authorization(
+        self, authorization_id: UUID
+    ) -> FeishuUserAuthorization | None:
+        model = await self._session.get(FeishuUserAuthorizationModel, authorization_id)
+        return None if model is None else self._authorization_to_domain(model)
+
+    async def get_authorization_for_update(
+        self, authorization_id: UUID
+    ) -> FeishuUserAuthorization | None:
+        model = await self._session.scalar(
+            select(FeishuUserAuthorizationModel)
+            .where(FeishuUserAuthorizationModel.id == authorization_id)
+            .with_for_update()
+        )
+        if model is None:
+            return None
+        self._authorizations[model.id] = model
+        return self._authorization_to_domain(model)
+
+    async def save_authorization(self, value: FeishuUserAuthorization) -> None:
+        model = self._authorizations.get(value.id)
+        if model is None:
+            model = await self._session.get(FeishuUserAuthorizationModel, value.id)
+        if model is None:
+            raise RuntimeError(f"Feishu user authorization {value.id} is not tracked")
+        model.open_id = value.open_id
+        model.union_id = value.union_id
+        model.tenant_key = value.tenant_key
+        model.display_name = value.display_name
+        model.scopes = list(value.scopes)
+        model.access_token_ref = value.access_token_ref
+        model.refresh_token_ref = value.refresh_token_ref
+        model.access_expires_at = value.access_expires_at
+        model.refresh_expires_at = value.refresh_expires_at
+        model.token_version = value.token_version
+        model.status = value.status
+        model.last_refreshed_at = value.last_refreshed_at
+        model.last_error_code = value.last_error_code
+        model.updated_at = value.updated_at
+
+    async def list_authorizations(self) -> Sequence[FeishuUserAuthorization]:
+        models = (
+            (
+                await self._session.execute(
+                    select(FeishuUserAuthorizationModel).order_by(
+                        FeishuUserAuthorizationModel.created_at
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        return [self._authorization_to_domain(model) for model in models]
+
+    @staticmethod
+    def _attempt_to_domain(model: FeishuOAuthAttemptModel) -> FeishuOAuthAttempt:
+        return FeishuOAuthAttempt(
+            id=model.id,
+            state_hash=model.state_hash,
+            code_verifier_ref=model.code_verifier_ref,
+            redirect_uri=model.redirect_uri,
+            scopes=tuple(model.scopes),
+            requested_by=model.requested_by,
+            expires_at=model.expires_at,
+            used_at=model.used_at,
+            created_at=model.created_at,
+        )
+
+    @staticmethod
+    def _authorization_to_model(
+        value: FeishuUserAuthorization,
+    ) -> FeishuUserAuthorizationModel:
+        return FeishuUserAuthorizationModel(
+            id=value.id,
+            open_id=value.open_id,
+            union_id=value.union_id,
+            tenant_key=value.tenant_key,
+            display_name=value.display_name,
+            scopes=list(value.scopes),
+            access_token_ref=value.access_token_ref,
+            refresh_token_ref=value.refresh_token_ref,
+            access_expires_at=value.access_expires_at,
+            refresh_expires_at=value.refresh_expires_at,
+            token_version=value.token_version,
+            status=value.status,
+            last_refreshed_at=value.last_refreshed_at,
+            last_error_code=value.last_error_code,
+            created_at=value.created_at,
+            updated_at=value.updated_at,
+        )
+
+    @staticmethod
+    def _authorization_to_domain(
+        model: FeishuUserAuthorizationModel,
+    ) -> FeishuUserAuthorization:
+        return FeishuUserAuthorization(
+            id=model.id,
+            open_id=model.open_id,
+            union_id=model.union_id,
+            tenant_key=model.tenant_key,
+            display_name=model.display_name,
+            scopes=tuple(model.scopes),
+            access_token_ref=model.access_token_ref,
+            refresh_token_ref=model.refresh_token_ref,
+            access_expires_at=model.access_expires_at,
+            refresh_expires_at=model.refresh_expires_at,
+            token_version=model.token_version,
+            status=model.status,
+            last_refreshed_at=model.last_refreshed_at,
+            last_error_code=model.last_error_code,
+            created_at=model.created_at,
+            updated_at=model.updated_at,
+        )
+
+
 class SqlAlchemySetupRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
@@ -2742,6 +3184,11 @@ class SqlAlchemySetupRepository:
             provider=value.provider,
             external_scope_id=value.external_scope_id,
             display_name=value.display_name,
+            identity_type=value.identity_type,
+            scope_type=value.scope_type,
+            authorization_id=value.authorization_id,
+            backfill_days=value.backfill_days,
+            high_value_legal=value.high_value_legal,
             status=value.status,
             sync_mode=value.sync_mode,
             last_message_at=value.last_message_at,
@@ -2765,6 +3212,11 @@ class SqlAlchemySetupRepository:
         if model is None:
             raise RuntimeError(f"Integration scope {value.id} is not tracked")
         model.display_name = value.display_name
+        model.identity_type = value.identity_type
+        model.scope_type = value.scope_type
+        model.authorization_id = value.authorization_id
+        model.backfill_days = value.backfill_days
+        model.high_value_legal = value.high_value_legal
         model.status = value.status
         model.sync_mode = value.sync_mode
         model.last_message_at = value.last_message_at
@@ -2879,6 +3331,11 @@ class SqlAlchemySetupRepository:
             provider=model.provider,
             external_scope_id=model.external_scope_id,
             display_name=model.display_name,
+            identity_type=model.identity_type,
+            scope_type=model.scope_type,
+            authorization_id=model.authorization_id,
+            backfill_days=model.backfill_days,
+            high_value_legal=model.high_value_legal,
             status=model.status,
             sync_mode=model.sync_mode,
             last_message_at=model.last_message_at,

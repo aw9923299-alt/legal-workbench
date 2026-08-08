@@ -52,10 +52,13 @@ from legal_workbench.domain.enums import (
     EvaluationRuntimeType,
     FeishuEventStatus,
     FeishuMessageStatus,
+    FeishuUserAuthorizationStatus,
     IntegrationCheckStatus,
     IntegrationConnectionMode,
     IntegrationConnectionStatus,
+    IntegrationIdentityType,
     IntegrationScopeStatus,
+    IntegrationScopeType,
     IntegrationSyncMode,
     LegalRelevance,
     LegalRisk,
@@ -797,6 +800,21 @@ class FeishuMessageModel(UuidPrimaryKeyMixin, TimestampMixin, VersionedMixin, Ba
     )
     failure_code: Mapped[str | None] = mapped_column(String(80))
     failure_message: Mapped[str | None] = mapped_column(Text)
+    analysis_disposition: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="analyze", server_default="analyze"
+    )
+    analysis_policy_version: Mapped[str] = mapped_column(
+        String(80),
+        nullable=False,
+        default="legacy-app-event-v1",
+        server_default="legacy-app-event-v1",
+    )
+    analysis_reasons: Mapped[list[str]] = mapped_column(
+        JSONB, nullable=False, default=list, server_default=JSON_EMPTY_LIST
+    )
+    detected_document_links: Mapped[list[dict[str, str]]] = mapped_column(
+        JSONB, nullable=False, default=list, server_default=JSON_EMPTY_LIST
+    )
 
 
 class IntegrationConnectionModel(UuidPrimaryKeyMixin, TimestampMixin, Base):
@@ -829,6 +847,88 @@ class IntegrationConnectionModel(UuidPrimaryKeyMixin, TimestampMixin, Base):
     last_reconcile_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_reconcile_status: Mapped[str | None] = mapped_column(String(40))
     last_reconcile_message: Mapped[str | None] = mapped_column(Text)
+
+
+class FeishuOAuthAttemptModel(UuidPrimaryKeyMixin, Base):
+    __tablename__ = "feishu_oauth_attempts"
+
+    state_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    code_verifier_ref: Mapped[str] = mapped_column(String(120), nullable=False)
+    redirect_uri: Mapped[str] = mapped_column(Text, nullable=False)
+    scopes: Mapped[list[str]] = mapped_column(
+        JSONB, nullable=False, default=list, server_default=JSON_EMPTY_LIST
+    )
+    requested_by: Mapped[str] = mapped_column(String(160), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class FeishuUserAuthorizationModel(UuidPrimaryKeyMixin, TimestampMixin, Base):
+    __tablename__ = "feishu_user_authorizations"
+    __table_args__ = (
+        UniqueConstraint("tenant_key", "open_id", name="uq_feishu_user_authorization_identity"),
+    )
+
+    open_id: Mapped[str] = mapped_column(String(160), nullable=False)
+    union_id: Mapped[str | None] = mapped_column(String(160))
+    tenant_key: Mapped[str] = mapped_column(String(160), nullable=False)
+    display_name: Mapped[str | None] = mapped_column(String(240))
+    scopes: Mapped[list[str]] = mapped_column(
+        JSONB, nullable=False, default=list, server_default=JSON_EMPTY_LIST
+    )
+    access_token_ref: Mapped[str] = mapped_column(String(120), nullable=False)
+    refresh_token_ref: Mapped[str] = mapped_column(String(120), nullable=False)
+    access_expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    refresh_expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    token_version: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default="1"
+    )
+    status: Mapped[FeishuUserAuthorizationStatus] = mapped_column(
+        enum_type(
+            FeishuUserAuthorizationStatus,
+            name="feishu_user_authorization_status",
+            length=24,
+        ),
+        nullable=False,
+    )
+    last_refreshed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_error_code: Mapped[str | None] = mapped_column(String(100))
+
+
+class FeishuSyncCheckpointModel(UuidPrimaryKeyMixin, Base):
+    __tablename__ = "feishu_sync_checkpoints"
+    __table_args__ = (
+        UniqueConstraint(
+            "authorization_id",
+            "scope_id",
+            name="uq_feishu_sync_checkpoint_authorization_scope",
+        ),
+    )
+
+    authorization_id: Mapped[UUID] = mapped_column(
+        ForeignKey("feishu_user_authorizations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    scope_id: Mapped[UUID] = mapped_column(
+        ForeignKey("integration_scopes.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    watermark: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    page_token: Mapped[str | None] = mapped_column(String(400))
+    consecutive_failures: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    last_error_code: Mapped[str | None] = mapped_column(String(100))
+    last_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_succeeded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
 
 
 class FeishuMessageVersionModel(UuidPrimaryKeyMixin, Base):
@@ -915,25 +1015,128 @@ class MessageAttachmentModel(UuidPrimaryKeyMixin, TimestampMixin, Base):
 FeishuAttachmentModel = MessageAttachmentModel
 
 
+class FeishuDocumentModel(UuidPrimaryKeyMixin, TimestampMixin, Base):
+    __tablename__ = "feishu_documents"
+    __table_args__ = (
+        UniqueConstraint(
+            "authorization_id",
+            "document_token",
+            name="uq_feishu_documents_authorization_token",
+        ),
+        CheckConstraint(
+            "document_type IN ('docx','wiki')",
+            name="feishu_document_type",
+        ),
+    )
+
+    authorization_id: Mapped[UUID] = mapped_column(
+        ForeignKey("feishu_user_authorizations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    document_token: Mapped[str] = mapped_column(String(200), nullable=False)
+    document_type: Mapped[str] = mapped_column(String(20), nullable=False)
+    title: Mapped[str | None] = mapped_column(String(500))
+    source_url: Mapped[str] = mapped_column(Text, nullable=False)
+    last_content_hash: Mapped[str | None] = mapped_column(String(64))
+    last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_error_code: Mapped[str | None] = mapped_column(String(100))
+
+
+class FeishuMessageDocumentLinkModel(UuidPrimaryKeyMixin, Base):
+    __tablename__ = "feishu_message_document_links"
+    __table_args__ = (
+        UniqueConstraint(
+            "feishu_message_id",
+            "feishu_document_id",
+            name="uq_feishu_message_document_link",
+        ),
+    )
+
+    feishu_message_id: Mapped[UUID] = mapped_column(
+        ForeignKey("feishu_messages.id", ondelete="CASCADE"), nullable=False
+    )
+    feishu_document_id: Mapped[UUID] = mapped_column(
+        ForeignKey("feishu_documents.id", ondelete="CASCADE"), nullable=False
+    )
+    source_url: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class FeishuDocumentSubscriptionModel(
+    UuidPrimaryKeyMixin, TimestampMixin, VersionedMixin, Base
+):
+    __tablename__ = "feishu_document_subscriptions"
+    __table_args__ = (
+        UniqueConstraint(
+            "authorization_id",
+            "folder_token",
+            name="uq_feishu_document_subscription",
+        ),
+    )
+
+    authorization_id: Mapped[UUID] = mapped_column(
+        ForeignKey("feishu_user_authorizations.id", ondelete="CASCADE"), nullable=False
+    )
+    folder_token: Mapped[str] = mapped_column(String(200), nullable=False)
+    recursive: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=FALSE_DEFAULT
+    )
+    active: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default=sql_text("true")
+    )
+    last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_error_code: Mapped[str | None] = mapped_column(String(100))
+
+
 class DocumentVersionModel(UuidPrimaryKeyMixin, Base):
     __tablename__ = "document_versions"
     __table_args__ = (
-        UniqueConstraint(
+        CheckConstraint(
+            "(attachment_id IS NULL) <> (feishu_document_id IS NULL)",
+            name="document_version_exactly_one_source",
+        ),
+        Index(
+            "uq_document_versions_attachment_version",
             "attachment_id",
             "version",
-            name="uq_document_versions_attachment_version",
+            unique=True,
+            postgresql_where=sql_text("attachment_id IS NOT NULL"),
         ),
-        UniqueConstraint(
+        Index(
+            "uq_document_versions_attachment_sha256",
             "attachment_id",
             "content_sha256",
-            name="uq_document_versions_attachment_sha256",
+            unique=True,
+            postgresql_where=sql_text("attachment_id IS NOT NULL"),
+        ),
+        Index(
+            "uq_document_versions_feishu_version",
+            "feishu_document_id",
+            "version",
+            unique=True,
+            postgresql_where=sql_text("feishu_document_id IS NOT NULL"),
+        ),
+        Index(
+            "uq_document_versions_feishu_sha256",
+            "feishu_document_id",
+            "content_sha256",
+            unique=True,
+            postgresql_where=sql_text("feishu_document_id IS NOT NULL"),
         ),
         Index("ix_document_versions_attachment_created", "attachment_id", "created_at"),
     )
 
     attachment_id: Mapped[UUID] = mapped_column(
         ForeignKey("message_attachments.id", ondelete="CASCADE"),
-        nullable=False,
+        nullable=True,
+        index=True,
+    )
+    feishu_document_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("feishu_documents.id", ondelete="CASCADE"),
+        nullable=True,
         index=True,
     )
     version: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -998,6 +1201,15 @@ class DocumentSegmentModel(UuidPrimaryKeyMixin, Base):
             "page_number",
             "paragraph_number",
         ),
+        Index(
+            "ix_document_segments_feishu_order",
+            "feishu_document_id",
+            "paragraph_number",
+        ),
+        CheckConstraint(
+            "(attachment_id IS NULL) <> (feishu_document_id IS NULL)",
+            name="document_segment_exactly_one_source",
+        ),
     )
 
     extraction_id: Mapped[UUID] = mapped_column(
@@ -1005,9 +1217,14 @@ class DocumentSegmentModel(UuidPrimaryKeyMixin, Base):
         nullable=False,
         index=True,
     )
-    attachment_id: Mapped[UUID] = mapped_column(
+    feishu_document_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("feishu_documents.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
+    attachment_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("message_attachments.id", ondelete="CASCADE"),
-        nullable=False,
+        nullable=True,
         index=True,
     )
     page_number: Mapped[int | None] = mapped_column(Integer)
@@ -1416,13 +1633,44 @@ class IntegrationCredentialModel(UuidPrimaryKeyMixin, TimestampMixin, VersionedM
 class IntegrationScopeModel(UuidPrimaryKeyMixin, TimestampMixin, VersionedMixin, Base):
     __tablename__ = "integration_scopes"
     __table_args__ = (
-        UniqueConstraint("provider", "external_scope_id", name="uq_integration_scope"),
+        UniqueConstraint(
+            "provider",
+            "identity_type",
+            "authorization_id",
+            "scope_type",
+            "external_scope_id",
+            name="uq_integration_scope",
+            postgresql_nulls_not_distinct=True,
+        ),
         Index("ix_integration_scopes_provider_status", "provider", "status"),
     )
 
     provider: Mapped[str] = mapped_column(String(40), nullable=False)
     external_scope_id: Mapped[str] = mapped_column(String(200), nullable=False)
     display_name: Mapped[str | None] = mapped_column(String(240))
+    identity_type: Mapped[IntegrationIdentityType] = mapped_column(
+        enum_type(IntegrationIdentityType, name="integration_identity_type", length=12),
+        nullable=False,
+        default=IntegrationIdentityType.APP,
+        server_default=IntegrationIdentityType.APP.value,
+    )
+    scope_type: Mapped[IntegrationScopeType] = mapped_column(
+        enum_type(IntegrationScopeType, name="integration_scope_type", length=12),
+        nullable=False,
+        default=IntegrationScopeType.GROUP,
+        server_default=IntegrationScopeType.GROUP.value,
+    )
+    authorization_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("feishu_user_authorizations.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
+    backfill_days: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=7, server_default="7"
+    )
+    high_value_legal: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=FALSE_DEFAULT
+    )
     status: Mapped[IntegrationScopeStatus] = mapped_column(
         enum_type(IntegrationScopeStatus, name="integration_scope_status", length=20),
         nullable=False,

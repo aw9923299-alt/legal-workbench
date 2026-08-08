@@ -32,5 +32,9 @@ celery_app.conf.update(
             "task": "system.scheduler_heartbeat",
             "schedule": 30.0,
         },
+        "sync-personal-feishu-from-postgres": {
+            "task": "feishu.sync_personal",
+            "schedule": float(settings.feishu_user_sync_interval_seconds),
+        },
     },
 )

@@ -306,6 +306,8 @@ class ContextSnapshotBuilder:
                 value.paragraph_number,
             ),
         ):
+            if segment.attachment_id is None:
+                continue
             mapped_attachment = attachment_by_id.get(segment.attachment_id)
             if mapped_attachment is None:
                 continue

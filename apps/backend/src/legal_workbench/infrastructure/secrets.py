@@ -65,6 +65,15 @@ class LocalSecretProvider:
             raise
         return reference
 
+    def delete(self, reference: str) -> None:
+        target = self._path(reference)
+        try:
+            target.unlink(missing_ok=True)
+        except OSError as exc:
+            raise DomainValidationError(
+                "The configured local secret could not be removed."
+            ) from exc
+
     def _path(self, reference: str) -> Path:
         if not _REFERENCE_PATTERN.fullmatch(reference):
             raise DomainValidationError("Secret reference is invalid.")

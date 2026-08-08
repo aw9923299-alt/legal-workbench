@@ -46,7 +46,7 @@ const navItems = [
   { key: '/agent-runs', icon: <RobotOutlined />, label: 'Agent 运行中心' },
   { key: '/security', icon: <SafetyCertificateOutlined />, label: '数据与权限' },
   { key: '/setup', icon: <SettingOutlined />, label: '首次配置' },
-  { key: '/settings/feishu-scopes', icon: <SafetyCertificateOutlined />, label: '飞书群聊范围' },
+  { key: '/settings/feishu-scopes', icon: <SafetyCertificateOutlined />, label: '飞书个人同步' },
   { key: '/system', icon: <SettingOutlined />, label: '系统状态' },
 ];
 

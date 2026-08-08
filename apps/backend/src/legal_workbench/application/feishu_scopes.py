@@ -4,6 +4,7 @@ import copy
 import hashlib
 import json
 from dataclasses import dataclass
+from typing import Protocol
 from uuid import UUID, uuid4
 
 from legal_workbench.application.ports import UnitOfWorkFactory
@@ -14,7 +15,9 @@ from legal_workbench.domain.entities import (
     IntegrationScope,
 )
 from legal_workbench.domain.enums import (
+    IntegrationIdentityType,
     IntegrationScopeStatus,
+    IntegrationScopeType,
     IntegrationSyncMode,
 )
 from legal_workbench.domain.errors import (
@@ -39,6 +42,12 @@ class DeferredCompensationResult:
     message: str
     correlation_id: str
     idempotent_replay: bool = False
+
+
+class UserChatDiscoveryClient(Protocol):
+    async def list_chats(
+        self, *, authorization_id: UUID, page_token: str | None = None
+    ) -> tuple[tuple[dict[str, object], ...], str | None]: ...
 
 
 class FeishuScopeService:
@@ -68,6 +77,10 @@ class FeishuScopeService:
         actor_source: str,
         correlation_id: str,
         idempotency_key: str,
+        identity_type: IntegrationIdentityType = IntegrationIdentityType.APP,
+        scope_type: IntegrationScopeType = IntegrationScopeType.GROUP,
+        authorization_id: UUID | None = None,
+        backfill_days: int = 7,
     ) -> IntegrationScope:
         normalized_chat_id = chat_id.strip()
         normalized_name = (display_name or "").strip() or None
@@ -75,7 +88,14 @@ class FeishuScopeService:
             raise DomainValidationError("A Feishu chat ID is required.")
         operation = "register_feishu_scope"
         request_hash = _hash_payload(
-            {"chatId": normalized_chat_id, "displayName": normalized_name}
+            {
+                "chatId": normalized_chat_id,
+                "displayName": normalized_name,
+                "identityType": identity_type.value,
+                "scopeType": scope_type.value,
+                "authorizationId": str(authorization_id) if authorization_id else None,
+                "backfillDays": backfill_days,
+            }
         )
         async with self._uow_factory() as uow:
             await uow.lock_idempotency(operation=operation, key=idempotency_key)
@@ -91,8 +111,17 @@ class FeishuScopeService:
                 if existing is None:
                     raise EntityNotFoundError("The registered Feishu scope was not found.")
                 return copy.deepcopy(existing)
-            existing = await uow.setup.find_scope(
-                provider="feishu", external_scope_id=normalized_chat_id
+            scopes = await uow.setup.list_scopes(provider="feishu")
+            existing = next(
+                (
+                    value
+                    for value in scopes
+                    if value.external_scope_id == normalized_chat_id
+                    and value.identity_type == identity_type
+                    and value.scope_type == scope_type
+                    and value.authorization_id == authorization_id
+                ),
+                None,
             )
             if existing is None:
                 existing = IntegrationScope(
@@ -102,6 +131,10 @@ class FeishuScopeService:
                     display_name=normalized_name,
                     status=IntegrationScopeStatus.UNAPPROVED,
                     sync_mode=IntegrationSyncMode.DISABLED,
+                    identity_type=identity_type,
+                    scope_type=scope_type,
+                    authorization_id=authorization_id,
+                    backfill_days=backfill_days,
                 )
                 await uow.setup.add_scope(existing)
                 await uow.audit_events.add(
@@ -115,6 +148,8 @@ class FeishuScopeService:
                         payload={
                             "status": existing.status.value,
                             "syncMode": existing.sync_mode.value,
+                            "identityType": existing.identity_type.value,
+                            "scopeType": existing.scope_type.value,
                         },
                         correlation_id=correlation_id,
                     )
@@ -130,6 +165,41 @@ class FeishuScopeService:
             )
             await uow.commit()
             return copy.deepcopy(existing)
+
+    async def discover_user_groups(
+        self,
+        *,
+        authorization_id: UUID,
+        client: UserChatDiscoveryClient,
+        actor_id: str,
+        correlation_id: str,
+    ) -> tuple[IntegrationScope, ...]:
+        discovered: list[IntegrationScope] = []
+        page_token: str | None = None
+        while True:
+            chats, page_token = await client.list_chats(
+                authorization_id=authorization_id,
+                page_token=page_token,
+            )
+            for chat in chats:
+                chat_id = str(chat.get("chat_id") or "").strip()
+                if not chat_id:
+                    continue
+                scope = await self.register_known_chat(
+                    chat_id=chat_id,
+                    display_name=str(chat.get("name") or "").strip() or None,
+                    actor_id=actor_id,
+                    actor_source="feishu-user-discovery",
+                    correlation_id=correlation_id,
+                    idempotency_key=f"discover:{authorization_id}:{chat_id}",
+                    identity_type=IntegrationIdentityType.USER,
+                    scope_type=IntegrationScopeType.GROUP,
+                    authorization_id=authorization_id,
+                )
+                discovered.append(scope)
+            if page_token is None:
+                break
+        return tuple(discovered)
 
     async def change_scope(
         self,

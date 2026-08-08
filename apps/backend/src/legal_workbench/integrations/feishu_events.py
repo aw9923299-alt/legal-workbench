@@ -56,6 +56,9 @@ class NormalizedFeishuEvent:
     supported: bool
     should_trigger_analysis: bool
     unsupported_reason: str | None = None
+    analysis_disposition: str = "analyze"
+    analysis_policy_version: str = "legacy-app-event-v1"
+    analysis_reasons: tuple[str, ...] = ()
 
 
 SUPPORTED_MESSAGE_TYPES = {"text", "post", "file", "image"}
@@ -251,6 +254,14 @@ def normalize_feishu_event(payload: dict[str, object]) -> NormalizedFeishuEvent:
     unsupported_reason = None if supported else f"unsupported_message_type:{message_type}"
     if not external_id:
         unsupported_reason = "missing_message_id"
+    analysis_disposition = str(payload.get("analysis_disposition") or "analyze")
+    analysis_policy_version = str(
+        payload.get("analysis_policy_version") or "legacy-app-event-v1"
+    )
+    reasons_value = payload.get("analysis_reasons")
+    analysis_reasons = tuple(
+        str(value) for value in reasons_value if isinstance(value, str)
+    ) if isinstance(reasons_value, list) else ()
     return NormalizedFeishuEvent(
         event_id=event_id,
         event_type=event_type,
@@ -261,6 +272,11 @@ def normalize_feishu_event(payload: dict[str, object]) -> NormalizedFeishuEvent:
         external_message_id=external_id or None,
         message=message,
         supported=supported and bool(external_id),
-        should_trigger_analysis=supported and bool(external_id),
+        should_trigger_analysis=(
+            supported and bool(external_id) and analysis_disposition == "analyze"
+        ),
         unsupported_reason=unsupported_reason,
+        analysis_disposition=analysis_disposition,
+        analysis_policy_version=analysis_policy_version,
+        analysis_reasons=analysis_reasons,
     )

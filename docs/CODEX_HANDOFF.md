@@ -27,6 +27,7 @@ Runtime 前后使用独立短事务，不在数据库事务内等待 Codex。任
 |---|---|
 | React 收件箱/消息详情/Agent运行中心/系统状态/Candidate动作 | 已实现，核心闭环数据均连接 FastAPI |
 | 飞书群聊授权范围 | 已实现；未知群默认未批准/禁用，允许/排除/暂停/恢复使用版本锁、幂等和审计；远端补偿延后 |
+| 飞书个人账号同步 | 已实现 User OAuth + PKCE、LocalSecretProvider Token 轮换、统一消息 Ingestion、P2P/群 Scope、文档导入/文件夹订阅和采集/分析策略；真实飞书凭证验收未执行 |
 | SSE + 断线轮询回退 | 已实现，五类运行事件触发 Query 刷新 |
 | Python FastAPI + SQLAlchemy + PostgreSQL | 已实现 |
 | Outbox 领取、重试、死信、显式 Handler 注册 | 已实现；人工重入队带 Actor/幂等/审计 |
@@ -78,6 +79,8 @@ Runtime 前后使用独立短事务，不在数据库事务内等待 Codex。任
 - `application/setup.py`、`infrastructure/secrets.py`：脱敏 Setup 状态、原子本地 Secret、Codex Worker 检查编排；
 - `api/routes/setup.py`、`pages/SetupPage.tsx`：六个 Setup API 和九步初始化向导，飞书延后状态不会显示为成功。
 - `application/feishu_scopes.py`、`api/routes/feishu_scopes.py`：群聊授权状态机、版本/幂等/审计和延后补偿记录；
+- `application/feishu_user_auth.py`、`application/feishu_personal_sync.py`、`application/feishu_documents.py`：个人身份授权、Checkpoint/重叠补偿、统一消息采集和飞书文档管道；
+- `integrations/feishu_user_{oauth,client}.py`、`api/routes/feishu_user.py`：官方 User OAuth/User API 适配与个人同步 API；
 - `apps/web/src/pages/FeishuScopesPage.tsx`：群聊范围登记、允许、排除、暂停、恢复和精确错误证据。
 - `scripts/legal_workbench_ops.py`、`infra/launchd/*.plist.example`：Mac 安全启停、唤醒恢复、PostgreSQL 备份、运行目录保留、脱敏诊断和定时模板；
 - `scripts/smoke_test_downstream_loop.py`：真实 PostgreSQL 组件、隔离 Redis DB 清空恢复 + 11 类 Fake/显式真实 Runtime 的组合验证，明确不冒充单对象 E2E 或宿主运维验收。
