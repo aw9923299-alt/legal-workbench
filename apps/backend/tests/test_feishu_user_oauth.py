@@ -176,6 +176,7 @@ def test_user_oauth_request_covers_personal_history_and_document_reads(
         "im:message:readonly",
         "im:message.p2p_msg:get_as_user",
         "im:message.group_msg:get_as_user",
+        "im:chat:read",
         "im:chat:readonly",
         "drive:drive.search:readonly",
         "drive:drive.metadata:readonly",
