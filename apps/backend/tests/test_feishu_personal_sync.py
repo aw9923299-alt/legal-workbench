@@ -23,6 +23,7 @@ from legal_workbench.domain.enums import (
     IntegrationScopeType,
     IntegrationSyncMode,
 )
+from legal_workbench.domain.errors import DomainValidationError
 from legal_workbench.infrastructure.database import Base
 from legal_workbench.integrations.feishu_user_client import (
     FeishuUserClient,
@@ -53,6 +54,7 @@ class CapturingHandler:
 class CheckpointRepository:
     def __init__(self) -> None:
         self.value: FeishuSyncCheckpoint | None = None
+        self.transaction_active = False
 
     async def get_checkpoint_for_update(
         self, *, authorization_id: UUID, scope_id: UUID
@@ -71,6 +73,8 @@ class UnitOfWork:
         self.feishu_personal_sync = repository
 
     async def __aenter__(self) -> UnitOfWork:
+        assert self.feishu_personal_sync.transaction_active is False
+        self.feishu_personal_sync.transaction_active = True
         return self
 
     async def __aexit__(
@@ -79,20 +83,35 @@ class UnitOfWork:
         exc: BaseException | None,
         traceback: TracebackType | None,
     ) -> bool | None:
+        self.feishu_personal_sync.transaction_active = False
         return None
+
+    async def lock_idempotency(self, *, operation: str, key: str) -> None:
+        del operation, key
 
     async def commit(self) -> None:
         return None
 
 
 class UserClient:
-    def __init__(self, pages: list[UserMessagePage]) -> None:
+    def __init__(
+        self,
+        pages: list[UserMessagePage],
+        *,
+        checkpoint_repository: CheckpointRepository | None = None,
+    ) -> None:
         self.pages = pages
         self.calls: list[dict[str, object]] = []
+        self.checkpoint_repository = checkpoint_repository
 
     async def list_messages(self, **kwargs: object) -> UserMessagePage:
+        if self.checkpoint_repository is not None:
+            assert self.checkpoint_repository.transaction_active is False
         self.calls.append(kwargs)
         return self.pages[len(self.calls) - 1]
+
+    async def list_thread_messages(self, **kwargs: object) -> UserMessagePage:
+        raise AssertionError(f"Unexpected thread history request: {kwargs}")
 
 
 class DocumentLinkSync:
@@ -102,6 +121,14 @@ class DocumentLinkSync:
     async def sync_document(self, **kwargs: object) -> object:
         self.calls.append(kwargs)
         return object()
+
+
+class AttachmentSync:
+    def __init__(self) -> None:
+        self.message_ids: list[UUID] = []
+
+    async def download_attachments(self, message_id: UUID) -> None:
+        self.message_ids.append(message_id)
 
 
 def allowed_scope() -> IntegrationScope:
@@ -148,6 +175,7 @@ async def test_user_message_adapter_always_uses_unified_ingestion_handler() -> N
     command = handler.commands[0]
     assert command.event_id == "uat:tenant-personal:om-user-1:1786150000000"
     assert command.raw_payload["source"] == "user_history_sync"
+    assert command.raw_payload["source_channel"] == "user_api"
     assert command.raw_payload["analysis_disposition"] == "store_only"
     assert command.raw_payload["event"]["message"]["message_type"] == "text"  # type: ignore[index]
 
@@ -172,7 +200,8 @@ async def test_checkpoint_uses_overlap_and_advances_only_after_all_pages() -> No
                 items=(raw_message("om-2", 1786176000000),),
                 next_page_token=None,
             ),
-        ]
+        ],
+        checkpoint_repository=repository,
     )
     handler = CapturingHandler()
     service = PersonalMessageSyncService(
@@ -191,6 +220,9 @@ async def test_checkpoint_uses_overlap_and_advances_only_after_all_pages() -> No
     assert repository.value is not None
     assert repository.value.watermark == now
     assert repository.value.consecutive_failures == 0
+    assert repository.value.lease_owner is None
+    assert repository.value.lease_expires_at is None
+    assert repository.value.lease_fence == 1
 
 
 @pytest.mark.asyncio
@@ -227,6 +259,33 @@ async def test_message_document_link_is_imported_through_native_document_pipelin
 
 
 @pytest.mark.asyncio
+async def test_personal_message_attachment_enters_existing_download_pipeline() -> None:
+    now = datetime(2026, 8, 8, 8, 0, tzinfo=UTC)
+    repository = CheckpointRepository()
+    attached_message = raw_message("om-file", 1786176000000)
+    attached_message["msg_type"] = "file"
+    attached_message["body"] = {
+        "content": '{"file_key":"file-user","file_name":"test.txt"}'
+    }
+    attachment_sync = AttachmentSync()
+    service = PersonalMessageSyncService(
+        lambda: UnitOfWork(repository),
+        user_client=UserClient(
+            [UserMessagePage(items=(attached_message,), next_page_token=None)]
+        ),
+        ingestion_adapter=UserMessageIngestionAdapter(CapturingHandler()),
+        attachment_sync=attachment_sync,
+        clock=lambda: now,
+    )
+
+    await service.sync_scope(scope=allowed_scope(), tenant_key="tenant-personal")
+
+    assert attachment_sync.message_ids == [
+        UUID("00000000-0000-0000-0000-000000000206")
+    ]
+
+
+@pytest.mark.asyncio
 async def test_checkpoint_does_not_advance_when_one_message_fails() -> None:
     old_watermark = datetime(2026, 8, 8, 7, 0, tzinfo=UTC)
     repository = CheckpointRepository()
@@ -255,6 +314,64 @@ async def test_checkpoint_does_not_advance_when_one_message_fails() -> None:
     assert repository.value.watermark == old_watermark
     assert repository.value.consecutive_failures == 1
     assert repository.value.last_error_code == "sync_failed"
+
+
+@pytest.mark.asyncio
+async def test_active_sync_lease_rejects_a_second_owner() -> None:
+    now = datetime(2026, 8, 8, 8, 0, tzinfo=UTC)
+    repository = CheckpointRepository()
+    repository.value = FeishuSyncCheckpoint(
+        id=UUID("00000000-0000-0000-0000-000000000203"),
+        authorization_id=AUTHORIZATION_ID,
+        scope_id=SCOPE_ID,
+        lease_owner="worker-already-running",
+        lease_expires_at=now + timedelta(minutes=1),
+        lease_fence=7,
+    )
+    service = PersonalMessageSyncService(
+        lambda: UnitOfWork(repository),
+        user_client=UserClient([], checkpoint_repository=repository),
+        ingestion_adapter=UserMessageIngestionAdapter(CapturingHandler()),
+        clock=lambda: now,
+    )
+
+    with pytest.raises(DomainValidationError, match="sync_lease_active"):
+        await service.sync_scope(scope=allowed_scope(), tenant_key="tenant-personal")
+
+    assert repository.value.lease_owner == "worker-already-running"
+    assert repository.value.lease_fence == 7
+
+
+@pytest.mark.asyncio
+async def test_checkpoint_fencing_prevents_stale_owner_from_advancing() -> None:
+    now = datetime(2026, 8, 8, 8, 0, tzinfo=UTC)
+    repository = CheckpointRepository()
+
+    class LeaseStealingClient(UserClient):
+        async def list_messages(self, **kwargs: object) -> UserMessagePage:
+            page = await super().list_messages(**kwargs)
+            assert repository.value is not None
+            repository.value.lease_owner = "replacement-owner"
+            repository.value.lease_fence += 1
+            repository.value.lease_expires_at = now + timedelta(minutes=5)
+            return page
+
+    service = PersonalMessageSyncService(
+        lambda: UnitOfWork(repository),
+        user_client=LeaseStealingClient(
+            [UserMessagePage(items=(), next_page_token=None)],
+            checkpoint_repository=repository,
+        ),
+        ingestion_adapter=UserMessageIngestionAdapter(CapturingHandler()),
+        clock=lambda: now,
+    )
+
+    with pytest.raises(DomainValidationError, match="sync_lease_lost"):
+        await service.sync_scope(scope=allowed_scope(), tenant_key="tenant-personal")
+
+    assert repository.value is not None
+    assert repository.value.watermark is None
+    assert repository.value.lease_owner == "replacement-owner"
 
 
 def test_scope_and_checkpoint_schema_support_personal_identity() -> None:
@@ -367,3 +484,126 @@ async def test_user_client_refreshes_once_after_401() -> None:
 
     assert page.items == ()
     assert force_refreshes == [False, True]
+
+
+@pytest.mark.asyncio
+async def test_user_client_attempts_official_message_resource_with_user_token() -> None:
+    class TokenProvider:
+        async def get_access_token(
+            self, authorization_id: UUID, *, force_refresh: bool = False
+        ) -> str:
+            assert authorization_id == AUTHORIZATION_ID
+            assert force_refresh is False
+            return "sensitive-user-access-token"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path.endswith(
+            "/im/v1/messages/om-file/resources/file-user"
+        )
+        assert request.url.params["type"] == "file"
+        assert request.headers["authorization"] == "Bearer sensitive-user-access-token"
+        return httpx.Response(
+            200,
+            headers={"Content-Type": "text/plain"},
+            content=b"safe test attachment",
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        content, mime_type, size = await FeishuUserClient(
+            token_provider=TokenProvider(),
+            http_client=http_client,
+            base_url="https://open.feishu.test/open-apis",
+        ).download_message_resource(
+            authorization_id=AUTHORIZATION_ID,
+            message_id="om-file",
+            file_key="file-user",
+            resource_type="file",
+        )
+
+    assert content == b"safe test attachment"
+    assert mime_type == "text/plain"
+    assert size == 20
+
+
+@pytest.mark.asyncio
+async def test_thread_replies_are_pulled_and_enter_unified_ingestion_once() -> None:
+    class ThreadUserClient(UserClient):
+        def __init__(self) -> None:
+            root = raw_message("om-root", 1786176000000)
+            root["thread_id"] = "omt-legal"
+            super().__init__([UserMessagePage(items=(root,), next_page_token=None)])
+            reply = raw_message("om-reply", 1786176060000)
+            reply["thread_id"] = "omt-legal"
+            reply["root_id"] = "om-root"
+            reply["parent_id"] = "om-root"
+            self.thread_calls: list[dict[str, object]] = []
+            self.thread_pages = [
+                UserMessagePage(items=(root, reply), next_page_token=None)
+            ]
+
+        async def list_thread_messages(self, **kwargs: object) -> UserMessagePage:
+            self.thread_calls.append(kwargs)
+            return self.thread_pages[len(self.thread_calls) - 1]
+
+    now = datetime(2026, 8, 8, 8, 0, tzinfo=UTC)
+    client = ThreadUserClient()
+    handler = CapturingHandler()
+    repository = CheckpointRepository()
+    service = PersonalMessageSyncService(
+        lambda: UnitOfWork(repository),
+        user_client=client,
+        ingestion_adapter=UserMessageIngestionAdapter(handler),
+        clock=lambda: now,
+    )
+
+    await service.sync_scope(scope=allowed_scope(), tenant_key="tenant-personal")
+
+    assert client.thread_calls == [
+        {
+            "authorization_id": AUTHORIZATION_ID,
+            "thread_id": "omt-legal",
+            "page_token": None,
+        }
+    ]
+    message_ids = [
+        command.raw_payload["event"]["message"]["message_id"]  # type: ignore[index]
+        for command in handler.commands
+    ]
+    assert message_ids == ["om-root", "om-reply"]
+
+
+@pytest.mark.asyncio
+async def test_user_client_lists_thread_container_messages() -> None:
+    class TokenProvider:
+        async def get_access_token(
+            self, authorization_id: UUID, *, force_refresh: bool = False
+        ) -> str:
+            assert authorization_id == AUTHORIZATION_ID
+            assert force_refresh is False
+            return "sensitive-user-access-token"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path.endswith("/im/v1/messages")
+        assert request.url.params["container_id_type"] == "thread"
+        assert request.url.params["container_id"] == "omt-legal"
+        assert "start_time" not in request.url.params
+        return httpx.Response(
+            200,
+            json={
+                "code": 0,
+                "data": {"items": [raw_message("om-reply", 1786176060000)]},
+            },
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        page = await FeishuUserClient(
+            token_provider=TokenProvider(),
+            http_client=http_client,
+            base_url="https://open.feishu.test/open-apis",
+        ).list_thread_messages(
+            authorization_id=AUTHORIZATION_ID,
+            thread_id="omt-legal",
+            page_token=None,
+        )
+
+    assert page.items[0]["message_id"] == "om-reply"

@@ -1,56 +1,71 @@
 {
-  "generated_at": "2026-08-08T11:06:32.328749Z",
-  "real_feishu": false,
+  "generated_at": "2026-08-08T13:58:31Z",
+  "real_feishu": true,
   "results": [
     {
       "capability": "oauth_pkce",
-      "status": "not_executed",
-      "reason": "live_flag_and_real_credentials_required"
+      "status": "failed",
+      "reason": "workbench_app_secret_and_redirect_not_configured; browser_login_preflight_executed"
     },
     {
       "capability": "refresh_rotation",
-      "status": "not_executed",
-      "reason": "live_flag_and_real_credentials_required"
+      "status": "partial",
+      "reason": "existing_official_cli_user_identity_refreshed_from_needs_refresh_to_ready; workbench_rotation_not_live"
     },
     {
       "capability": "known_p2p_history",
-      "status": "not_executed",
-      "reason": "live_flag_and_real_credentials_required"
+      "status": "passed",
+      "reason": "official_user_api_executed; sample_messages=6"
     },
     {
       "capability": "known_group_history",
-      "status": "not_executed",
-      "reason": "live_flag_and_real_credentials_required"
+      "status": "passed",
+      "reason": "official_user_api_executed; sample_messages=10"
     },
     {
       "capability": "group_discovery",
-      "status": "not_executed",
-      "reason": "live_flag_and_real_credentials_required"
+      "status": "passed",
+      "reason": "official_user_api_executed; groups=33; topic_chats=1"
     },
     {
       "capability": "p2p_discovery",
-      "status": "not_executed",
-      "reason": "live_flag_and_real_credentials_required"
+      "status": "passed",
+      "reason": "official_user_api_executed; p2p_chats=127"
     },
     {
       "capability": "unread_state",
-      "status": "not_executed",
-      "reason": "live_flag_and_real_credentials_required"
+      "status": "unsupported",
+      "reason": "manual_validation_required; official_chat_payload_returned_no_unread_fields"
     },
     {
       "capability": "personal_attachment",
-      "status": "not_executed",
-      "reason": "live_flag_and_real_credentials_required"
+      "status": "partial",
+      "reason": "attachment_metadata_detected; body_download_not_attempted_without_confirmed_non_sensitive_fixture; metadata_fallback_automated_test_passed"
     },
     {
       "capability": "document_search",
-      "status": "not_executed",
-      "reason": "live_flag_and_real_credentials_required"
+      "status": "passed",
+      "reason": "official_user_api_executed"
     },
     {
       "capability": "document_markdown",
-      "status": "not_executed",
-      "reason": "live_flag_and_real_credentials_required"
+      "status": "passed",
+      "reason": "official_user_api_executed; revision=3; markdown_characters=921"
+    },
+    {
+      "capability": "thread_reply",
+      "status": "passed",
+      "reason": "official_user_api_executed; replies=7"
+    },
+    {
+      "capability": "local_feishu_discovery",
+      "status": "passed",
+      "reason": "read_only_discovery_executed; roots=3; databases=84; readable_message_databases=0; opaque_or_encrypted=66"
+    },
+    {
+      "capability": "local_api_duplicate_idempotency",
+      "status": "unsupported",
+      "reason": "actual_local_message_schema_unavailable; synthetic_postgresql_idempotency_test_passed"
     }
   ]
 }

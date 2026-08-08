@@ -18,6 +18,7 @@ from legal_workbench.domain.enums import (
     IntegrationSyncMode,
 )
 from legal_workbench.domain.errors import EntityVersionConflictError
+from legal_workbench.integrations.feishu_local_connector import LocalFeishuRecord
 
 
 class ScopeRepository:
@@ -151,6 +152,43 @@ async def test_user_group_discovery_creates_unapproved_identity_bound_scopes() -
     assert scope.sync_mode == IntegrationSyncMode.DISABLED
     assert scope.identity_type == IntegrationIdentityType.USER
     assert scope.scope_type == IntegrationScopeType.GROUP
+    assert scope.authorization_id == authorization_id
+
+
+@pytest.mark.asyncio
+async def test_local_p2p_discovery_is_unapproved_and_never_auto_syncs() -> None:
+    state = State()
+    service = FeishuScopeService(state.factory)
+    authorization_id = UUID("00000000-0000-0000-0000-000000000302")
+    record = LocalFeishuRecord(
+        account_id="account-test",
+        chat_id="oc_local_p2p",
+        chat_type="p2p",
+        message_id="om-local",
+        version="1",
+        sender_id="ou-sender",
+        message_type="text",
+        content={"text": "test"},
+        create_time="1786176000000",
+        update_time=None,
+        thread_id=None,
+        root_id=None,
+        parent_id=None,
+        database_path_hash="a" * 64,
+    )
+
+    scopes = await service.discover_local_p2p_chats(
+        authorization_id=authorization_id,
+        records=(record,),
+        actor_id="legal",
+        correlation_id="corr-local-discovery",
+    )
+
+    assert len(scopes) == 1
+    scope = scopes[0]
+    assert scope.scope_type == IntegrationScopeType.P2P
+    assert scope.status == IntegrationScopeStatus.UNAPPROVED
+    assert scope.sync_mode == IntegrationSyncMode.DISABLED
     assert scope.authorization_id == authorization_id
 
 

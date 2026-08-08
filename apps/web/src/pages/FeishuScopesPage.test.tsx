@@ -12,6 +12,7 @@ const authorization: FeishuUserAuthorization = {
   tenantKey: 'tenant-personal',
   displayName: '法务账号',
   scopes: ['offline_access', 'im:message:readonly'],
+  missingScopes: [],
   accessExpiresAt: '2026-08-08T12:00:00Z',
   refreshExpiresAt: '2026-09-08T12:00:00Z',
   status: 'connected',
@@ -124,5 +125,18 @@ describe('Feishu personal data sources page', () => {
       },
       expect.any(Object),
     ));
+  });
+
+  it('shows the exact missing personal message permission', async () => {
+    vi.mocked(legalApi.listFeishuUserAuthorizations).mockResolvedValue([{
+      ...authorization,
+      status: 'permission_missing',
+      missingScopes: ['im:message.group_msg:get_as_user'],
+    }]);
+
+    renderPage();
+
+    expect(await screen.findByText('权限不足')).toBeInTheDocument();
+    expect(screen.getByText('im:message.group_msg:get_as_user')).toBeInTheDocument();
   });
 });

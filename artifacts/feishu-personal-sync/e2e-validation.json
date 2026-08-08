@@ -1,0 +1,44 @@
+{
+  "generated_at": "2026-08-08T13:58:31Z",
+  "contains_message_content": false,
+  "contains_credentials": false,
+  "message_flow": {
+    "status": "partial",
+    "message_id_sha256": "58664c7549a9d967a8ec9d43c97b12ee203f7d196c135d64fd5f0cf374a4d4ed",
+    "source_channel": "user_api",
+    "official_user_read": true,
+    "unified_ingestion": true,
+    "postgresql_persisted": true,
+    "duplicate_replay_absorbed": true,
+    "analysis_policy": "analyze",
+    "context_snapshot": {
+      "messages": 1,
+      "included_characters": 85
+    },
+    "agent_run": false,
+    "candidate": false,
+    "reason": "REAL_CODEX_NOT_AVAILABLE"
+  },
+  "document_flow": {
+    "status": "passed",
+    "message_id_sha256": "48978e4ad3882f8caa255938c4218434de7d6ae019d8beac7d409bc11ffa4c5b",
+    "source_channel": "user_api",
+    "official_document_markdown": true,
+    "postgresql_target": "isolated_acceptance_database",
+    "linked_documents": 1,
+    "document_versions": 1,
+    "extracted_characters": 17615,
+    "stored_segments": 86,
+    "snapshot_segments": 85,
+    "snapshot_included_characters": 13066,
+    "snapshot_truncated_by_bounds": true,
+    "permission_snapshot_scoped_to_linked_document": true,
+    "segment_metadata_verified": [
+      "documentId",
+      "documentToken",
+      "paragraphNumber",
+      "contentHash",
+      "untrustedInput"
+    ]
+  }
+}

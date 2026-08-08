@@ -64,6 +64,21 @@ def test_text_message_is_normalized_with_thread_relationships() -> None:
     assert normalized.message.root_message_id == "om-root"
     assert normalized.message.parent_message_id == "om-parent"
     assert normalized.message.sent_at == datetime(2026, 8, 1, 15, 0, tzinfo=UTC)
+    assert normalized.source_channel == "app_event"
+
+
+def test_normalized_source_channel_preserves_local_provenance() -> None:
+    payload = envelope()
+    payload["source_channel"] = "local_client"
+    payload["provenance"] = {
+        "connector": "local_feishu",
+        "contentHash": "a" * 64,
+    }
+
+    normalized = normalize_feishu_event(payload)
+
+    assert normalized.source_channel == "local_client"
+    assert normalized.provenance == payload["provenance"]
 
 
 def test_post_message_flattens_readable_text_without_losing_structure() -> None:
@@ -189,3 +204,9 @@ def test_feishu_operational_tables_preserve_connection_versions_and_attachments(
         "character_count",
         "extraction_error_code",
     }.issubset(attachments.columns.keys())
+    assert {"source_channel", "provenance"}.issubset(
+        Base.metadata.tables["feishu_events"].columns.keys()
+    )
+    assert {"source_channel", "source_channels", "provenance"}.issubset(
+        Base.metadata.tables["feishu_messages"].columns.keys()
+    )

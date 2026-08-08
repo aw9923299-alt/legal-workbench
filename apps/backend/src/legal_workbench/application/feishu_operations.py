@@ -4,6 +4,7 @@ import os
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from pathlib import Path
+from typing import Protocol, cast
 from uuid import UUID, uuid4
 
 from legal_workbench.application.commands import IngestFeishuEventCommand
@@ -36,6 +37,17 @@ from legal_workbench.integrations.feishu_event_sources import (
     EventSourceHealth,
     EventSourceStatus,
 )
+from legal_workbench.integrations.feishu_local_connector import LocalFeishuAttachment
+
+
+class MessageResourceClient(Protocol):
+    async def download_message_resource(
+        self,
+        *,
+        message_id: str,
+        file_key: str,
+        resource_type: str,
+    ) -> tuple[bytes, str, int]: ...
 
 
 def _connection_mode(settings: Settings) -> IntegrationConnectionMode:
@@ -105,11 +117,13 @@ class FeishuOperationsService:
         *,
         settings: Settings,
         uow_factory: UnitOfWorkFactory,
-        client: FeishuApiClient | None = None,
+        client: MessageResourceClient | None = None,
+        unavailable_under_user_identity: bool = False,
     ) -> None:
         self._settings = settings
         self._uow_factory = uow_factory
         self._client = client or FeishuApiClient(settings)
+        self._unavailable_under_user_identity = unavailable_under_user_identity
 
     async def get_connection(self) -> IntegrationConnection:
         mode = _connection_mode(self._settings)
@@ -231,7 +245,7 @@ class FeishuOperationsService:
             status = "completed"
             detail = "Configured chat windows were queried; PostgreSQL absorbed duplicates."
             for chat_id in self._settings.feishu_reconcile_chat_ids:
-                items = await self._client.list_chat_messages(
+                items = await cast(FeishuApiClient, self._client).list_chat_messages(
                     chat_id=chat_id, start_time=start, end_time=now
                 )
                 for item in items:
@@ -395,20 +409,127 @@ class FeishuOperationsService:
                     async with self._uow_factory() as uow:
                         await uow.storage_quota.release(reservation_token)
                         await uow.commit()
-                attachment.download_status = AttachmentDownloadStatus.FAILED
-                attachment.download_error = _download_error_code(exc)
+                if self._unavailable_under_user_identity and (
+                    isinstance(exc, FeishuApiError)
+                    or getattr(exc, "http_status", None) is not None
+                ):
+                    unavailable_code = "resource_unavailable_under_user_identity"
+                    attachment.download_status = AttachmentDownloadStatus.METADATA_ONLY
+                    attachment.download_error = unavailable_code
+                    attachment.extraction_status = DocumentExtractionStatus.BODY_UNAVAILABLE
+                    attachment.extraction_error_code = unavailable_code
+                else:
+                    attachment.download_status = AttachmentDownloadStatus.FAILED
+                    attachment.download_error = _download_error_code(exc)
                 attachment.updated_at = datetime.now(UTC)
                 async with self._uow_factory() as uow:
                     await uow.feishu.save_attachment(attachment)
                     await uow.commit()
         await self._request_analysis_after_download_failures(message_id)
 
+    async def materialize_local_attachment(
+        self,
+        message_id: UUID,
+        source: LocalFeishuAttachment,
+    ) -> None:
+        async with self._uow_factory() as uow:
+            message = await uow.feishu.get_message_by_id(message_id)
+            attachments = await uow.feishu.list_attachments(message_id)
+        if message is None or source.message_id != message.message_id:
+            raise InvalidStateTransitionError(
+                "Local attachment is not associated with the selected message."
+            )
+        attachment = next(
+            (value for value in attachments if value.file_key == source.file_key),
+            None,
+        )
+        if attachment is None:
+            raise InvalidStateTransitionError(
+                "Local attachment metadata does not match the selected message."
+            )
+        source_path = source.local_path.resolve(strict=True)
+        if source.local_path.is_symlink() or not source_path.is_file():
+            raise InvalidStateTransitionError("Local attachment source is not a safe file.")
+        content = source_path.read_bytes()
+        if len(content) > self._settings.feishu_attachment_max_bytes:
+            raise AttachmentTooLargeError(
+                "Attachment exceeds the configured download limit."
+            )
+        root = Path(self._settings.feishu_attachment_root)
+        root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        root = root.resolve(strict=True)
+        directory = (
+            root
+            / sanitize_attachment_filename(message.tenant_key or "default")
+            / str(message.id)
+        )
+        directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+        directory = directory.resolve(strict=True)
+        directory.relative_to(root)
+        target = directory / (
+            f"{attachment.id}-{sanitize_attachment_filename(source.file_name)}"
+        )
+        reservation_token: UUID | None = None
+        created = False
+        try:
+            async with self._uow_factory() as uow:
+                reservation_token = await uow.storage_quota.reserve(
+                    attachment_id=attachment.id,
+                    requested_bytes=len(content),
+                    total_bytes=self._settings.feishu_attachment_total_quota_bytes,
+                    observed_used_bytes=_attachment_storage_usage(root),
+                    expires_at=datetime.now(UTC) + timedelta(minutes=10),
+                )
+                if reservation_token is None:
+                    raise StorageQuotaExceededError(
+                        "Attachment storage quota has been exceeded."
+                    )
+                await uow.commit()
+            _write_private_file(target, content)
+            created = True
+            attachment.file_name = source.file_name
+            attachment.mime_type = source.mime_type or attachment.mime_type
+            attachment.size = len(content)
+            attachment.sha256 = sha256(content).hexdigest()
+            attachment.local_path = str(target)
+            attachment.download_status = AttachmentDownloadStatus.DOWNLOADED
+            attachment.download_error = None
+            attachment.extraction_status = DocumentExtractionStatus.PENDING
+            attachment.extraction_error_code = None
+            attachment.updated_at = datetime.now(UTC)
+            async with self._uow_factory() as uow:
+                await uow.feishu.save_attachment(attachment)
+                await uow.storage_quota.commit(reservation_token)
+                await uow.outbox_events.add(
+                    OutboxEvent(
+                        id=uuid4(),
+                        event_type="DocumentExtractionRequested",
+                        aggregate_type="message_attachment",
+                        aggregate_id=attachment.id,
+                        payload={"attachmentId": str(attachment.id)},
+                        correlation_id=f"local-document-extraction:{attachment.id}",
+                    )
+                )
+                await uow.commit()
+        except Exception:
+            if created:
+                target.unlink(missing_ok=True)
+            if reservation_token is not None:
+                async with self._uow_factory() as uow:
+                    await uow.storage_quota.release(reservation_token)
+                    await uow.commit()
+            raise
+
     async def _request_analysis_after_download_failures(self, message_id: UUID) -> None:
         async with self._uow_factory() as uow:
             await uow.lock_idempotency(operation="attachment_analysis_ready", key=str(message_id))
             attachments = await uow.feishu.list_attachments(message_id)
             if not attachments or any(
-                value.download_status != AttachmentDownloadStatus.FAILED
+                value.download_status
+                not in {
+                    AttachmentDownloadStatus.FAILED,
+                    AttachmentDownloadStatus.METADATA_ONLY,
+                }
                 and (
                     value.download_status != AttachmentDownloadStatus.DOWNLOADED
                     or value.extraction_status

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Protocol
@@ -17,6 +19,7 @@ from legal_workbench.domain.enums import (
     IntegrationSyncMode,
 )
 from legal_workbench.domain.errors import DomainValidationError
+from legal_workbench.integrations.feishu_local_connector import LocalFeishuRecord
 from legal_workbench.integrations.feishu_user_client import UserMessagePage
 
 
@@ -39,6 +42,10 @@ class NativeDocumentLinkSync(Protocol):
     ) -> object: ...
 
 
+class PersonalAttachmentSync(Protocol):
+    async def download_attachments(self, message_id: UUID) -> None: ...
+
+
 class PersonalMessageClient(Protocol):
     async def list_messages(
         self,
@@ -50,6 +57,14 @@ class PersonalMessageClient(Protocol):
         page_token: str | None,
     ) -> UserMessagePage: ...
 
+    async def list_thread_messages(
+        self,
+        *,
+        authorization_id: UUID,
+        thread_id: str,
+        page_token: str | None,
+    ) -> UserMessagePage: ...
+
 
 @dataclass(frozen=True, slots=True)
 class PersonalSyncResult:
@@ -57,6 +72,14 @@ class PersonalSyncResult:
     ingested_count: int
     started_at: datetime
     completed_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class _SyncLease:
+    owner: str
+    fence: int
+    start_time: datetime
+    sync_until: datetime
 
 
 def _message_timestamp(raw_message: dict[str, object]) -> str:
@@ -109,6 +132,11 @@ class UserMessageIngestionAdapter:
         payload: dict[str, object] = {
             "schema": "2.0",
             "source": "user_history_sync",
+            "source_channel": "user_api",
+            "provenance": {
+                "connector": "official_user_api",
+                "externalMessageId": message_id,
+            },
             "analysis_disposition": analysis_disposition,
             "analysis_policy_version": analysis_policy_version,
             "analysis_reasons": list(analysis_reasons),
@@ -148,6 +176,78 @@ class UserMessageIngestionAdapter:
         )
 
 
+class LocalMessageIngestionAdapter:
+    def __init__(self, handler: IngestionHandler) -> None:
+        self._handler = handler
+
+    async def ingest(
+        self,
+        *,
+        record: LocalFeishuRecord,
+        tenant_key: str,
+        analysis_disposition: str,
+        correlation_id: str,
+    ) -> FeishuEventIngestedResult:
+        account_hash = hashlib.sha256(record.account_id.encode("utf-8")).hexdigest()[:16]
+        event_id = (
+            f"local:{account_hash}:{record.chat_id}:{record.message_id}:{record.version}"
+        )
+        payload: dict[str, object] = {
+            "schema": "2.0-local",
+            "source": "local_feishu_connector",
+            "source_channel": "local_client",
+            "analysis_disposition": analysis_disposition,
+            "analysis_policy_version": "feishu-personal-analysis-v1",
+            "provenance": {
+                "connector": "local_feishu",
+                "databasePathHash": record.database_path_hash,
+                "contentHash": hashlib.sha256(
+                    json.dumps(
+                        record.content,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ).encode("utf-8")
+                ).hexdigest(),
+            },
+            "header": {
+                "event_id": event_id,
+                "event_type": "im.message.receive_v1",
+                "tenant_key": tenant_key,
+            },
+            "event": {
+                "sender": {
+                    "sender_id": {"open_id": record.sender_id or ""},
+                    "sender_type": "user",
+                },
+                "message": {
+                    "message_id": record.message_id,
+                    "chat_id": record.chat_id,
+                    "thread_id": record.thread_id,
+                    "parent_id": record.parent_id,
+                    "root_id": record.root_id,
+                    "message_type": record.message_type,
+                    "content": record.content,
+                    "create_time": record.create_time,
+                    "update_time": record.update_time,
+                    "mentions": [],
+                },
+            },
+        }
+        return await self._handler.execute(
+            IngestFeishuEventCommand(
+                actor_id="feishu-local-connector",
+                correlation_id=correlation_id,
+                event_id=event_id,
+                event_type="im.message.receive_v1",
+                tenant_key=tenant_key,
+                app_id=None,
+                schema_version="2.0-local",
+                raw_payload=payload,
+            )
+        )
+
+
 class PersonalMessageSyncService:
     def __init__(
         self,
@@ -159,6 +259,8 @@ class PersonalMessageSyncService:
         clock: object = lambda: datetime.now(UTC),
         analysis_policy: MessageAnalysisPolicy | None = None,
         document_sync: NativeDocumentLinkSync | None = None,
+        attachment_sync: PersonalAttachmentSync | None = None,
+        lease_duration: timedelta = timedelta(minutes=5),
     ) -> None:
         self._uow_factory = uow_factory
         self._user_client = user_client
@@ -167,6 +269,8 @@ class PersonalMessageSyncService:
         self._clock = clock
         self._analysis_policy = analysis_policy or MessageAnalysisPolicy()
         self._document_sync = document_sync
+        self._attachment_sync = attachment_sync
+        self._lease_duration = lease_duration
 
     async def sync_scope(
         self,
@@ -182,87 +286,246 @@ class PersonalMessageSyncService:
             or scope.authorization_id is None
         ):
             raise DomainValidationError("Only an allowed Feishu user scope can synchronize.")
+        lease = await self._claim_lease(scope)
+        ingested_count = 0
+        seen_message_ids: set[str] = set()
+        fetched_thread_ids: set[str] = set()
+        page_token: str | None = None
+        try:
+            while True:
+                page = await self._user_client.list_messages(
+                    authorization_id=scope.authorization_id,
+                    chat_id=scope.external_scope_id,
+                    start_time=lease.start_time,
+                    end_time=lease.sync_until,
+                    page_token=page_token,
+                )
+                for raw_message in page.items:
+                    ingested_count += await self._ingest_raw_message(
+                        raw_message=raw_message,
+                        scope=scope,
+                        tenant_key=tenant_key,
+                        authorization_open_id=authorization_open_id,
+                        seen_message_ids=seen_message_ids,
+                    )
+                thread_ids = {
+                    str(value.get("thread_id") or "").strip() for value in page.items
+                }
+                for thread_id in sorted(thread_ids - {""} - fetched_thread_ids):
+                    thread_page_token: str | None = None
+                    while True:
+                        thread_page = await self._user_client.list_thread_messages(
+                            authorization_id=scope.authorization_id,
+                            thread_id=thread_id,
+                            page_token=thread_page_token,
+                        )
+                        for raw_message in thread_page.items:
+                            ingested_count += await self._ingest_raw_message(
+                                raw_message=raw_message,
+                                scope=scope,
+                                tenant_key=tenant_key,
+                                authorization_open_id=authorization_open_id,
+                                seen_message_ids=seen_message_ids,
+                            )
+                        thread_page_token = thread_page.next_page_token
+                        await self._renew_lease(
+                            scope=scope,
+                            lease=lease,
+                            page_token=page_token,
+                        )
+                        if thread_page_token is None:
+                            break
+                    fetched_thread_ids.add(thread_id)
+                page_token = page.next_page_token
+                await self._renew_lease(
+                    scope=scope,
+                    lease=lease,
+                    page_token=page_token,
+                )
+                if page_token is None:
+                    break
+            await self._succeed_lease(scope=scope, lease=lease)
+        except Exception:
+            await self._fail_lease(scope=scope, lease=lease)
+            raise
+        return PersonalSyncResult(
+            scope_id=scope.id,
+            ingested_count=ingested_count,
+            started_at=lease.sync_until,
+            completed_at=self._clock_now(),
+        )
+
+    def _clock_now(self) -> datetime:
         now = self._clock()  # type: ignore[operator]
         if not isinstance(now, datetime):
             raise RuntimeError("Clock must return a datetime")
-        ingested_count = 0
+        return now
+
+    async def _claim_lease(self, scope: IntegrationScope) -> _SyncLease:
+        authorization_id = scope.authorization_id
+        if authorization_id is None:
+            raise DomainValidationError("A user authorization is required for sync.")
+        now = self._clock_now()
+        owner = uuid4().hex
         async with self._uow_factory() as uow:
+            await uow.lock_idempotency(
+                operation="feishu_personal_sync_lease",
+                key=f"{authorization_id}:{scope.id}",
+            )
             checkpoint = await uow.feishu_personal_sync.get_checkpoint_for_update(
-                authorization_id=scope.authorization_id,
+                authorization_id=authorization_id,
                 scope_id=scope.id,
             )
+            created = checkpoint is None
             if checkpoint is None:
                 checkpoint = FeishuSyncCheckpoint(
                     id=uuid4(),
-                    authorization_id=scope.authorization_id,
+                    authorization_id=authorization_id,
                     scope_id=scope.id,
                 )
-                await uow.feishu_personal_sync.add_checkpoint(checkpoint)
-            checkpoint.last_started_at = now
+            fence = checkpoint.claim(
+                owner=owner,
+                expires_at=now + self._lease_duration,
+                now=now,
+            )
             start_time = (
                 checkpoint.watermark - self._overlap
                 if checkpoint.watermark is not None
                 else now - timedelta(days=scope.backfill_days)
             )
-            page_token: str | None = None
-            try:
-                while True:
-                    page = await self._user_client.list_messages(
-                        authorization_id=scope.authorization_id,
-                        chat_id=scope.external_scope_id,
-                        start_time=start_time,
-                        end_time=now,
-                        page_token=page_token,
-                    )
-                    for raw_message in page.items:
-                        decision = self._analysis_policy.decide(
-                            raw_message=raw_message,
-                            scope=scope,
-                            self_open_id=authorization_open_id,
-                        )
-                        ingested = await self._ingestion_adapter.ingest(
-                            raw_message=raw_message,
-                            tenant_key=tenant_key,
-                            authorization_open_id=authorization_open_id,
-                            analysis_disposition=decision.disposition,
-                            analysis_policy_version=decision.policy_version,
-                            analysis_reasons=decision.reasons,
-                            correlation_id=f"feishu-user-sync:{scope.id}:{_message_timestamp(raw_message)}",
-                        )
-                        if self._document_sync is not None and ingested.message_id is not None:
-                            body = raw_message.get("body")
-                            body_object = body if isinstance(body, dict) else {}
-                            content = str(
-                                body_object.get("content", raw_message.get("content", ""))
-                            )
-                            for link in extract_feishu_document_links(content):
-                                if link.document_type != "docx":
-                                    continue
-                                await self._document_sync.sync_document(
-                                    authorization_id=scope.authorization_id,
-                                    document_token=link.token,
-                                    document_type=link.document_type,
-                                    title=None,
-                                    source_url=link.url,
-                                    source_message_id=ingested.message_id,
-                                )
-                        ingested_count += 1
-                    page_token = page.next_page_token
-                    checkpoint.page_token = page_token
-                    if page_token is None:
-                        break
-                checkpoint.succeed(watermark=now, now=now)
+            if created:
+                await uow.feishu_personal_sync.add_checkpoint(checkpoint)
+            else:
                 await uow.feishu_personal_sync.save_checkpoint(checkpoint)
-                await uow.commit()
-            except Exception:
-                checkpoint.fail(error_code="sync_failed", now=now)
-                checkpoint.page_token = None
-                await uow.feishu_personal_sync.save_checkpoint(checkpoint)
-                await uow.commit()
-                raise
-        return PersonalSyncResult(
-            scope_id=scope.id,
-            ingested_count=ingested_count,
-            started_at=now,
-            completed_at=self._clock(),  # type: ignore[operator]
+            await uow.commit()
+        return _SyncLease(
+            owner=owner,
+            fence=fence,
+            start_time=start_time,
+            sync_until=now,
         )
+
+    async def _renew_lease(
+        self,
+        *,
+        scope: IntegrationScope,
+        lease: _SyncLease,
+        page_token: str | None,
+    ) -> None:
+        authorization_id = scope.authorization_id
+        assert authorization_id is not None
+        now = self._clock_now()
+        async with self._uow_factory() as uow:
+            checkpoint = await uow.feishu_personal_sync.get_checkpoint_for_update(
+                authorization_id=authorization_id,
+                scope_id=scope.id,
+            )
+            if checkpoint is None:
+                raise DomainValidationError("sync_lease_lost")
+            checkpoint.renew(
+                owner=lease.owner,
+                fence=lease.fence,
+                page_token=page_token,
+                expires_at=now + self._lease_duration,
+                now=now,
+            )
+            await uow.feishu_personal_sync.save_checkpoint(checkpoint)
+            await uow.commit()
+
+    async def _succeed_lease(
+        self, *, scope: IntegrationScope, lease: _SyncLease
+    ) -> None:
+        authorization_id = scope.authorization_id
+        assert authorization_id is not None
+        now = self._clock_now()
+        async with self._uow_factory() as uow:
+            checkpoint = await uow.feishu_personal_sync.get_checkpoint_for_update(
+                authorization_id=authorization_id,
+                scope_id=scope.id,
+            )
+            if checkpoint is None:
+                raise DomainValidationError("sync_lease_lost")
+            checkpoint.succeed(
+                owner=lease.owner,
+                fence=lease.fence,
+                watermark=lease.sync_until,
+                now=now,
+            )
+            await uow.feishu_personal_sync.save_checkpoint(checkpoint)
+            await uow.commit()
+
+    async def _fail_lease(
+        self, *, scope: IntegrationScope, lease: _SyncLease
+    ) -> None:
+        authorization_id = scope.authorization_id
+        assert authorization_id is not None
+        now = self._clock_now()
+        try:
+            async with self._uow_factory() as uow:
+                checkpoint = await uow.feishu_personal_sync.get_checkpoint_for_update(
+                    authorization_id=authorization_id,
+                    scope_id=scope.id,
+                )
+                if checkpoint is None:
+                    return
+                checkpoint.fail(
+                    owner=lease.owner,
+                    fence=lease.fence,
+                    error_code="sync_failed",
+                    now=now,
+                )
+                await uow.feishu_personal_sync.save_checkpoint(checkpoint)
+                await uow.commit()
+        except DomainValidationError as exc:
+            if str(exc) != "sync_lease_lost":
+                raise
+
+    async def _ingest_raw_message(
+        self,
+        *,
+        raw_message: dict[str, object],
+        scope: IntegrationScope,
+        tenant_key: str,
+        authorization_open_id: str,
+        seen_message_ids: set[str],
+    ) -> int:
+        external_message_id = str(raw_message.get("message_id") or "").strip()
+        if not external_message_id or external_message_id in seen_message_ids:
+            return 0
+        seen_message_ids.add(external_message_id)
+        decision = self._analysis_policy.decide(
+            raw_message=raw_message,
+            scope=scope,
+            self_open_id=authorization_open_id,
+        )
+        ingested = await self._ingestion_adapter.ingest(
+            raw_message=raw_message,
+            tenant_key=tenant_key,
+            authorization_open_id=authorization_open_id,
+            analysis_disposition=decision.disposition,
+            analysis_policy_version=decision.policy_version,
+            analysis_reasons=decision.reasons,
+            correlation_id=(
+                f"feishu-user-sync:{scope.id}:{_message_timestamp(raw_message)}"
+            ),
+        )
+        if self._document_sync is not None and ingested.message_id is not None:
+            authorization_id = scope.authorization_id
+            assert authorization_id is not None
+            body = raw_message.get("body")
+            body_object = body if isinstance(body, dict) else {}
+            content = str(body_object.get("content", raw_message.get("content", "")))
+            for link in extract_feishu_document_links(content):
+                if link.document_type != "docx":
+                    continue
+                await self._document_sync.sync_document(
+                    authorization_id=authorization_id,
+                    document_token=link.token,
+                    document_type=link.document_type,
+                    title=None,
+                    source_url=link.url,
+                    source_message_id=ingested.message_id,
+                )
+        if self._attachment_sync is not None and ingested.message_id is not None:
+            await self._attachment_sync.download_attachments(ingested.message_id)
+        return 1

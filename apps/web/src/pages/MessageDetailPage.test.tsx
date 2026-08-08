@@ -38,7 +38,14 @@ describe('Message detail workflow', () => {
       status: 'candidate_created', unsupportedReason: null, analysisAttempts: 1, failureCode: null, failureMessage: null,
       agentRunId: run.id, agentStatus: 'completed', candidateId, candidateStatus: 'pending_confirmation', confidence: 0.82,
       suggestedCategory: 'contract', suggestedDeadline: null, structuredContent: {}, rawPayload: { event: 'redacted-test' },
-      contextMessages: [], versions: [], attachments: [], candidateRevisions: [],
+      contextMessages: [], versions: [], attachments: [{
+        id: '55555555-5555-4555-8555-555555555555', fileKey: 'file-test',
+        fileName: '合同附件.docx', mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        size: 2048, sha256: null, downloadStatus: 'metadata_only',
+        downloadError: 'resource_unavailable_under_user_identity', authorizedForAnalysis: false,
+        extractionStatus: 'body_unavailable', extractorVersion: null, pageCount: null,
+        characterCount: null, extractionErrorCode: 'resource_unavailable_under_user_identity',
+      }], candidateRevisions: [],
     } satisfies FeishuMessageDetail);
     vi.spyOn(legalApi, 'getMessageAnalysis').mockResolvedValue({
       message: { id: messageId, messageId: 'om_1', senderId: 'ou_business', messageType: 'text', content: {}, createTime: '2026-08-01T10:00:00Z' },
@@ -58,5 +65,8 @@ describe('Message detail workflow', () => {
     expect(await screen.findByText('可能存在时间压力')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '创建新 Matter' })).toBeInTheDocument();
     expect(screen.getByText(/AI 建议不会覆盖/)).toBeInTheDocument();
+    expect(screen.getByText('合同附件.docx')).toBeInTheDocument();
+    expect(screen.getByText(/附件已检测，正文暂不可读取/)).toBeInTheDocument();
+    expect(screen.getByText('仅元数据')).toBeInTheDocument();
   });
 });

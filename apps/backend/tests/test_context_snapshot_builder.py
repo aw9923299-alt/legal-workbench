@@ -10,6 +10,7 @@ from legal_workbench.application.context_snapshots import ContextSnapshotBuilder
 from legal_workbench.domain.entities import (
     ContextSnapshot,
     DocumentSegment,
+    FeishuDocument,
     FeishuMessage,
     MessageAttachment,
 )
@@ -71,12 +72,29 @@ class FakeFeishuRepository:
 
 
 class FakeDocumentRepository:
-    def __init__(self, segments: tuple[DocumentSegment, ...] = ()) -> None:
+    def __init__(
+        self,
+        segments: tuple[DocumentSegment, ...] = (),
+        linked_segments: tuple[
+            tuple[UUID, FeishuDocument, DocumentSegment], ...
+        ] = (),
+    ) -> None:
         self.segments = segments
+        self.linked_segments = linked_segments
 
     async def list_latest_segments(self, attachment_ids: list[UUID]) -> tuple[DocumentSegment, ...]:
         allowed = set(attachment_ids)
         return tuple(value for value in self.segments if value.attachment_id in allowed)
+
+    async def list_latest_feishu_segments_for_messages(
+        self, message_ids: list[UUID]
+    ) -> tuple[tuple[FeishuDocument, DocumentSegment], ...]:
+        allowed = set(message_ids)
+        return tuple(
+            (document, segment)
+            for message_id, document, segment in self.linked_segments
+            if message_id in allowed
+        )
 
 
 class FakeSnapshotRepository:
@@ -276,6 +294,95 @@ async def test_builder_includes_only_authorized_attachment_segments_with_citatio
     assert snapshot.excluded_segments == []
     assert snapshot.content["attachmentSegments"][0]["content"] == "合同期限一年。"  # type: ignore[index]
     assert snapshot.permission_snapshot["allowedAttachmentIds"] == [str(attachment.id)]
+
+
+@pytest.mark.asyncio
+async def test_builder_includes_only_message_linked_native_feishu_document_segments() -> None:
+    now = datetime(2026, 8, 8, 12, 0, tzinfo=UTC)
+    current = make_message("om_doc", created_at=now, text="请审核链接中的合同")
+    linked_document = FeishuDocument(
+        id=uuid4(),
+        authorization_id=uuid4(),
+        document_token="doccnLinked",
+        document_type="docx",
+        title="测试合同",
+        source_url="https://acme.feishu.cn/docx/doccnLinked",
+    )
+    unrelated_document = FeishuDocument(
+        id=uuid4(),
+        authorization_id=linked_document.authorization_id,
+        document_token="doccnUnrelated",
+        document_type="docx",
+        title="无关文档",
+        source_url="https://acme.feishu.cn/docx/doccnUnrelated",
+    )
+    linked_segment = DocumentSegment(
+        id=uuid4(),
+        extraction_id=uuid4(),
+        attachment_id=None,
+        feishu_document_id=linked_document.id,
+        page_number=None,
+        paragraph_number=3,
+        start_offset=0,
+        end_offset=8,
+        content="付款期限为七日。",
+        content_hash="a" * 64,
+    )
+    unrelated_segment = DocumentSegment(
+        id=uuid4(),
+        extraction_id=uuid4(),
+        attachment_id=None,
+        feishu_document_id=unrelated_document.id,
+        page_number=None,
+        paragraph_number=1,
+        start_offset=0,
+        end_offset=6,
+        content="不得进入快照",
+        content_hash="b" * 64,
+    )
+    documents = FakeDocumentRepository(
+        linked_segments=(
+            (current.id, linked_document, linked_segment),
+            (uuid4(), unrelated_document, unrelated_segment),
+        )
+    )
+
+    snapshot = await ContextSnapshotBuilder(
+        lambda: FakeUnitOfWork(
+            FakeFeishuRepository(current, [current]),
+            FakeSnapshotRepository(),
+            documents,
+        ),
+        max_messages=5,
+        max_text_characters=1000,
+        now=lambda: now,
+    ).build_for_feishu_message(current.id)
+
+    assert snapshot.content["documentSegments"] == [
+        {
+            "documentId": str(linked_document.id),
+            "documentToken": "doccnLinked",
+            "title": "测试合同",
+            "paragraphNumber": 3,
+            "contentHash": "a" * 64,
+            "content": "付款期限为七日。",
+            "untrustedInput": True,
+        }
+    ]
+    assert snapshot.included_segments[-1] == {
+        "documentId": str(linked_document.id),
+        "documentToken": "doccnLinked",
+        "title": "测试合同",
+        "paragraphNumber": 3,
+        "contentHash": "a" * 64,
+    }
+    assert snapshot.permission_snapshot["allowedFeishuDocumentIds"] == [
+        str(linked_document.id)
+    ]
+    assert snapshot.permission_snapshot["allowedFeishuDocumentTokens"] == [
+        "doccnLinked"
+    ]
+    assert "不得进入快照" not in str(snapshot.content)
 
 
 @pytest.mark.asyncio

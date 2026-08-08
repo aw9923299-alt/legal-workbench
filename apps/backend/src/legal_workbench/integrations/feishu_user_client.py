@@ -75,6 +75,38 @@ class FeishuUserClient:
             raise FeishuUserApiError(code="missing_page_token", http_status=200)
         return UserMessagePage(items=normalized_items, next_page_token=next_page)
 
+    async def list_thread_messages(
+        self,
+        *,
+        authorization_id: UUID,
+        thread_id: str,
+        page_token: str | None,
+    ) -> UserMessagePage:
+        params: dict[str, str | int] = {
+            "container_id_type": "thread",
+            "container_id": thread_id,
+            "sort_type": "ByCreateTimeAsc",
+            "page_size": 50,
+        }
+        if page_token:
+            params["page_token"] = page_token
+        data = await self._request(
+            authorization_id=authorization_id,
+            method="GET",
+            path="/im/v1/messages",
+            params=params,
+        )
+        items = data.get("items")
+        normalized_items = (
+            tuple(item for item in items if isinstance(item, dict))
+            if isinstance(items, list)
+            else ()
+        )
+        next_page = str(data.get("page_token") or "").strip() or None
+        if bool(data.get("has_more")) and next_page is None:
+            raise FeishuUserApiError(code="missing_page_token", http_status=200)
+        return UserMessagePage(items=normalized_items, next_page_token=next_page)
+
     async def get_message(
         self, *, authorization_id: UUID, message_id: str
     ) -> dict[str, object]:
@@ -87,6 +119,24 @@ class FeishuUserClient:
         if isinstance(items, list) and items and isinstance(items[0], dict):
             return items[0]
         raise FeishuUserApiError(code="message_not_found", http_status=200)
+
+    async def download_message_resource(
+        self,
+        *,
+        authorization_id: UUID,
+        message_id: str,
+        file_key: str,
+        resource_type: str,
+    ) -> tuple[bytes, str, int]:
+        response = await self._request_response(
+            authorization_id=authorization_id,
+            method="GET",
+            path=f"/im/v1/messages/{message_id}/resources/{file_key}",
+            params={"type": resource_type},
+        )
+        content_type = response.headers.get("Content-Type", "application/octet-stream")
+        mime_type = content_type.split(";", 1)[0].strip() or "application/octet-stream"
+        return response.content, mime_type, len(response.content)
 
     async def list_chats(
         self, *, authorization_id: UUID, page_token: str | None = None
@@ -179,6 +229,28 @@ class FeishuUserClient:
         params: dict[str, str | int] | None = None,
         json_body: dict[str, object] | None = None,
     ) -> dict[str, Any]:
+        response = await self._request_response(
+            authorization_id=authorization_id,
+            method=method,
+            path=path,
+            params=params,
+            json_body=json_body,
+        )
+        payload = self._parse_response(response)
+        data = payload.get("data", {})
+        if not isinstance(data, dict):
+            raise FeishuUserApiError(code="invalid_response", http_status=response.status_code)
+        return data
+
+    async def _request_response(
+        self,
+        *,
+        authorization_id: UUID,
+        method: str,
+        path: str,
+        params: dict[str, str | int] | None = None,
+        json_body: dict[str, object] | None = None,
+    ) -> httpx.Response:
         force_refresh = False
         refreshed_after_unauthorized = False
         for attempt in range(1, self._max_attempts + 1):
@@ -204,11 +276,9 @@ class FeishuUserClient:
                 retry_after = self._retry_after(response, attempt)
                 await self._sleep(retry_after)  # type: ignore[operator]
                 continue
-            payload = self._parse_response(response)
-            data = payload.get("data", {})
-            if not isinstance(data, dict):
-                raise FeishuUserApiError(code="invalid_response", http_status=response.status_code)
-            return data
+            if response.is_error:
+                self._parse_response(response)
+            return response
         raise FeishuUserApiError(code="retry_exhausted", http_status=429)
 
     @staticmethod
