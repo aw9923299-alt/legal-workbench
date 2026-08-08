@@ -59,6 +59,10 @@ async def register_feishu_scope(
         actor_source=actor.identity_source,
         correlation_id=correlation_id,
         idempotency_key=idempotency_key,
+        identity_type=body.identity_type,
+        scope_type=body.scope_type,
+        authorization_id=body.authorization_id,
+        backfill_days=body.backfill_days,
     )
     return FeishuScopeResponse.model_validate(scope)
 

@@ -55,6 +55,8 @@ class Settings(BaseSettings):
     feishu_event_source: FeishuEventSourceMode = FeishuEventSourceMode.LONG_CONNECTION
     feishu_reconnect_max_seconds: int = 30
     feishu_reconcile_window_minutes: int = 60
+    feishu_user_sync_interval_seconds: int = 60
+    feishu_user_sync_overlap_minutes: int = 5
     feishu_reconcile_chat_ids: list[str] = Field(default_factory=list)
     feishu_allowed_chat_ids: list[str] = Field(default_factory=list)
     feishu_excluded_chat_ids: list[str] = Field(default_factory=list)

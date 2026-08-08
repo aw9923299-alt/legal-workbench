@@ -8,6 +8,7 @@ from legal_workbench.api.routes.dashboard import router as dashboard_router
 from legal_workbench.api.routes.evaluations import router as evaluations_router
 from legal_workbench.api.routes.events import router as events_router
 from legal_workbench.api.routes.feishu_scopes import router as feishu_scopes_router
+from legal_workbench.api.routes.feishu_user import router as feishu_user_router
 from legal_workbench.api.routes.health import router as health_router
 from legal_workbench.api.routes.integrations import router as integrations_router
 from legal_workbench.api.routes.matter_update_proposals import (
@@ -40,3 +41,4 @@ api_router.include_router(events_router, dependencies=authenticated)
 api_router.include_router(evaluations_router, dependencies=authenticated)
 api_router.include_router(setup_router, dependencies=authenticated)
 api_router.include_router(feishu_scopes_router, dependencies=authenticated)
+api_router.include_router(feishu_user_router, dependencies=authenticated)

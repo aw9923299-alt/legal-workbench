@@ -26,9 +26,14 @@ from legal_workbench.domain.entities import (
     EvaluationResult,
     EvaluationRun,
     FeishuAttachment,
+    FeishuDocument,
+    FeishuDocumentSubscription,
     FeishuMessage,
     FeishuMessageVersion,
+    FeishuOAuthAttempt,
     FeishuRawEvent,
+    FeishuSyncCheckpoint,
+    FeishuUserAuthorization,
     IdempotencyRecord,
     IntegrationCheckRun,
     IntegrationConnection,
@@ -269,6 +274,31 @@ class FeishuRepository(Protocol):
     async def save_connection(self, connection: IntegrationConnection) -> None: ...
 
 
+class FeishuUserAuthorizationRepository(Protocol):
+    async def add_oauth_attempt(self, value: FeishuOAuthAttempt) -> None: ...
+    async def get_oauth_attempt_for_update(
+        self, state_hash: str
+    ) -> FeishuOAuthAttempt | None: ...
+    async def save_oauth_attempt(self, value: FeishuOAuthAttempt) -> None: ...
+    async def add_authorization(self, value: FeishuUserAuthorization) -> None: ...
+    async def get_authorization(
+        self, authorization_id: UUID
+    ) -> FeishuUserAuthorization | None: ...
+    async def get_authorization_for_update(
+        self, authorization_id: UUID
+    ) -> FeishuUserAuthorization | None: ...
+    async def save_authorization(self, value: FeishuUserAuthorization) -> None: ...
+    async def list_authorizations(self) -> Sequence[FeishuUserAuthorization]: ...
+
+
+class FeishuPersonalSyncRepository(Protocol):
+    async def get_checkpoint_for_update(
+        self, *, authorization_id: UUID, scope_id: UUID
+    ) -> FeishuSyncCheckpoint | None: ...
+    async def add_checkpoint(self, value: FeishuSyncCheckpoint) -> None: ...
+    async def save_checkpoint(self, value: FeishuSyncCheckpoint) -> None: ...
+
+
 class AuditEventRepository(Protocol):
     async def add(self, event: AuditEvent) -> None: ...
 
@@ -284,6 +314,33 @@ class IdempotencyRepository(Protocol):
 
 
 class DocumentRepository(Protocol):
+    async def find_feishu_document(
+        self, *, authorization_id: UUID, document_token: str
+    ) -> FeishuDocument | None: ...
+    async def add_feishu_document(self, value: FeishuDocument) -> None: ...
+    async def save_feishu_document(self, value: FeishuDocument) -> None: ...
+    async def add_feishu_message_document_link(
+        self, *, message_id: UUID, document_id: UUID, source_url: str
+    ) -> None: ...
+    async def get_feishu_document_subscription(
+        self, *, authorization_id: UUID, folder_token: str
+    ) -> FeishuDocumentSubscription | None: ...
+    async def get_feishu_document_subscription_by_id(
+        self, subscription_id: UUID
+    ) -> FeishuDocumentSubscription | None: ...
+    async def list_feishu_document_subscriptions(
+        self, *, authorization_id: UUID | None = None, active_only: bool = False
+    ) -> Sequence[FeishuDocumentSubscription]: ...
+    async def add_feishu_document_subscription(
+        self, value: FeishuDocumentSubscription
+    ) -> None: ...
+    async def save_feishu_document_subscription(
+        self, value: FeishuDocumentSubscription
+    ) -> None: ...
+    async def find_feishu_document_version(
+        self, *, document_id: UUID, content_sha256: str
+    ) -> DocumentVersion | None: ...
+    async def next_feishu_document_version(self, document_id: UUID) -> int: ...
     async def find_version(
         self, *, attachment_id: UUID, content_sha256: str
     ) -> DocumentVersion | None: ...
@@ -371,6 +428,8 @@ class UnitOfWork(Protocol):
     review_records: ReviewRecordRepository
     communications: CommunicationRepository
     feishu: FeishuRepository
+    feishu_user_authorizations: FeishuUserAuthorizationRepository
+    feishu_personal_sync: FeishuPersonalSyncRepository
     documents: DocumentRepository
     storage_quota: AttachmentStorageQuotaRepository
     evaluations: EvaluationRepository

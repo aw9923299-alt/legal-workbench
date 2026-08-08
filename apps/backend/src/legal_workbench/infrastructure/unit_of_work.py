@@ -21,7 +21,9 @@ from legal_workbench.infrastructure.repositories import (
     SqlAlchemyDocumentRepository,
     SqlAlchemyDraftArtifactRepository,
     SqlAlchemyEvaluationRepository,
+    SqlAlchemyFeishuPersonalSyncRepository,
     SqlAlchemyFeishuRepository,
+    SqlAlchemyFeishuUserAuthorizationRepository,
     SqlAlchemyIdempotencyRepository,
     SqlAlchemyLegalMatterRepository,
     SqlAlchemyMatterUpdateProposalRepository,
@@ -61,6 +63,10 @@ class SqlAlchemyUnitOfWork(UnitOfWork):
         self.review_records = SqlAlchemyReviewRecordRepository(self._session)
         self.communications = SqlAlchemyCommunicationRepository(self._session)
         self.feishu = SqlAlchemyFeishuRepository(self._session)
+        self.feishu_personal_sync = SqlAlchemyFeishuPersonalSyncRepository(self._session)
+        self.feishu_user_authorizations = SqlAlchemyFeishuUserAuthorizationRepository(
+            self._session
+        )
         self.documents = SqlAlchemyDocumentRepository(self._session)
         self.storage_quota = SqlAlchemyAttachmentStorageQuotaRepository(self._session)
         self.evaluations = SqlAlchemyEvaluationRepository(self._session)
