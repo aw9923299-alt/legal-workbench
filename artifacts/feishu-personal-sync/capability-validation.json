@@ -1,0 +1,56 @@
+{
+  "generated_at": "2026-08-08T11:06:32.328749Z",
+  "real_feishu": false,
+  "results": [
+    {
+      "capability": "oauth_pkce",
+      "status": "not_executed",
+      "reason": "live_flag_and_real_credentials_required"
+    },
+    {
+      "capability": "refresh_rotation",
+      "status": "not_executed",
+      "reason": "live_flag_and_real_credentials_required"
+    },
+    {
+      "capability": "known_p2p_history",
+      "status": "not_executed",
+      "reason": "live_flag_and_real_credentials_required"
+    },
+    {
+      "capability": "known_group_history",
+      "status": "not_executed",
+      "reason": "live_flag_and_real_credentials_required"
+    },
+    {
+      "capability": "group_discovery",
+      "status": "not_executed",
+      "reason": "live_flag_and_real_credentials_required"
+    },
+    {
+      "capability": "p2p_discovery",
+      "status": "not_executed",
+      "reason": "live_flag_and_real_credentials_required"
+    },
+    {
+      "capability": "unread_state",
+      "status": "not_executed",
+      "reason": "live_flag_and_real_credentials_required"
+    },
+    {
+      "capability": "personal_attachment",
+      "status": "not_executed",
+      "reason": "live_flag_and_real_credentials_required"
+    },
+    {
+      "capability": "document_search",
+      "status": "not_executed",
+      "reason": "live_flag_and_real_credentials_required"
+    },
+    {
+      "capability": "document_markdown",
+      "status": "not_executed",
+      "reason": "live_flag_and_real_credentials_required"
+    }
+  ]
+}
