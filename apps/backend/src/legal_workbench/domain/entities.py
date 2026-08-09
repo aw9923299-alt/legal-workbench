@@ -1,6 +1,8 @@
 from legal_workbench.domain.agents import (
     AgentAttemptLease,
     AgentDefinition,
+    AgentExecutionPlan,
+    AgentPlanStep,
     AgentRun,
     AgentRunAttempt,
     AgentRunSource,
@@ -74,6 +76,8 @@ from legal_workbench.domain.work_items import (
 __all__ = [
     "AgentAttemptLease",
     "AgentDefinition",
+    "AgentExecutionPlan",
+    "AgentPlanStep",
     "AgentRun",
     "AgentRunAttempt",
     "AgentRunSource",
