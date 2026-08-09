@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 from uuid import UUID
@@ -9,6 +9,8 @@ from sqlalchemy import (
     BigInteger,
     Boolean,
     CheckConstraint,
+    Computed,
+    Date,
     DateTime,
     Float,
     ForeignKey,
@@ -26,12 +28,15 @@ from sqlalchemy import (
 from sqlalchemy import (
     text as sql_text,
 )
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from legal_workbench.domain.enums import (
     AgentAttemptStatus,
     AgentDefinitionStatus,
+    AgentExecutionPlanStatus,
+    AgentPlanStepStatus,
+    AgentRunRole,
     AgentRunSourceType,
     AgentRunStatus,
     AttachmentDownloadStatus,
@@ -1288,6 +1293,101 @@ class DocumentSegmentModel(UuidPrimaryKeyMixin, Base):
     )
 
 
+class KnowledgeDocumentModel(UuidPrimaryKeyMixin, TimestampMixin, VersionedMixin, Base):
+    __tablename__ = "knowledge_documents"
+    __table_args__ = (
+        UniqueConstraint("source_type", "source_id", name="uq_knowledge_documents_source"),
+        Index(
+            "ix_knowledge_documents_filters",
+            "status",
+            "jurisdiction",
+            "document_type",
+            "source_priority",
+        ),
+    )
+
+    source_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    source_id: Mapped[str] = mapped_column(String(200), nullable=False)
+    document_version_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("document_versions.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    matter_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("legal_matters.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    title: Mapped[str] = mapped_column(String(500), nullable=False)
+    document_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    agent_types: Mapped[list[str]] = mapped_column(
+        JSONB, nullable=False, default=list, server_default=JSON_EMPTY_LIST
+    )
+    matter_types: Mapped[list[str]] = mapped_column(
+        JSONB, nullable=False, default=list, server_default=JSON_EMPTY_LIST
+    )
+    jurisdiction: Mapped[str] = mapped_column(String(80), nullable=False)
+    effective_from: Mapped[date | None] = mapped_column(Date)
+    effective_to: Mapped[date | None] = mapped_column(Date)
+    status: Mapped[str] = mapped_column(String(24), nullable=False, server_default="active")
+    source_priority: Mapped[int] = mapped_column(Integer, nullable=False, server_default="50")
+    internal_precedent: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=FALSE_DEFAULT
+    )
+    confidentiality: Mapped[str] = mapped_column(String(24), nullable=False)
+    approved_by: Mapped[str | None] = mapped_column(String(160))
+
+
+class KnowledgeChunkModel(UuidPrimaryKeyMixin, Base):
+    __tablename__ = "knowledge_chunks"
+    __table_args__ = (
+        UniqueConstraint("knowledge_document_id", "sequence", name="uq_knowledge_chunks_sequence"),
+        Index("ix_knowledge_chunks_document", "knowledge_document_id", "sequence"),
+        Index(
+            "ix_knowledge_chunks_trgm",
+            "normalized_text",
+            postgresql_using="gin",
+            postgresql_ops={"normalized_text": "gin_trgm_ops"},
+        ),
+        Index("ix_knowledge_chunks_fts", "search_vector", postgresql_using="gin"),
+    )
+
+    knowledge_document_id: Mapped[UUID] = mapped_column(
+        ForeignKey("knowledge_documents.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    document_segment_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("document_segments.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    locator: Mapped[str] = mapped_column(String(500), nullable=False)
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    normalized_text: Mapped[str] = mapped_column(Text, nullable=False)
+    text_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    search_vector: Mapped[object] = mapped_column(
+        TSVECTOR,
+        Computed("to_tsvector('simple', coalesce(normalized_text, ''))", persisted=True),
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class KnowledgeRetrievalLogModel(UuidPrimaryKeyMixin, Base):
+    __tablename__ = "knowledge_retrieval_logs"
+    __table_args__ = (
+        Index("ix_knowledge_retrieval_logs_run_created", "agent_run_id", "created_at"),
+        Index("ix_knowledge_retrieval_logs_correlation", "correlation_id", "created_at"),
+    )
+
+    query_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    filters: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    selected_chunk_ids: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
+    component_scores: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    correlation_id: Mapped[str] = mapped_column(String(80), nullable=False)
+    agent_run_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("agent_runs.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
 class StorageQuotaReservationModel(UuidPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "storage_quota_reservations"
     __table_args__ = (
@@ -1337,6 +1437,80 @@ class AgentDefinitionModel(UuidPrimaryKeyMixin, TimestampMixin, Base):
     requires_human_review: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=True, server_default=sql_text("true")
     )
+
+
+class AgentExecutionPlanModel(UuidPrimaryKeyMixin, TimestampMixin, VersionedMixin, Base):
+    __tablename__ = "agent_execution_plans"
+    __table_args__ = (
+        UniqueConstraint("idempotency_key", name="uq_agent_execution_plans_idempotency"),
+        Index("ix_agent_execution_plans_matter_created", "matter_id", "created_at"),
+        Index("ix_agent_execution_plans_status_created", "status", "created_at"),
+        Index("ix_agent_execution_plans_correlation", "correlation_id"),
+    )
+
+    matter_id: Mapped[UUID] = mapped_column(
+        ForeignKey("legal_matters.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    work_item_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("work_items.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    objective: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[AgentExecutionPlanStatus] = mapped_column(
+        enum_type(AgentExecutionPlanStatus, name="agent_execution_plan_status", length=24),
+        nullable=False,
+    )
+    task_types: Mapped[list[str]] = mapped_column(
+        JSONB, nullable=False, default=list, server_default=JSON_EMPTY_LIST
+    )
+    synthesis_strategy: Mapped[str] = mapped_column(Text, nullable=False)
+    missing_information: Mapped[list[str]] = mapped_column(
+        JSONB, nullable=False, default=list, server_default=JSON_EMPTY_LIST
+    )
+    requires_user_input: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=FALSE_DEFAULT
+    )
+    planning_run_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("agent_runs.id", ondelete="SET NULL"), nullable=True
+    )
+    synthesis_run_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("agent_runs.id", ondelete="SET NULL"), nullable=True
+    )
+    correlation_id: Mapped[str] = mapped_column(String(80), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(240), nullable=False)
+    created_by: Mapped[str] = mapped_column(String(160), nullable=False)
+
+
+class AgentPlanStepModel(UuidPrimaryKeyMixin, TimestampMixin, VersionedMixin, Base):
+    __tablename__ = "agent_plan_steps"
+    __table_args__ = (
+        UniqueConstraint("execution_plan_id", "step_id", name="uq_agent_plan_steps_step_id"),
+        UniqueConstraint("execution_plan_id", "sequence", name="uq_agent_plan_steps_sequence"),
+        Index("ix_agent_plan_steps_plan_status", "execution_plan_id", "status"),
+    )
+
+    execution_plan_id: Mapped[UUID] = mapped_column(
+        ForeignKey("agent_execution_plans.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    step_id: Mapped[str] = mapped_column(String(120), nullable=False)
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    agent_key: Mapped[str] = mapped_column(String(120), nullable=False)
+    objective: Mapped[str] = mapped_column(Text, nullable=False)
+    depends_on: Mapped[list[str]] = mapped_column(
+        JSONB, nullable=False, default=list, server_default=JSON_EMPTY_LIST
+    )
+    context_requirements: Mapped[list[str]] = mapped_column(
+        JSONB, nullable=False, default=list, server_default=JSON_EMPTY_LIST
+    )
+    status: Mapped[AgentPlanStepStatus] = mapped_column(
+        enum_type(AgentPlanStepStatus, name="agent_plan_step_status", length=24),
+        nullable=False,
+    )
+    latest_run_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("agent_runs.id", ondelete="SET NULL"), nullable=True
+    )
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    failure_code: Mapped[str | None] = mapped_column(String(80))
+    failure_message: Mapped[str | None] = mapped_column(Text)
 
 
 class AgentRunModel(UuidPrimaryKeyMixin, TimestampMixin, VersionedMixin, Base):
@@ -1402,6 +1576,24 @@ class AgentRunModel(UuidPrimaryKeyMixin, TimestampMixin, VersionedMixin, Base):
     token_usage: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     worker_id: Mapped[str | None] = mapped_column(String(160), index=True)
     lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    execution_plan_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("agent_execution_plans.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    plan_step_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("agent_plan_steps.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    parent_run_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("agent_runs.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    retry_of_run_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("agent_runs.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    run_role: Mapped[AgentRunRole] = mapped_column(
+        enum_type(AgentRunRole, name="agent_run_role", length=24),
+        nullable=False,
+        default=AgentRunRole.STANDALONE,
+        server_default=AgentRunRole.STANDALONE.value,
+    )
 
 
 class AgentRunAttemptModel(UuidPrimaryKeyMixin, Base):

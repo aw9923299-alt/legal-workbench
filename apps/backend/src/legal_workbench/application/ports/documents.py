@@ -12,11 +12,18 @@ from legal_workbench.domain.documents import (
     FeishuDocument,
     FeishuDocumentSubscription,
 )
+from legal_workbench.domain.knowledge import (
+    KnowledgeChunk,
+    KnowledgeDocument,
+    KnowledgeRetrievalLog,
+)
 
 __all__ = [
     "AttachmentStorageQuotaRepository",
     "DocumentRepository",
+    "KnowledgeRepository",
 ]
+
 
 class DocumentRepository(Protocol):
     async def find_feishu_document(
@@ -65,6 +72,17 @@ class DocumentRepository(Protocol):
     async def list_latest_feishu_segments_for_messages(
         self, message_ids: Sequence[UUID]
     ) -> Sequence[tuple[FeishuDocument, DocumentSegment]]: ...
+
+
+class KnowledgeRepository(Protocol):
+    async def add_document(self, document: KnowledgeDocument) -> None: ...
+    async def get_document(self, document_id: UUID) -> KnowledgeDocument | None: ...
+    async def find_document_by_source(
+        self, *, source_type: str, source_id: str
+    ) -> KnowledgeDocument | None: ...
+    async def add_chunks(self, chunks: Sequence[KnowledgeChunk]) -> None: ...
+    async def list_chunks(self, document_id: UUID) -> Sequence[KnowledgeChunk]: ...
+    async def add_retrieval_log(self, log: KnowledgeRetrievalLog) -> None: ...
 
 
 class AttachmentStorageQuotaRepository(Protocol):

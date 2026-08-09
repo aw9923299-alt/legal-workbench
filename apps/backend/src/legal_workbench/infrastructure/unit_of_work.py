@@ -9,6 +9,7 @@ from legal_workbench.application.ports import UnitOfWork
 from legal_workbench.infrastructure.database import get_session_factory
 from legal_workbench.infrastructure.repositories import (
     SqlAlchemyAgentDefinitionRepository,
+    SqlAlchemyAgentExecutionPlanRepository,
     SqlAlchemyAgentRunAttemptRepository,
     SqlAlchemyAgentRunRepository,
     SqlAlchemyAgentRunSourceRepository,
@@ -25,6 +26,7 @@ from legal_workbench.infrastructure.repositories import (
     SqlAlchemyFeishuRepository,
     SqlAlchemyFeishuUserAuthorizationRepository,
     SqlAlchemyIdempotencyRepository,
+    SqlAlchemyKnowledgeRepository,
     SqlAlchemyLegalMatterRepository,
     SqlAlchemyMatterUpdateProposalRepository,
     SqlAlchemyMessageCandidateRepository,
@@ -47,6 +49,7 @@ class SqlAlchemyUnitOfWork(UnitOfWork):
         self.context_snapshots = SqlAlchemyContextSnapshotRepository(self._session)
         self.candidates = SqlAlchemyMessageCandidateRepository(self._session)
         self.agent_definitions = SqlAlchemyAgentDefinitionRepository(self._session)
+        self.agent_execution_plans = SqlAlchemyAgentExecutionPlanRepository(self._session)
         self.agent_runs = SqlAlchemyAgentRunRepository(self._session)
         self.agent_run_attempts = SqlAlchemyAgentRunAttemptRepository(self._session)
         self.agent_run_sources = SqlAlchemyAgentRunSourceRepository(self._session)
@@ -68,6 +71,7 @@ class SqlAlchemyUnitOfWork(UnitOfWork):
             self._session
         )
         self.documents = SqlAlchemyDocumentRepository(self._session)
+        self.knowledge = SqlAlchemyKnowledgeRepository(self._session)
         self.storage_quota = SqlAlchemyAttachmentStorageQuotaRepository(self._session)
         self.evaluations = SqlAlchemyEvaluationRepository(self._session)
         self.setup = SqlAlchemySetupRepository(self._session)

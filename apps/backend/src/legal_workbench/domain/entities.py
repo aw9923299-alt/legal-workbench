@@ -50,6 +50,11 @@ from legal_workbench.domain.feishu import (
     IntegrationConnection,
     MessageAttachment,
 )
+from legal_workbench.domain.knowledge import (
+    KnowledgeChunk,
+    KnowledgeDocument,
+    KnowledgeRetrievalLog,
+)
 from legal_workbench.domain.matters import (
     LegalMatter,
     MatterUpdateProposal,
@@ -111,6 +116,9 @@ __all__ = [
     "IntegrationConnection",
     "IntegrationCredential",
     "IntegrationScope",
+    "KnowledgeChunk",
+    "KnowledgeDocument",
+    "KnowledgeRetrievalLog",
     "LegalMatter",
     "MatterUpdateProposal",
     "MessageAttachment",
