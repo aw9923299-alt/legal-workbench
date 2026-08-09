@@ -1,6 +1,7 @@
 import type {
   Communication,
   AgentRunRecord,
+  AgentExecutionPlanRecord,
   CandidateStatus,
   CandidateRevision,
   DashboardToday,
@@ -419,6 +420,43 @@ export const legalApi = {
 
   getAgentRun(runId: string): Promise<AgentRunRecord> {
     return request(`/agent-runs/${runId}`, {}, { authenticated: true });
+  },
+
+  listLegalAgentPlans(matterId: string): Promise<AgentExecutionPlanRecord[]> {
+    return request(`/matters/${matterId}/legal-agent-plans?limit=20`);
+  },
+
+  requestLegalAgentPlan(matterId: string, input: {
+    objective?: string;
+    specialRequirements?: string;
+    specialistOnly?: string;
+    workItemId?: string;
+  }, mutation?: MutationContext): Promise<{
+    requestId: string;
+    matterId: string;
+    contextSnapshotId: string;
+    status: 'queued';
+    idempotentReplay: boolean;
+  }> {
+    return request(`/matters/${matterId}/legal-agent-plans`, {
+      method: 'POST', body: JSON.stringify(input),
+    }, { write: true, mutation });
+  },
+
+  rerunLegalAgentStep(
+    planId: string,
+    stepId: string,
+    mutation?: MutationContext,
+  ): Promise<{
+    requestId: string;
+    planId: string;
+    stepId: string;
+    status: 'queued';
+    idempotentReplay: boolean;
+  }> {
+    return request(`/legal-agent-plans/${planId}/steps/${encodeURIComponent(stepId)}/rerun`, {
+      method: 'POST',
+    }, { write: true, mutation });
   },
 
   retryAgentRun(

@@ -153,7 +153,7 @@ export interface AgentRunRecord {
   status: AgentRunStatus;
   objective: string;
   inputPayload: Record<string, unknown>;
-  outputPayload: MessageJudgementResult | null;
+  outputPayload: Record<string, unknown> | null;
   rawStdout: string | null;
   rawStderr: string | null;
   promptSnapshot: string;
@@ -191,6 +191,58 @@ export interface AgentRunRecord {
     failureMessage: string | null;
   }>;
   candidateId: string | null;
+  matterId: string | null;
+  workItemId: string | null;
+  executionPlanId: string | null;
+  planStepId: string | null;
+  parentRunId: string | null;
+  retryOfRunId: string | null;
+  runRole: 'standalone' | 'butler_planning' | 'specialist' | 'butler_synthesis';
+}
+
+export type AgentExecutionPlanStatus =
+  | 'queued'
+  | 'planning'
+  | 'planned'
+  | 'running'
+  | 'partial'
+  | 'completed'
+  | 'failed'
+  | 'needs_information'
+  | 'cancelled';
+
+export interface AgentPlanStepRecord {
+  id: string;
+  stepId: string;
+  sequence: number;
+  agentKey: string;
+  objective: string;
+  dependsOn: string[];
+  contextRequirements: string[];
+  status: 'pending' | 'ready' | 'running' | 'completed' | 'failed' | 'skipped' | 'needs_information';
+  latestRunId: string | null;
+  attemptCount: number;
+  failureCode: string | null;
+  failureMessage: string | null;
+}
+
+export interface AgentExecutionPlanRecord {
+  id: string;
+  matterId: string;
+  workItemId: string | null;
+  objective: string;
+  status: AgentExecutionPlanStatus;
+  taskTypes: string[];
+  synthesisStrategy: string;
+  missingInformation: string[];
+  requiresUserInput: boolean;
+  correlationId: string;
+  planningRunId: string | null;
+  synthesisRunId: string | null;
+  steps: AgentPlanStepRecord[];
+  agentRuns: AgentRunRecord[];
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface FeishuMessageSummary {
