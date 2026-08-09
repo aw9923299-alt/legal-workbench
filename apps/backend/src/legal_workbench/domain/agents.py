@@ -295,6 +295,7 @@ class AgentRun:
     parent_run_id: UUID | None = None
     retry_of_run_id: UUID | None = None
     run_role: AgentRunRole = AgentRunRole.STANDALONE
+    dependency_run_ids: list[UUID] = field(default_factory=list)
     pending_status_changes: list[AgentRunStatusChange] = field(default_factory=list, repr=False)
 
     _TRANSITIONS: ClassVar[dict[AgentRunStatus, set[AgentRunStatus]]] = {
@@ -407,6 +408,7 @@ class AgentPlanStep:
     context_requirements: list[str]
     status: AgentPlanStepStatus = AgentPlanStepStatus.PENDING
     latest_run_id: UUID | None = None
+    latest_valid_run_id: UUID | None = None
     attempt_count: int = 0
     failure_code: str | None = None
     failure_message: str | None = None

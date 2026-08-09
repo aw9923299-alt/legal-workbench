@@ -17,6 +17,7 @@ from legal_workbench.agents.legal_butler import (
 from legal_workbench.agents.legal_contracts import (
     ContractReviewProduct,
     IpCopyrightProduct,
+    LegalConsultationProduct,
 )
 from legal_workbench.agents.runtime import (
     AgentExecutionContext,
@@ -123,6 +124,7 @@ class FakeContextBuilder:
 class FakeLegalRuntime:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str]] = []
+        self.upstream_by_key: dict[str, list[dict[str, object]]] = {}
 
     async def execute(
         self,
@@ -133,6 +135,10 @@ class FakeLegalRuntime:
         key = definition.key
         phase = str((context.input_payload or {}).get("phase"))
         self.calls.append((key, phase))
+        if phase == "specialist":
+            upstream = (context.input_payload or {}).get("upstreamOutputs", {})
+            assert isinstance(upstream, dict)
+            self.upstream_by_key.setdefault(key, []).append(upstream)
         if key == "legal_butler" and phase == "planning":
             output = ButlerPlanningOutput.model_validate(
                 {
@@ -155,6 +161,13 @@ class FakeLegalRuntime:
                             "objective": "核验图片授权链",
                             "dependsOn": [],
                             "contextRequirements": ["license_documents"],
+                        },
+                        {
+                            "stepId": "summary",
+                            "agentKey": "legal_consultation",
+                            "objective": "仅根据合同审查结果形成咨询意见",
+                            "dependsOn": ["contract"],
+                            "contextRequirements": ["contract_result"],
                         },
                     ],
                     "missingInformation": [],
@@ -215,6 +228,14 @@ class FakeLegalRuntime:
                         }
                     ],
                     "evidenceGaps": ["权利人授权文件"],
+                }
+            )
+        elif key == "legal_consultation":
+            output = LegalConsultationProduct.model_validate(
+                _common_product()
+                | {
+                    "questions": ["是否可推进"],
+                    "legalRelationships": ["合同关系"],
                 }
             )
         else:
@@ -365,14 +386,22 @@ async def test_multi_agent_orchestration_persists_lineage_draft_and_review() -> 
             runs = list(await uow.agent_runs.list_by_plan(result.plan_id))
             children = list(await uow.agent_runs.list_children(result.planning_run_id))
         assert plan is not None
-        assert [step.status.value for step in plan.steps] == ["completed", "completed"]
+        assert [step.status.value for step in plan.steps] == [
+            "completed",
+            "completed",
+            "completed",
+        ]
+        assert set(runtime.upstream_by_key["legal_consultation"][0]) == {"contract"}
+        assert runtime.upstream_by_key["contract"][0] == {}
+        assert runtime.upstream_by_key["ip_copyright"][0] == {}
         assert [run.run_role for run in runs] == [
             AgentRunRole.BUTLER_PLANNING,
             AgentRunRole.SPECIALIST,
             AgentRunRole.SPECIALIST,
+            AgentRunRole.SPECIALIST,
             AgentRunRole.BUTLER_SYNTHESIS,
         ]
-        assert len(children) == 3
+        assert len(children) == 4
         async with session_factory() as session:
             artifact = await session.get(DraftArtifactModel, result.artifact_id)
             review = await session.get(ReviewPackageModel, result.review_package_id)
@@ -405,12 +434,39 @@ async def test_multi_agent_orchestration_persists_lineage_draft_and_review() -> 
             step for step in rerun_plan.steps if step.step_id == "contract"
         )
         assert contract_step.attempt_count == 2
+        assert contract_step.latest_valid_run_id == contract_step.latest_run_id
         latest_contract_run = next(
             run for run in rerun_runs if run.id == contract_step.latest_run_id
         )
         assert latest_contract_run.retry_of_run_id is not None
+
+        rerun_summary = await orchestrator.rerun_step(
+            plan_id=result.plan_id,
+            step_id="summary",
+            actor_id="user:fixture",
+            correlation_id=f"rerun-summary-{uuid4().hex}",
+        )
+        assert rerun_summary.status == AgentExecutionPlanStatus.COMPLETED
+        async with factory() as uow:
+            final_plan = await uow.agent_execution_plans.get(result.plan_id)
+            final_runs = list(await uow.agent_runs.list_by_plan(result.plan_id))
+        assert final_plan is not None
+        final_contract = next(
+            step for step in final_plan.steps if step.step_id == "contract"
+        )
+        final_summary = next(
+            step for step in final_plan.steps if step.step_id == "summary"
+        )
+        assert final_summary.attempt_count == 2
+        latest_summary_run = next(
+            run for run in final_runs if run.id == final_summary.latest_valid_run_id
+        )
+        assert latest_summary_run.dependency_run_ids == [
+            final_contract.latest_valid_run_id
+        ]
+        assert set(runtime.upstream_by_key["legal_consultation"][-1]) == {"contract"}
         assert len(
-            [run for run in rerun_runs if run.run_role == AgentRunRole.BUTLER_SYNTHESIS]
-        ) == 2
+            [run for run in final_runs if run.run_role == AgentRunRole.BUTLER_SYNTHESIS]
+        ) == 3
     finally:
         await engine.dispose()

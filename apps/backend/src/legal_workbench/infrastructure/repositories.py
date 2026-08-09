@@ -622,6 +622,7 @@ class SqlAlchemyAgentExecutionPlanRepository:
             raise RuntimeError(f"AgentPlanStep {step.id} is not tracked")
         model.status = step.status
         model.latest_run_id = step.latest_run_id
+        model.latest_valid_run_id = step.latest_valid_run_id
         model.attempt_count = step.attempt_count
         model.failure_code = step.failure_code
         model.failure_message = step.failure_message
@@ -677,6 +678,7 @@ class SqlAlchemyAgentExecutionPlanRepository:
             context_requirements=step.context_requirements,
             status=step.status,
             latest_run_id=step.latest_run_id,
+            latest_valid_run_id=step.latest_valid_run_id,
             attempt_count=step.attempt_count,
             failure_code=step.failure_code,
             failure_message=step.failure_message,
@@ -698,6 +700,7 @@ class SqlAlchemyAgentExecutionPlanRepository:
             context_requirements=model.context_requirements,
             status=model.status,
             latest_run_id=model.latest_run_id,
+            latest_valid_run_id=model.latest_valid_run_id,
             attempt_count=model.attempt_count,
             failure_code=model.failure_code,
             failure_message=model.failure_message,
@@ -751,6 +754,7 @@ class SqlAlchemyAgentRunRepository:
             parent_run_id=run.parent_run_id,
             retry_of_run_id=run.retry_of_run_id,
             run_role=run.run_role,
+            dependency_run_ids=[str(value) for value in run.dependency_run_ids],
             created_at=run.created_at,
             updated_at=run.updated_at,
             version=run.version,
@@ -819,6 +823,7 @@ class SqlAlchemyAgentRunRepository:
         model.parent_run_id = run.parent_run_id
         model.retry_of_run_id = run.retry_of_run_id
         model.run_role = run.run_role
+        model.dependency_run_ids = [str(value) for value in run.dependency_run_ids]
         model.updated_at = run.updated_at
         model.version = run.version
         self._session.add_all(
@@ -967,6 +972,7 @@ class SqlAlchemyAgentRunRepository:
             parent_run_id=model.parent_run_id,
             retry_of_run_id=model.retry_of_run_id,
             run_role=model.run_role,
+            dependency_run_ids=[UUID(value) for value in model.dependency_run_ids],
         )
 
 

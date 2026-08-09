@@ -27,6 +27,33 @@ def upgrade() -> None:
             nullable=False,
         ),
     )
+    op.add_column("agent_plan_steps", sa.Column("latest_valid_run_id", sa.Uuid()))
+    op.create_foreign_key(
+        "fk_agent_plan_steps_latest_valid_run_id",
+        "agent_plan_steps",
+        "agent_runs",
+        ["latest_valid_run_id"],
+        ["id"],
+        ondelete="SET NULL",
+    )
+    op.create_index(
+        "ix_agent_plan_steps_latest_valid_run_id",
+        "agent_plan_steps",
+        ["latest_valid_run_id"],
+    )
+    op.execute(
+        "UPDATE agent_plan_steps SET latest_valid_run_id = latest_run_id "
+        "WHERE status IN ('completed','needs_information')"
+    )
+    op.add_column(
+        "agent_runs",
+        sa.Column(
+            "dependency_run_ids",
+            postgresql.JSONB(),
+            server_default=sa.text("'[]'::jsonb"),
+            nullable=False,
+        ),
+    )
     op.create_table(
         "local_knowledge_scans",
         sa.Column("id", sa.Uuid(), nullable=False),
@@ -467,4 +494,14 @@ def downgrade() -> None:
     op.drop_index("ix_local_knowledge_scans_status_started", table_name="local_knowledge_scans")
     op.drop_index("ix_local_knowledge_scans_root_started", table_name="local_knowledge_scans")
     op.drop_table("local_knowledge_scans")
+    op.drop_column("agent_runs", "dependency_run_ids")
+    op.drop_index(
+        "ix_agent_plan_steps_latest_valid_run_id", table_name="agent_plan_steps"
+    )
+    op.drop_constraint(
+        "fk_agent_plan_steps_latest_valid_run_id",
+        "agent_plan_steps",
+        type_="foreignkey",
+    )
+    op.drop_column("agent_plan_steps", "latest_valid_run_id")
     op.drop_column("review_packages", "grounding_payload")

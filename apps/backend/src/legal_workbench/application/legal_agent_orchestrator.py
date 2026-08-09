@@ -25,6 +25,11 @@ from legal_workbench.application.legal_context import (
     AuthorizedLegalContext,
     LegalContextBuilder,
 )
+from legal_workbench.application.legal_dependencies import (
+    DependencyContext,
+    DependencyContextAssembler,
+    DependencyResult,
+)
 from legal_workbench.application.ports import UnitOfWorkFactory
 from legal_workbench.domain.common import utc_now
 from legal_workbench.domain.entities import (
@@ -157,6 +162,7 @@ class LegalAgentOrchestrator:
         self._context_builder = context_builder
         self._runs_root = Path(runs_root)
         self._definitions = build_legal_agent_definitions()
+        self._dependency_assembler = DependencyContextAssembler()
 
     async def execute(self, trigger: LegalAgentTrigger) -> LegalAgentOrchestrationResult:
         existing = await self._get_existing(trigger.idempotency_key)
@@ -226,18 +232,17 @@ class LegalAgentOrchestrator:
             step: AgentPlanStep,
             completed: dict[str, SpecialistStepExecution],
         ) -> SpecialistStepExecution:
-            upstream: dict[str, object] = {
-                key: value.output.model_dump(by_alias=True, mode="json")
-                for key, value in completed.items()
-                if value.output is not None
-            }
+            dependency_context = self._dependency_assembler.build(
+                step,
+                self._dependency_results(completed),
+            )
             return await self._execute_step(
                 plan=plan,
                 step=step,
                 snapshot=snapshot,
                 trigger=trigger,
                 matter_type=matter_type,
-                upstream_outputs=upstream,
+                dependency_context=dependency_context,
             )
 
         step_results = await execute_plan_waves(plan, runner)
@@ -279,13 +284,20 @@ class LegalAgentOrchestrator:
             correlation_id=correlation_id,
             idempotency_key=f"rerun:{plan.id}:{step.id}:{uuid4().hex}",
         )
+        persisted_results = await self._list_step_results(plan.id)
+        dependency_context = self._dependency_assembler.build(
+            step,
+            self._dependency_results(
+                {value.step_id: value for value in persisted_results}
+            ),
+        )
         step_result = await self._execute_step(
             plan=plan,
             step=step,
             snapshot=snapshot,
             trigger=trigger,
             matter_type=matter.primary_category.value,
-            upstream_outputs={},
+            dependency_context=dependency_context,
             retry_of_run_id=step.latest_run_id,
         )
         all_results = await self._list_step_results(plan.id)
@@ -436,7 +448,7 @@ class LegalAgentOrchestrator:
         snapshot: ContextSnapshot,
         trigger: LegalAgentTrigger,
         matter_type: str,
-        upstream_outputs: dict[str, object],
+        dependency_context: DependencyContext,
         retry_of_run_id: UUID | None = None,
     ) -> SpecialistStepExecution:
         run = await self._start_step_run(
@@ -445,6 +457,7 @@ class LegalAgentOrchestrator:
             snapshot=snapshot,
             trigger=trigger,
             retry_of_run_id=retry_of_run_id,
+            dependency_run_ids=dependency_context.dependency_run_ids,
         )
         context = await self._context_builder.specialist(
             snapshot=snapshot,
@@ -455,15 +468,32 @@ class LegalAgentOrchestrator:
             effective_date=date.today(),
             correlation_id=trigger.correlation_id,
             agent_run_id=run.id,
-            upstream_outputs=upstream_outputs,
+            upstream_outputs=dependency_context.upstream_outputs,
         )
-        await self._add_context_sources(run.id, snapshot, context)
+        context = AuthorizedLegalContext(
+            payload=context.payload,
+            source_refs=context.source_refs | dependency_context.source_refs,
+            internal_precedent_refs=(
+                context.internal_precedent_refs
+                | dependency_context.internal_precedent_refs
+            ),
+            source_authorities={
+                **dependency_context.source_authorities,
+                **context.source_authorities,
+            },
+        )
+        await self._add_context_sources(
+            run.id,
+            snapshot,
+            context,
+            dependency_run_ids=dependency_context.dependency_run_ids,
+        )
         input_payload = self._legal_input(
             run=run,
             phase="specialist",
             trigger=trigger,
             context=context,
-            upstream_outputs=upstream_outputs,
+            upstream_outputs=dependency_context.upstream_outputs,
             extra={"stepId": step.step_id, "contextRequirements": step.context_requirements},
         )
         try:
@@ -524,6 +554,7 @@ class LegalAgentOrchestrator:
                 needs_information=needs_information,
             )
             stored_step.status = status
+            stored_step.latest_valid_run_id = run.id
             stored_step.failure_code = None
             stored_step.failure_message = None
             stored_step.updated_at = utc_now()
@@ -549,6 +580,7 @@ class LegalAgentOrchestrator:
         snapshot: ContextSnapshot,
         trigger: LegalAgentTrigger,
         retry_of_run_id: UUID | None,
+        dependency_run_ids: tuple[UUID, ...],
     ) -> AgentRun:
         async with self._uow_factory() as uow:
             stored_step = await uow.agent_execution_plans.get_step_for_update(
@@ -565,6 +597,7 @@ class LegalAgentOrchestrator:
                 role=AgentRunRole.SPECIALIST,
                 step=stored_step,
                 retry_of_run_id=retry_of_run_id,
+                dependency_run_ids=dependency_run_ids,
             )
             await uow.agent_runs.add(run)
             await uow.flush()
@@ -947,11 +980,33 @@ class LegalAgentOrchestrator:
         run_id: UUID,
         snapshot: ContextSnapshot,
         context: AuthorizedLegalContext,
+        *,
+        dependency_run_ids: tuple[UUID, ...] = (),
     ) -> None:
         async with self._uow_factory() as uow:
-            await uow.agent_run_sources.add_many(
-                self._context_sources(run_id, snapshot, context)
-            )
+            sources = self._context_sources(run_id, snapshot, context)
+            existing_keys = {
+                (value.source_type, value.source_id, value.source_hash) for value in sources
+            }
+            for dependency_run_id in dependency_run_ids:
+                for source in await uow.agent_run_sources.list_by_run(dependency_run_id):
+                    key = (source.source_type, source.source_id, source.source_hash)
+                    if key in existing_keys:
+                        continue
+                    existing_keys.add(key)
+                    sources.append(
+                        AgentRunSource(
+                            id=uuid4(),
+                            agent_run_id=run_id,
+                            source_type=source.source_type,
+                            source_id=source.source_id,
+                            source_version=source.source_version,
+                            source_hash=source.source_hash,
+                            display_name=source.display_name,
+                            citation_metadata=source.citation_metadata,
+                        )
+                    )
+            await uow.agent_run_sources.add_many(sources)
             await uow.commit()
 
     def _context_sources(
@@ -1020,6 +1075,7 @@ class LegalAgentOrchestrator:
         role: AgentRunRole,
         step: AgentPlanStep | None = None,
         retry_of_run_id: UUID | None = None,
+        dependency_run_ids: tuple[UUID, ...] = (),
     ) -> AgentRun:
         definition = self._definitions[definition_key]
         return AgentRun(
@@ -1041,6 +1097,7 @@ class LegalAgentOrchestrator:
             parent_run_id=plan.planning_run_id if role != AgentRunRole.BUTLER_PLANNING else None,
             retry_of_run_id=retry_of_run_id,
             run_role=role,
+            dependency_run_ids=list(dependency_run_ids),
             agent_definition_version=definition.version,
             prompt_version=definition.version,
         )
@@ -1111,9 +1168,31 @@ class LegalAgentOrchestrator:
         by_id = {run.id: run for run in runs}
         values: list[SpecialistStepExecution] = []
         for step in plan.steps:
-            run = by_id.get(step.latest_run_id) if step.latest_run_id else None
+            selected_run_id = (
+                step.latest_valid_run_id
+                if step.status
+                in {
+                    AgentPlanStepStatus.COMPLETED,
+                    AgentPlanStepStatus.NEEDS_INFORMATION,
+                }
+                else step.latest_run_id
+            )
+            run = by_id.get(selected_run_id) if selected_run_id else None
             output: LegalWorkProduct | None = None
-            if run and run.output_payload:
+            if (
+                run
+                and run.output_payload
+                and run.status
+                in {
+                    AgentRunStatus.COMPLETED,
+                    AgentRunStatus.NEEDS_MORE_INFORMATION,
+                }
+                and step.status
+                in {
+                    AgentPlanStepStatus.COMPLETED,
+                    AgentPlanStepStatus.NEEDS_INFORMATION,
+                }
+            ):
                 output = LEGAL_OUTPUT_MODELS[step.agent_key].model_validate(
                     run.output_payload
                 )
@@ -1150,7 +1229,7 @@ class LegalAgentOrchestrator:
                 SpecialistStepExecution(
                     step_id=step.step_id,
                     agent_key=step.agent_key,
-                    run_id=step.latest_run_id,
+                    run_id=run.id if run is not None else step.latest_run_id,
                     status=step.status,
                     output=output,
                     failure_code=step.failure_code,
@@ -1161,6 +1240,27 @@ class LegalAgentOrchestrator:
                 )
             )
         return values
+
+    @staticmethod
+    def _dependency_results(
+        results: dict[str, SpecialistStepExecution],
+    ) -> dict[str, DependencyResult]:
+        return {
+            step_id: DependencyResult(
+                step_id=value.step_id,
+                run_id=value.run_id,
+                status=value.status,
+                output_payload=(
+                    value.output.model_dump(by_alias=True, mode="json")
+                    if value.output is not None
+                    else None
+                ),
+                source_refs=value.source_refs,
+                internal_precedent_refs=value.internal_precedent_refs,
+                source_authorities=value.source_authorities,
+            )
+            for step_id, value in results.items()
+        }
 
     async def _snapshot_id_for_plan(self, uow: Any, plan: AgentExecutionPlan) -> UUID:
         if plan.planning_run_id is None:

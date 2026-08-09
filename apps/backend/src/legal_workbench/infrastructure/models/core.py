@@ -1675,6 +1675,9 @@ class AgentPlanStepModel(UuidPrimaryKeyMixin, TimestampMixin, VersionedMixin, Ba
     latest_run_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("agent_runs.id", ondelete="SET NULL"), nullable=True
     )
+    latest_valid_run_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("agent_runs.id", ondelete="SET NULL"), nullable=True
+    )
     attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
     failure_code: Mapped[str | None] = mapped_column(String(80))
     failure_message: Mapped[str | None] = mapped_column(Text)
@@ -1760,6 +1763,9 @@ class AgentRunModel(UuidPrimaryKeyMixin, TimestampMixin, VersionedMixin, Base):
         nullable=False,
         default=AgentRunRole.STANDALONE,
         server_default=AgentRunRole.STANDALONE.value,
+    )
+    dependency_run_ids: Mapped[list[str]] = mapped_column(
+        JSONB, nullable=False, default=list, server_default=JSON_EMPTY_LIST
     )
 
 
