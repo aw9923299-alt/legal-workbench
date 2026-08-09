@@ -26,6 +26,7 @@ from legal_workbench.domain.enums import (
 from legal_workbench.domain.knowledge import (
     KnowledgeChunk,
     KnowledgeDocument,
+    authority_priority_for_type,
     authority_role_for_type,
     normalize_knowledge_text,
 )
@@ -283,7 +284,7 @@ class LocalKnowledgeImportService:
                 "general_consultation",
             ],
             jurisdiction="CN" if known else "unknown",
-            source_priority=_source_priority(authority_type),
+            source_priority=authority_priority_for_type(authority_type),
             internal_precedent=authority_type == AuthorityType.INTERNAL_PRECEDENT,
             confidentiality="internal",
             authority_type=authority_type,
@@ -383,31 +384,6 @@ def infer_authority_type(relative_path: str) -> AuthorityType:
         if any(marker in normalized for marker in markers):
             return authority_type
     return AuthorityType.UNKNOWN
-
-
-def _source_priority(authority_type: AuthorityType) -> int:
-    if authority_type in {
-        AuthorityType.LAW,
-        AuthorityType.ADMINISTRATIVE_REGULATION,
-        AuthorityType.JUDICIAL_INTERPRETATION,
-        AuthorityType.DEPARTMENT_RULE,
-        AuthorityType.LOCAL_REGULATION,
-        AuthorityType.LOCAL_GOVERNMENT_RULE,
-        AuthorityType.NORMATIVE_DOCUMENT,
-    }:
-        return 100
-    if authority_type in {
-        AuthorityType.GUIDING_CASE,
-        AuthorityType.COURT_CASE,
-        AuthorityType.REGULATORY_GUIDANCE,
-        AuthorityType.CONTRACT,
-    }:
-        return 80
-    if authority_type in {AuthorityType.COMPANY_POLICY, AuthorityType.BUSINESS_RULE}:
-        return 60
-    if authority_type in {AuthorityType.LEGAL_OPINION, AuthorityType.INTERNAL_PRECEDENT}:
-        return 40
-    return 20
 
 
 def _segment_locator(segment: DocumentSegment) -> str:

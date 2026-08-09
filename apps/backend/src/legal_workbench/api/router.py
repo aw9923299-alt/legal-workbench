@@ -14,6 +14,7 @@ from legal_workbench.api.routes.feishu_user import (
 from legal_workbench.api.routes.feishu_user import router as feishu_user_router
 from legal_workbench.api.routes.health import router as health_router
 from legal_workbench.api.routes.integrations import router as integrations_router
+from legal_workbench.api.routes.knowledge import router as knowledge_router
 from legal_workbench.api.routes.matter_update_proposals import (
     router as matter_update_proposals_router,
 )
@@ -37,6 +38,7 @@ api_router.include_router(matters_router, dependencies=authenticated)
 api_router.include_router(matter_update_proposals_router, dependencies=authenticated)
 api_router.include_router(work_items_router, dependencies=authenticated)
 api_router.include_router(reviews_router, dependencies=authenticated)
+api_router.include_router(knowledge_router, dependencies=authenticated)
 api_router.include_router(integrations_router)
 api_router.include_router(outbox_router, dependencies=authenticated)
 api_router.include_router(system_router, dependencies=authenticated)

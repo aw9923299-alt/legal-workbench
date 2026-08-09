@@ -3,6 +3,8 @@ from __future__ import annotations
 from hashlib import sha256
 from pathlib import Path
 
+import pytest
+
 from legal_workbench.integrations.local_knowledge_files import scan_local_knowledge_files
 
 
@@ -77,3 +79,12 @@ def test_scanner_records_single_file_failure_without_stopping_batch(
     assert scan.failures[0].relative_path == "a.txt"
     assert scan.failures[0].error_code == "FILE_READ_FAILED"
     assert "denied" not in repr(scan.failures[0])
+
+
+def test_scanner_rejects_file_provider_noindex_backing_store(tmp_path: Path) -> None:
+    source = tmp_path / "OneDrive.noindex" / "Codex-Obs法务项目"
+    source.mkdir(parents=True)
+    (source / "placeholder.txt").write_text("not a verified source", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="File Provider backing store"):
+        scan_local_knowledge_files(source)

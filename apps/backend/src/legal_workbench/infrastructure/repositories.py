@@ -71,12 +71,14 @@ from legal_workbench.domain.enums import (
     AgentDefinitionStatus,
     AgentRunStatus,
     AttachmentDownloadStatus,
+    AuthorityType,
     CandidateMatterRelation,
     CandidateStatus,
     CommunicationStatus,
     DeadlineStatus,
     DocumentExtractionStatus,
     FeishuMessageStatus,
+    KnowledgeMetadataStatus,
     MatterCategory,
     MatterUpdateProposalStatus,
     ReviewDecision,
@@ -1205,6 +1207,7 @@ class SqlAlchemyDraftArtifactRepository:
 class SqlAlchemyKnowledgeRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
+        self._tracked_documents: dict[UUID, KnowledgeDocumentModel] = {}
 
     async def add_document(self, document: KnowledgeDocument) -> None:
         self._session.add(
@@ -1242,6 +1245,67 @@ class SqlAlchemyKnowledgeRepository:
     async def get_document(self, document_id: UUID) -> KnowledgeDocument | None:
         model = await self._session.get(KnowledgeDocumentModel, document_id)
         return None if model is None else self._document_to_domain(model)
+
+    async def get_document_for_update(
+        self, document_id: UUID
+    ) -> KnowledgeDocument | None:
+        statement = (
+            select(KnowledgeDocumentModel)
+            .where(KnowledgeDocumentModel.id == document_id)
+            .with_for_update()
+        )
+        model = (await self._session.execute(statement)).scalar_one_or_none()
+        if model is None:
+            return None
+        self._tracked_documents[model.id] = model
+        return self._document_to_domain(model)
+
+    async def list_documents(
+        self,
+        *,
+        authority_type: AuthorityType | None,
+        metadata_status: KnowledgeMetadataStatus | None,
+        enabled: bool | None,
+        limit: int,
+    ) -> Sequence[KnowledgeDocument]:
+        statement: Select[tuple[KnowledgeDocumentModel]] = select(KnowledgeDocumentModel)
+        if authority_type is not None:
+            statement = statement.where(
+                KnowledgeDocumentModel.authority_type == authority_type
+            )
+        if metadata_status is not None:
+            statement = statement.where(
+                KnowledgeDocumentModel.metadata_status == metadata_status
+            )
+        if enabled is not None:
+            statement = statement.where(KnowledgeDocumentModel.enabled == enabled)
+        statement = statement.order_by(
+            KnowledgeDocumentModel.updated_at.desc(),
+            KnowledgeDocumentModel.id,
+        ).limit(limit)
+        models = (await self._session.execute(statement)).scalars().all()
+        return [self._document_to_domain(model) for model in models]
+
+    async def save_document(self, document: KnowledgeDocument) -> None:
+        model = self._tracked_documents.get(document.id)
+        if model is None:
+            raise RuntimeError(f"Knowledge document {document.id} is not tracked")
+        model.title = document.title
+        model.document_type = document.document_type
+        model.source_priority = document.source_priority
+        model.jurisdiction = document.jurisdiction
+        model.effective_from = document.effective_from
+        model.effective_to = document.effective_to
+        model.internal_precedent = document.internal_precedent
+        model.authority_type = document.authority_type
+        model.authority_role = document.authority_role
+        model.authority_status = document.authority_status
+        model.metadata_status = document.metadata_status
+        model.issuer = document.issuer
+        model.document_number = document.document_number
+        model.enabled = document.enabled
+        model.updated_at = document.updated_at
+        model.version = document.version
 
     async def find_document_by_source(
         self, *, source_type: str, source_id: str
@@ -1302,6 +1366,37 @@ class SqlAlchemyKnowledgeRepository:
                 created_at=log.created_at,
             )
         )
+
+    async def list_retrieval_logs(
+        self, *, document_id: UUID, limit: int
+    ) -> Sequence[KnowledgeRetrievalLog]:
+        chunk_ids = {
+            str(value)
+            for value in (
+                await self._session.execute(
+                    select(KnowledgeChunkModel.id).where(
+                        KnowledgeChunkModel.knowledge_document_id == document_id
+                    )
+                )
+            ).scalars()
+        }
+        if not chunk_ids:
+            return []
+        statement = (
+            select(KnowledgeRetrievalLogModel)
+            .order_by(
+                KnowledgeRetrievalLogModel.created_at.desc(),
+                KnowledgeRetrievalLogModel.id,
+            )
+            .limit(min(limit * 20, 1000))
+        )
+        models = (await self._session.execute(statement)).scalars().all()
+        selected = [
+            model
+            for model in models
+            if chunk_ids.intersection(model.selected_chunk_ids)
+        ][:limit]
+        return [self._retrieval_log_to_domain(model) for model in selected]
 
     async def search(
         self, request: KnowledgeSearchRequest
@@ -1377,6 +1472,27 @@ class SqlAlchemyKnowledgeRepository:
             estimated_token_count=model.estimated_token_count,
             token_estimator=model.token_estimator,
             token_count_estimated=model.token_count_estimated,
+            created_at=model.created_at,
+        )
+
+    @staticmethod
+    def _retrieval_log_to_domain(
+        model: KnowledgeRetrievalLogModel,
+    ) -> KnowledgeRetrievalLog:
+        return KnowledgeRetrievalLog(
+            id=model.id,
+            query_hash=model.query_hash,
+            filters=model.filters,
+            selected_chunk_ids=[UUID(value) for value in model.selected_chunk_ids],
+            component_scores=model.component_scores,
+            correlation_id=model.correlation_id,
+            agent_run_id=model.agent_run_id,
+            candidate_count=model.candidate_count,
+            selected_chunk_count=model.selected_chunk_count,
+            selected_token_count=model.selected_token_count,
+            excluded_by_token_budget_count=model.excluded_by_token_budget_count,
+            excluded_duplicate_count=model.excluded_duplicate_count,
+            budget=model.budget,
             created_at=model.created_at,
         )
 

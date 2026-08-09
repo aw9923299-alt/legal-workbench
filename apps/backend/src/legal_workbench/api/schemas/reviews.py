@@ -62,6 +62,7 @@ class ReviewPackageResponse(ApiModel):
     created_by: str
     submitted_at: datetime | None
     approved_content_hash: str | None
+    grounding_payload: dict[str, object]
     version: int
 
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date
@@ -14,14 +15,26 @@ from legal_workbench.application.token_budget import (
     select_budgeted_knowledge,
 )
 from legal_workbench.domain.entities import (
+    AuditEvent,
     DocumentSegment,
+    IdempotencyRecord,
     KnowledgeChunk,
     KnowledgeDocument,
     KnowledgeRetrievalLog,
     KnowledgeSearchRequest,
     KnowledgeSearchResult,
 )
-from legal_workbench.domain.errors import DomainValidationError
+from legal_workbench.domain.enums import (
+    AuthorityRole,
+    AuthorityStatus,
+    AuthorityType,
+    KnowledgeMetadataStatus,
+)
+from legal_workbench.domain.errors import (
+    DomainValidationError,
+    EntityNotFoundError,
+    IdempotencyConflictError,
+)
 from legal_workbench.domain.knowledge import normalize_knowledge_text
 
 
@@ -219,3 +232,206 @@ class KnowledgeRetrievalService:
             )
             await uow.commit()
         return results
+
+
+@dataclass(frozen=True, slots=True)
+class KnowledgeDocumentDetails:
+    document: KnowledgeDocument
+    chunks: tuple[KnowledgeChunk, ...]
+    retrieval_logs: tuple[KnowledgeRetrievalLog, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class KnowledgeMetadataUpdate:
+    title: str
+    authority_type: AuthorityType
+    authority_role: AuthorityRole | None
+    authority_status: AuthorityStatus
+    jurisdiction: str
+    effective_from: date | None
+    effective_to: date | None
+    issuer: str | None
+    document_number: str | None
+    enabled: bool
+
+
+@dataclass(frozen=True, slots=True)
+class KnowledgeMetadataUpdateResult:
+    document_id: UUID
+    version: int
+    idempotent_replay: bool = False
+
+
+class KnowledgeManagementService:
+    """Single-user metadata correction and read-only chunk/retrieval inspection."""
+
+    def __init__(self, uow_factory: UnitOfWorkFactory) -> None:
+        self._uow_factory = uow_factory
+
+    UPDATE_OPERATION = "update_knowledge_metadata"
+
+    async def list_documents(
+        self,
+        *,
+        authority_type: AuthorityType | None = None,
+        metadata_status: KnowledgeMetadataStatus | None = None,
+        enabled: bool | None = None,
+        limit: int = 100,
+    ) -> list[KnowledgeDocument]:
+        async with self._uow_factory() as uow:
+            return list(
+                await uow.knowledge.list_documents(
+                    authority_type=authority_type,
+                    metadata_status=metadata_status,
+                    enabled=enabled,
+                    limit=limit,
+                )
+            )
+
+    async def get_document(
+        self,
+        document_id: UUID,
+        *,
+        retrieval_log_limit: int = 50,
+    ) -> KnowledgeDocumentDetails:
+        async with self._uow_factory() as uow:
+            document = await uow.knowledge.get_document(document_id)
+            if document is None:
+                raise EntityNotFoundError("Knowledge document was not found.")
+            chunks = tuple(await uow.knowledge.list_chunks(document.id))
+            retrieval_logs = tuple(
+                await uow.knowledge.list_retrieval_logs(
+                    document_id=document.id,
+                    limit=retrieval_log_limit,
+                )
+            )
+        return KnowledgeDocumentDetails(
+            document=document,
+            chunks=chunks,
+            retrieval_logs=retrieval_logs,
+        )
+
+    async def update_metadata(
+        self,
+        *,
+        document_id: UUID,
+        expected_version: int,
+        update: KnowledgeMetadataUpdate,
+        actor_id: str,
+        correlation_id: str,
+        idempotency_key: str,
+    ) -> KnowledgeMetadataUpdateResult:
+        request_payload = {
+            "documentId": str(document_id),
+            "expectedVersion": expected_version,
+            "title": update.title,
+            "authorityType": update.authority_type.value,
+            "authorityRole": (
+                update.authority_role.value if update.authority_role else None
+            ),
+            "authorityStatus": update.authority_status.value,
+            "jurisdiction": update.jurisdiction,
+            "effectiveFrom": (
+                update.effective_from.isoformat() if update.effective_from else None
+            ),
+            "effectiveTo": (
+                update.effective_to.isoformat() if update.effective_to else None
+            ),
+            "issuer": update.issuer,
+            "documentNumber": update.document_number,
+            "enabled": update.enabled,
+        }
+        request_hash = sha256(
+            json.dumps(request_payload, ensure_ascii=False, sort_keys=True).encode()
+        ).hexdigest()
+        async with self._uow_factory() as uow:
+            await uow.lock_idempotency(
+                operation=self.UPDATE_OPERATION,
+                key=idempotency_key,
+            )
+            replay = await uow.idempotency.get(
+                operation=self.UPDATE_OPERATION,
+                key=idempotency_key,
+            )
+            if replay is not None:
+                if replay.request_hash != request_hash:
+                    raise IdempotencyConflictError(
+                        "The idempotency key was already used for another knowledge update."
+                    )
+                return KnowledgeMetadataUpdateResult(
+                    document_id=UUID(str(replay.response_payload["documentId"])),
+                    version=int(str(replay.response_payload["version"])),
+                    idempotent_replay=True,
+                )
+            document = await uow.knowledge.get_document_for_update(document_id)
+            if document is None:
+                raise EntityNotFoundError("Knowledge document was not found.")
+            before = {
+                "authorityType": document.authority_type.value,
+                "authorityRole": (
+                    document.authority_role.value if document.authority_role else None
+                ),
+                "authorityStatus": document.authority_status.value,
+                "metadataStatus": document.metadata_status.value,
+                "jurisdiction": document.jurisdiction,
+                "enabled": document.enabled,
+                "version": document.version,
+            }
+            document.update_metadata(
+                expected_version=expected_version,
+                title=update.title,
+                authority_type=update.authority_type,
+                authority_role=update.authority_role,
+                authority_status=update.authority_status,
+                jurisdiction=update.jurisdiction,
+                effective_from=update.effective_from,
+                effective_to=update.effective_to,
+                issuer=update.issuer,
+                document_number=update.document_number,
+                enabled=update.enabled,
+            )
+            await uow.knowledge.save_document(document)
+            await uow.audit_events.add(
+                AuditEvent(
+                    id=uuid4(),
+                    aggregate_type="knowledge_document",
+                    aggregate_id=document.id,
+                    event_type="knowledge_metadata_corrected",
+                    actor_id=actor_id,
+                    actor_source="local_user",
+                    payload={
+                        "before": before,
+                        "after": {
+                            "authorityType": document.authority_type.value,
+                            "authorityRole": (
+                                document.authority_role.value
+                                if document.authority_role
+                                else None
+                            ),
+                            "authorityStatus": document.authority_status.value,
+                            "metadataStatus": document.metadata_status.value,
+                            "jurisdiction": document.jurisdiction,
+                            "enabled": document.enabled,
+                            "version": document.version,
+                        },
+                    },
+                    correlation_id=correlation_id,
+                )
+            )
+            await uow.idempotency.add(
+                IdempotencyRecord(
+                    id=uuid4(),
+                    operation=self.UPDATE_OPERATION,
+                    idempotency_key=idempotency_key,
+                    request_hash=request_hash,
+                    response_payload={
+                        "documentId": str(document.id),
+                        "version": document.version,
+                    },
+                )
+            )
+            await uow.commit()
+        return KnowledgeMetadataUpdateResult(
+            document_id=document.id,
+            version=document.version,
+        )

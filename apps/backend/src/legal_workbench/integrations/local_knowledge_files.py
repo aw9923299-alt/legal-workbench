@@ -67,6 +67,8 @@ def scan_local_knowledge_files(source: Path) -> LocalKnowledgeFileScan:
     root = source.resolve(strict=True)
     if not root.is_dir():
         raise NotADirectoryError("Local knowledge source must be a directory.")
+    if any(part.casefold().endswith(".noindex") for part in root.parts):
+        raise ValueError("File Provider backing store is not a verified local source.")
     files: list[LocalKnowledgeFile] = []
     failures: list[LocalKnowledgeFileFailure] = []
     skipped_symlinks = 0

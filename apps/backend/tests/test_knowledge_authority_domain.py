@@ -101,3 +101,53 @@ def test_effective_formal_authority_honours_effective_dates() -> None:
 
     assert document.is_current_formal_legal_basis(on_date=date(2026, 8, 8)) is True
     assert document.is_current_formal_legal_basis(on_date=date(2026, 8, 9)) is False
+
+
+def test_manual_metadata_update_derives_role_and_supports_disable() -> None:
+    document = _document(
+        authority_type=AuthorityType.UNKNOWN,
+        authority_role=None,
+        authority_status=AuthorityStatus.UNKNOWN,
+        metadata_status=KnowledgeMetadataStatus.PENDING_METADATA,
+    )
+
+    document.update_metadata(
+        expected_version=1,
+        title="示例合作合同",
+        authority_type=AuthorityType.CONTRACT,
+        authority_role=AuthorityRole.CONTRACTUAL_BASIS,
+        authority_status=AuthorityStatus.EFFECTIVE,
+        jurisdiction="CN",
+        effective_from=date(2026, 1, 1),
+        effective_to=None,
+        issuer="示例甲方与乙方",
+        document_number=None,
+        enabled=False,
+    )
+
+    assert document.authority_role == AuthorityRole.CONTRACTUAL_BASIS
+    assert document.metadata_status == KnowledgeMetadataStatus.READY
+    assert document.document_type == AuthorityType.CONTRACT.value
+    assert document.source_priority == 80
+    assert document.internal_precedent is False
+    assert document.enabled is False
+    assert document.version == 2
+
+
+def test_manual_metadata_update_rejects_role_spoofing() -> None:
+    document = _document()
+
+    with pytest.raises(DomainValidationError, match="deterministic authority role"):
+        document.update_metadata(
+            expected_version=1,
+            title=document.title,
+            authority_type=AuthorityType.COMPANY_POLICY,
+            authority_role=AuthorityRole.FORMAL_LEGAL_BASIS,
+            authority_status=AuthorityStatus.EFFECTIVE,
+            jurisdiction="CN",
+            effective_from=None,
+            effective_to=None,
+            issuer=None,
+            document_number=None,
+            enabled=True,
+        )

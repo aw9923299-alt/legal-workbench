@@ -12,7 +12,10 @@ from legal_workbench.domain.enums import (
     AuthorityType,
     KnowledgeMetadataStatus,
 )
-from legal_workbench.domain.errors import DomainValidationError
+from legal_workbench.domain.errors import (
+    DomainValidationError,
+    EntityVersionConflictError,
+)
 
 
 def normalize_knowledge_text(value: str) -> str:
@@ -40,6 +43,22 @@ AUTHORITY_ROLE_BY_TYPE: dict[AuthorityType, AuthorityRole] = {
 
 def authority_role_for_type(authority_type: AuthorityType) -> AuthorityRole | None:
     return AUTHORITY_ROLE_BY_TYPE.get(authority_type)
+
+
+def authority_priority_for_type(authority_type: AuthorityType) -> int:
+    role = authority_role_for_type(authority_type)
+    if role == AuthorityRole.FORMAL_LEGAL_BASIS:
+        return 100
+    if role in {
+        AuthorityRole.PERSUASIVE_AUTHORITY,
+        AuthorityRole.CONTRACTUAL_BASIS,
+    }:
+        return 80
+    if role == AuthorityRole.INTERNAL_BASIS:
+        return 60
+    if role == AuthorityRole.STRATEGY_REFERENCE:
+        return 40
+    return 20
 
 
 @dataclass(slots=True)
@@ -103,6 +122,73 @@ class KnowledgeDocument:
         if self.effective_from is not None and on_date < self.effective_from:
             return False
         return self.effective_to is None or on_date <= self.effective_to
+
+    def update_metadata(
+        self,
+        *,
+        expected_version: int,
+        title: str,
+        authority_type: AuthorityType,
+        authority_role: AuthorityRole | None,
+        authority_status: AuthorityStatus,
+        jurisdiction: str,
+        effective_from: date | None,
+        effective_to: date | None,
+        issuer: str | None,
+        document_number: str | None,
+        enabled: bool,
+    ) -> None:
+        if self.version != expected_version:
+            raise EntityVersionConflictError(
+                "Knowledge document version does not match.",
+                details={
+                    "expectedVersion": expected_version,
+                    "actualVersion": self.version,
+                },
+            )
+        normalized_title = title.strip()
+        normalized_jurisdiction = jurisdiction.strip()
+        if not normalized_title or not normalized_jurisdiction:
+            raise DomainValidationError(
+                "Knowledge title and jurisdiction are required."
+            )
+        if effective_from and effective_to and effective_to < effective_from:
+            raise DomainValidationError("Knowledge source effective dates are invalid.")
+        expected_role = authority_role_for_type(authority_type)
+        if authority_role != expected_role:
+            raise DomainValidationError(
+                "Knowledge metadata must use the deterministic authority role."
+            )
+        if authority_type == AuthorityType.UNKNOWN and (
+            authority_status != AuthorityStatus.UNKNOWN
+        ):
+            raise DomainValidationError(
+                "Unknown authority cannot claim an effective authority status."
+            )
+        self.title = normalized_title
+        self.authority_type = authority_type
+        self.authority_role = expected_role
+        self.authority_status = authority_status
+        self.metadata_status = (
+            KnowledgeMetadataStatus.PENDING_METADATA
+            if authority_type == AuthorityType.UNKNOWN
+            else KnowledgeMetadataStatus.READY
+        )
+        self.document_type = authority_type.value
+        self.source_priority = authority_priority_for_type(authority_type)
+        self.jurisdiction = normalized_jurisdiction
+        self.effective_from = effective_from
+        self.effective_to = effective_to
+        self.issuer = issuer.strip() if issuer and issuer.strip() else None
+        self.document_number = (
+            document_number.strip()
+            if document_number and document_number.strip()
+            else None
+        )
+        self.enabled = enabled
+        self.internal_precedent = authority_type == AuthorityType.INTERNAL_PRECEDENT
+        self.updated_at = utc_now()
+        self.version += 1
 
 
 @dataclass(frozen=True, slots=True)
