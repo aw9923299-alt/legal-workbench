@@ -21,16 +21,20 @@ async def test_postgres_retrieval_filters_and_ranks_authorized_knowledge() -> No
     if os.getenv("RUN_POSTGRES_INTEGRATION_TESTS") != "1":
         pytest.skip("PostgreSQL integration tests are disabled")
 
-    from sqlalchemy import func, select
+    from sqlalchemy import delete, func, select
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-    from legal_workbench.infrastructure.models import KnowledgeRetrievalLogModel
+    from legal_workbench.infrastructure.models import (
+        KnowledgeDocumentModel,
+        KnowledgeRetrievalLogModel,
+    )
     from legal_workbench.infrastructure.unit_of_work import SqlAlchemyUnitOfWorkFactory
 
     engine = create_async_engine(os.environ["LEGAL_WORKBENCH_TEST_DATABASE_URL"])
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
     factory = SqlAlchemyUnitOfWorkFactory(session_factory)
     source_suffix = uuid4().hex
+    retrieval_marker = f"retrieval{source_suffix}"
 
     def document(
         name: str,
@@ -83,16 +87,16 @@ async def test_postgres_retrieval_filters_and_ranks_authorized_knowledge() -> No
             knowledge_document_id=value.id,
             sequence=1,
             locator="第一条",
-            text="合同责任上限应结合交易结构确定。",
-            normalized_text="合同责任上限应结合交易结构确定。",
+            text=f"{retrieval_marker} 合同责任上限应结合交易结构确定。",
+            normalized_text=f"{retrieval_marker} 合同责任上限应结合交易结构确定。",
             text_hash=sha256(
-                f"合同责任上限应结合交易结构确定。:{value.id}".encode()
+                f"{retrieval_marker}:合同责任上限应结合交易结构确定。:{value.id}".encode()
             ).hexdigest(),
         )
         for value in documents
     ]
     request = KnowledgeSearchRequest(
-        query="合同责任上限",
+        query=retrieval_marker,
         agent_type="contract_review",
         matter_type="contract",
         jurisdiction="CN",
@@ -128,4 +132,17 @@ async def test_postgres_retrieval_filters_and_ranks_authorized_knowledge() -> No
             )
         assert audit_count == 1
     finally:
+        async with session_factory() as session, session.begin():
+            await session.execute(
+                delete(KnowledgeRetrievalLogModel).where(
+                    KnowledgeRetrievalLogModel.correlation_id
+                    == request.correlation_id
+                )
+            )
+            await session.execute(
+                delete(KnowledgeDocumentModel).where(
+                    KnowledgeDocumentModel.source_type == "fixture",
+                    KnowledgeDocumentModel.source_id.like(f"{source_suffix}:%"),
+                )
+            )
         await engine.dispose()

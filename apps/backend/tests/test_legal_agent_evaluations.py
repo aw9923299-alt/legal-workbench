@@ -155,7 +155,14 @@ def test_butler_quality_scores_route_only_required_parallel_specialists() -> Non
                 {"issue": "责任条款", "sourceRefs": ["ctx:fixture"]},
                 {"issue": "图片授权", "sourceRefs": ["ctx:fixture"]},
             ],
-            "integratedRisks": [],
+            "integratedRisks": [
+                {
+                    "description": "责任条款与图片授权均存在缺口",
+                    "severity": "high",
+                    "likelihood": "possible",
+                    "supportRefs": ["ctx:fixture"],
+                }
+            ],
             "recommendedStrategy": [
                 {
                     "action": "同步推进修改和补件",
@@ -170,7 +177,15 @@ def test_butler_quality_scores_route_only_required_parallel_specialists() -> Non
             "missingInformation": [],
             "draftResponse": "请按清单补充资料并确认修改。",
             "participatingAgents": ["contract_review", "ip_copyright"],
-            "citations": [],
+            "citations": [
+                {
+                    "sourceRef": "ctx:fixture",
+                    "title": "非敏感评估 fixture",
+                    "sourceType": "context_snapshot",
+                    "contentHash": "c" * 64,
+                    "internalPrecedent": False,
+                }
+            ],
             "conflicts": [],
             "confidence": 0.8,
         }
