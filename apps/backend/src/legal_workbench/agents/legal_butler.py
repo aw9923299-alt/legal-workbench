@@ -113,15 +113,15 @@ class ButlerGroundedAction(StrictLegalModel):
 class ButlerSynthesisOutput(StrictLegalModel):
     phase: Literal["synthesis"]
     matter_assessment: str = Field(min_length=1)
-    core_facts: list[ButlerGroundedFact]
-    key_legal_issues: list[ButlerGroundedIssue]
-    integrated_risks: list[ButlerGroundedRisk]
-    recommended_strategy: list[ButlerGroundedStrategy]
-    next_actions: list[ButlerGroundedAction]
+    core_facts: list[ButlerGroundedFact] = Field(min_length=1)
+    key_legal_issues: list[ButlerGroundedIssue] = Field(min_length=1)
+    integrated_risks: list[ButlerGroundedRisk] = Field(min_length=1)
+    recommended_strategy: list[ButlerGroundedStrategy] = Field(min_length=1)
+    next_actions: list[ButlerGroundedAction] = Field(min_length=1)
     missing_information: list[str]
-    draft_response: str
+    draft_response: str = Field(min_length=1)
     participating_agents: list[str]
-    citations: list[LegalCitation]
+    citations: list[LegalCitation] = Field(min_length=1)
     conflicts: list[ButlerConflict]
     confidence: float = Field(ge=0, le=1)
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
 
 from legal_workbench.agents.legal_butler import (
     ButlerSynthesisOutput,
@@ -116,3 +117,22 @@ def test_specialist_run_cannot_replace_original_source_citation() -> None:
             },
             internal_precedent_refs=set(),
         )
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "coreFacts",
+        "keyLegalIssues",
+        "integratedRisks",
+        "recommendedStrategy",
+        "nextActions",
+        "citations",
+    ],
+)
+def test_final_butler_review_rejects_missing_grounded_sections(field: str) -> None:
+    payload = _payload()
+    payload[field] = []
+
+    with pytest.raises(ValidationError):
+        ButlerSynthesisOutput.model_validate(payload)
