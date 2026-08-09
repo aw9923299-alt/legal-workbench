@@ -311,6 +311,8 @@ interface LegalAgentRequest {
     | 'ip_copyright'
     | 'labor_employment';
   jurisdiction?: string;
+  /** 仅由调用方显式开启；贯通幂等哈希、Outbox、Plan 与恢复执行。 */
+  historicalAsOf?: string; // ISO 8601 date
 }
 ```
 

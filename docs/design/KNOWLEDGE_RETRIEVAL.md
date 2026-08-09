@@ -99,11 +99,11 @@ keyword score
 
 正式制度和批准模板优先于历史事项；历史审核样例只能影响表达和流程，不自动成为法律规则。
 
-首期排序先执行 effective-date 与元数据硬过滤，再按 `source_priority`、全文相关度、`pg_trgm` 相似度、资料权威等级和生效时间确定顺序。SQL 使用受控的候选池上限，应用层完成文本哈希去重、authority 排序和预算选择后再受最终结果上限约束，避免前排重复/超长 Chunk 挤掉后续合格候选。每次检索的 Query、过滤器、命中片段和 Correlation ID 均写入只追加审计日志。
+首期排序先执行 effective-date 与元数据硬过滤，再按 `source_priority`、全文相关度、`pg_trgm` 相似度、资料权威等级和生效时间确定顺序。SQL 在候选池上限之前按文本哈希执行窗口去重，并使用本次 `max_single_chunk_tokens` 排除超限 Chunk（历史 Token 计数缺失时按 UTF-8 bytes/4 确定性估算）；应用层继续执行 fail-safe 去重、authority 排序和三重预算选择。这样即使超过 `5 × limit` 的重复或超长旧 Chunk 排在前面，也不能挤掉后续合格证据。每次检索的 Query、过滤器、命中片段和 Correlation ID 均写入只追加审计日志。
 
 默认当前分析只召回 `effective/unknown`。`repealed/superseded` 仅在 Python 侧显式、持久化的 `historical_as_of` 日期存在，且该日期落在资料有效期内时召回；模型输出的 `historicalAnalysis` 不能自行开启历史模式。
 
-最终选择还必须受 `LEGAL_KNOWLEDGE_MAX_CHUNKS`、`LEGAL_KNOWLEDGE_MAX_TOKENS` 和 `LEGAL_KNOWLEDGE_MAX_SINGLE_CHUNK_TOKENS` 限制。检索日志只保存 query hash，不保存敏感 query 正文，并记录候选数、选中 Chunk/Token、重复排除、预算排除、过滤器、各分量分数和预算快照。当前默认值为未完成真实资料审计前的保守运行值，真实导入前必须根据 inventory 校准。
+最终选择还必须受 `LEGAL_KNOWLEDGE_MAX_CHUNKS`、`LEGAL_KNOWLEDGE_MAX_TOKENS` 和 `LEGAL_KNOWLEDGE_MAX_SINGLE_CHUNK_TOKENS` 限制。检索日志只保存 query hash，不保存敏感 query 正文；Repository 返回 SQL 上限前的原始候选数、SQL 前置重复排除数和单 Chunk 超限排除数，应用服务再合并应用层去重/三重预算排除，确保日志完整记录候选数、选中 Chunk/Token、重复排除、预算排除、过滤器、各分量分数和预算快照。当前默认值为未完成真实资料审计前的保守运行值，真实导入前必须根据 inventory 校准。
 
 ## 6. 引用
 
