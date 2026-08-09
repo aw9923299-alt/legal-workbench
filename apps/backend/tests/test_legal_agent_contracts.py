@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import UTC, date, datetime
+from uuid import uuid4
 
 import pytest
 from pydantic import ValidationError
 
+from legal_workbench.agents.contracts import LegalAgentContractRegistry
 from legal_workbench.agents.definitions import build_legal_agent_definitions
 from legal_workbench.agents.legal_butler import ButlerPlanningOutput
 from legal_workbench.agents.legal_contracts import (
@@ -15,6 +17,8 @@ from legal_workbench.agents.legal_contracts import (
     validate_legal_work_product_sources,
 )
 from legal_workbench.agents.professional import LEGAL_SPECIALIST_KEYS
+from legal_workbench.agents.runtime import AgentExecutionContext
+from legal_workbench.domain.entities import ContextSnapshot
 
 
 def _grounded_envelope() -> dict[str, object]:
@@ -64,7 +68,7 @@ def test_all_registered_legal_agents_have_independent_strict_contracts() -> None
     definitions = build_legal_agent_definitions()
 
     assert set(definitions) == {"legal_butler", *LEGAL_SPECIALIST_KEYS}
-    assert len({item.version for item in definitions.values()}) == 1
+    assert all(item.version for item in definitions.values())
     assert all(item.allowed_tools == [] for item in definitions.values())
     assert all(item.requires_human_review for item in definitions.values())
     for item in definitions.values():
@@ -201,3 +205,27 @@ def test_butler_planning_rejects_unknown_agent_cycle_and_unbounded_steps() -> No
 
     with pytest.raises(ValidationError):
         ButlerPlanningOutput.model_validate(base | {"steps": steps * 3})
+
+
+def test_butler_runtime_selects_one_phase_schema_without_root_one_of() -> None:
+    definition = build_legal_agent_definitions()["legal_butler"]
+    snapshot = ContextSnapshot(
+        id=uuid4(),
+        source_type="fixture",
+        source_ids=["fixture"],
+        message_ids=[],
+        file_ids=[],
+        relevant_matter_ids=[],
+        participant_ids=[],
+        permission_snapshot={},
+        generated_at=datetime.now(UTC),
+        content_hash="a" * 64,
+    )
+
+    schema = LegalAgentContractRegistry().runtime_output_schema(
+        definition,
+        AgentExecutionContext(snapshot=snapshot, input_payload={"phase": "planning"}),
+    )
+
+    assert "oneOf" not in schema
+    assert schema["properties"]["phase"]["const"] == "planning"

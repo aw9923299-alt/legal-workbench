@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from copy import deepcopy
+
 from pydantic import BaseModel
 
 from legal_workbench.agents.definitions import (
@@ -105,6 +107,30 @@ class LegalAgentContractRegistry:
             },
         }
         return MessageJudgementInput.model_validate(payload).model_dump(by_alias=True, mode="json")
+
+    def runtime_output_schema(
+        self,
+        definition: AgentDefinition,
+        context: AgentExecutionContext,
+    ) -> dict[str, object]:
+        """Select one strict Butler phase schema because Codex forbids root oneOf."""
+
+        if definition.key != "legal_butler":
+            return deepcopy(definition.output_schema)
+        phase = None if context.input_payload is None else context.input_payload.get("phase")
+        variants = definition.output_schema.get("oneOf")
+        if phase not in {"planning", "synthesis"} or not isinstance(variants, list):
+            raise DomainValidationError("Butler runtime phase schema is unavailable.")
+        for variant in variants:
+            if not isinstance(variant, dict):
+                continue
+            properties = variant.get("properties")
+            if not isinstance(properties, dict):
+                continue
+            phase_schema = properties.get("phase")
+            if isinstance(phase_schema, dict) and phase_schema.get("const") == phase:
+                return deepcopy(variant)
+        raise DomainValidationError("Butler runtime phase does not match a registered schema.")
 
     def validate_output(
         self,

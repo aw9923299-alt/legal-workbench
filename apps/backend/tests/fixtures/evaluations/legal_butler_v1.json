@@ -1,0 +1,12 @@
+{
+  "suiteKey": "legal_butler_v1",
+  "version": 1,
+  "agentKey": "legal_butler",
+  "dataClassification": "synthetic_non_sensitive",
+  "cases": [{
+    "caseKey": "contract_and_ip_routing",
+    "caseVersion": 1,
+    "input": {"objective": "处理虚构合作合同及图片授权风险"},
+    "expected": {"requiredSpecialists": ["contract_review", "ip_copyright"], "dependencies": []}
+  }]
+}

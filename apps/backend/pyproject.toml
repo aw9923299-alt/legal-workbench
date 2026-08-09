@@ -49,6 +49,7 @@ testpaths = ["tests"]
 pythonpath = ["../.."]
 markers = [
   "integration: requires a migrated PostgreSQL database",
+  "real_codex: requires explicit local Codex Runtime authorization",
 ]
 
 [tool.ruff]

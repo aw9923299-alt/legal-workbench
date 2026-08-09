@@ -1,0 +1,12 @@
+{
+  "suiteKey": "dispute_complaint_v1",
+  "version": 1,
+  "agentKey": "dispute_complaint",
+  "dataClassification": "synthetic_non_sensitive",
+  "cases": [{
+    "caseKey": "service_payment_dispute",
+    "caseVersion": 1,
+    "input": {"objective": "整理虚构服务费争议时间线与证据缺口", "authorizedSourceRefs": ["ctx:snapshot:fixture", "knowledge:chunk:fixture"]},
+    "expected": {"issueTerms": ["付款"], "missingInformation": ["验收记录"]}
+  }]
+}

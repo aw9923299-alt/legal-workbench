@@ -65,9 +65,14 @@ class ButlerPlanningOutput(StrictLegalModel):
         return self
 
 
+class ButlerAgentPosition(StrictLegalModel):
+    agent_key: str = Field(min_length=1)
+    position: str = Field(min_length=1)
+
+
 class ButlerConflict(StrictLegalModel):
     topic: str = Field(min_length=1)
-    agent_positions: dict[str, str]
+    agent_positions: list[ButlerAgentPosition] = Field(min_length=2)
     resolution_needed: str = Field(min_length=1)
 
 

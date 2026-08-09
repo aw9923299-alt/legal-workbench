@@ -137,7 +137,17 @@ class CodexCliRuntime:
         )
         self._write(input_path, _json(input_payload))
         self._write(prompt_path, runtime_prompt)
-        self._write(schema_path, _json(definition.output_schema))
+        try:
+            runtime_output_schema = self._contracts.runtime_output_schema(
+                definition, context
+            )
+        except DomainValidationError as exc:
+            raise AgentRuntimeError(
+                "AGENT_RUNTIME_START_FAILED",
+                "Agent output phase schema could not be selected.",
+                retryable=False,
+            ) from exc
+        self._write(schema_path, _json(runtime_output_schema))
         self._write_allowed_sources(run_dir / "allowed_sources", context)
         command = [
             *self._command,
