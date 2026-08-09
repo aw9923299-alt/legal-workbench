@@ -62,10 +62,10 @@ Candidate confirmed / Matter manual trigger
 | 飞书补偿同步 | 已实现配置群聊时间窗方案；未配置群聊时明确为部分恢复 |
 | Mac 常驻运维 | 当前 Mac 已安装并加载 Supervisor/Backup launchd，基础服务、Beat heartbeat、Scheduled Personal Sync、custom backup 与隔离 restore 已验收；`pmset` 计划唤醒要求 root，故物理睡眠/唤醒和唤醒后新消息入库仍为人工待验 |
 | 飞书加密 Webhook | 尚未实现；加密载荷明确拒绝 |
-| Legal Butler + 五类专业 Agent | 已实现两阶段 Butler、最多四步无环 DAG、直接依赖隔离、latest-valid dependency 重建、stale 排除、依赖正确的单步重跑、部分成功与失败降级；未新增专业 Agent |
-| 本地法律资料沉淀 | 已实现只读扫描、SHA-256 去重、增量/版本化导入、失踪历史保留、单文件失败隔离；复用既有 PDF/DOCX/TXT/Markdown Document/Segment/Knowledge 管道，`.noindex` 后备目录 fail closed |
-| 法律知识检索 | 已实现 PostgreSQL FTS + pg_trgm、确定性 authority taxonomy、三重 Token Budget、授权 Context 注入与完整检索预算审计；真实资料审计按本轮指令暂缓，默认预算仍为待校准值 |
-| 法律 Agent 人工审核 | Butler 综合结果创建 DraftArtifact 与 pending ReviewPackage；事实/问题/风险/策略/行动/冲突保留逐项原始 source refs，前端可点击追溯；不会创建 Communication，也不会自动发送 |
+| Legal Butler + 五类专业 Agent | 已实现两阶段 Butler、最多四步无环 DAG、直接依赖隔离、latest-valid dependency 重建；上游重跑后旧下游标记 `STALE_DEPENDENCY_RUN`、不再携带旧输出进入 synthesis，必须显式重跑；未新增专业 Agent |
+| 本地法律资料沉淀 | 已实现只读扫描、SHA-256 去重、增量/版本化导入、失踪历史保留、单文件失败隔离；失败/中断 Extraction 会按同一 Version 新建审计尝试，提取前后复核源 SHA/size/mtime，长 Segment 按单 Chunk 预算确定性拆分；`.noindex` 后备目录 fail closed |
+| 法律知识检索 | 已实现 PostgreSQL FTS + pg_trgm、确定性 authority taxonomy、扩大候选池后的去重/authority/三重 Token Budget、授权 Context 注入与检索预算审计；历史资料仅在持久化 `historical_as_of` 模式下召回；真实资料审计按本轮指令暂缓，默认预算仍为待校准值 |
+| 法律 Agent 人工审核 | Butler 综合结果创建 DraftArtifact 与 pending ReviewPackage；事实/问题/风险/策略/行动/冲突保留逐项原始 source refs，citation 标题/定位/hash 由持久化来源覆盖模型字段；未知效力强制降置信并列缺失信息；不会创建 Communication，也不会自动发送 |
 | 知识管理页 | `/library` 已连接 PostgreSQL，可人工修正 authority/法域/效力/启停并查看 Chunk、Token 与检索命中；不暴露绝对本地路径 |
 
 ## 重要代码入口
@@ -114,7 +114,7 @@ Candidate confirmed / Matter manual trigger
 - `application/legal_agent_orchestrator.py`：两阶段、有限 DAG、并行波次、失败降级、单 Step 重跑、DraftArtifact/ReviewPackage 人工门禁。
 - `application/legal_context.py`、`infrastructure/knowledge.py`：Document/Segment 授权上下文与 PostgreSQL FTS/pg_trgm 检索、过滤、排序和检索审计。
 - `application/{local_knowledge_import,material_inventory,token_budget,knowledge}.py`：本地资料增量导入、确定性 Token 估算/预算、inventory 和人工元数据管理。
-- `application/{agent_execution_lease,analysis_recovery}.py`：跨消息研判与 Legal 各阶段共用的 Attempt、lease、heartbeat、fencing 和 PostgreSQL recovery。
+- `application/{agent_attempts,analysis_recovery}.py`：跨消息研判与 Legal 各阶段共用的 Attempt、lease、heartbeat、fencing 和 PostgreSQL recovery；数据库谓词拒绝自然过期租约复活。
 - `api/routes/knowledge.py`、`apps/web/src/pages/LibraryPage.tsx`：单机知识目录、authority 元数据修正、Chunk/检索命中。
 - `apps/web/src/pages/ReviewCenterPage.tsx`：ReviewPackage 逐项 Grounding 与原始授权来源查看。
 - `api/routes/legal_agent_plans.py`、`workers/tasks.py`：Matter 人工触发、计划查询、Step 重跑与唯一 Worker 入口。

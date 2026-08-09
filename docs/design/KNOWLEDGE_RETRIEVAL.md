@@ -99,7 +99,9 @@ keyword score
 
 正式制度和批准模板优先于历史事项；历史审核样例只能影响表达和流程，不自动成为法律规则。
 
-首期排序先执行 effective-date 与元数据硬过滤，再按 `source_priority`、全文相关度、`pg_trgm` 相似度、资料权威等级和生效时间确定顺序。每次检索的 Query、过滤器、命中片段和 Correlation ID 均写入只追加审计日志。
+首期排序先执行 effective-date 与元数据硬过滤，再按 `source_priority`、全文相关度、`pg_trgm` 相似度、资料权威等级和生效时间确定顺序。SQL 使用受控的候选池上限，应用层完成文本哈希去重、authority 排序和预算选择后再受最终结果上限约束，避免前排重复/超长 Chunk 挤掉后续合格候选。每次检索的 Query、过滤器、命中片段和 Correlation ID 均写入只追加审计日志。
+
+默认当前分析只召回 `effective/unknown`。`repealed/superseded` 仅在 Python 侧显式、持久化的 `historical_as_of` 日期存在，且该日期落在资料有效期内时召回；模型输出的 `historicalAnalysis` 不能自行开启历史模式。
 
 最终选择还必须受 `LEGAL_KNOWLEDGE_MAX_CHUNKS`、`LEGAL_KNOWLEDGE_MAX_TOKENS` 和 `LEGAL_KNOWLEDGE_MAX_SINGLE_CHUNK_TOKENS` 限制。检索日志只保存 query hash，不保存敏感 query 正文，并记录候选数、选中 Chunk/Token、重复排除、预算排除、过滤器、各分量分数和预算快照。当前默认值为未完成真实资料审计前的保守运行值，真实导入前必须根据 inventory 校准。
 
@@ -123,9 +125,9 @@ Butler 的事实、问题、风险、策略、行动和冲突均保存逐项 sou
 make knowledge-import SOURCE="/真实可读/Codex-Obs法务项目"
 ```
 
-导入器只读扫描源目录，复用现有隔离 PDF/DOCX/TXT/Markdown 解析器，依次形成 `LocalDocumentSource → DocumentVersion → DocumentExtraction → DocumentSegment → KnowledgeDocument → KnowledgeChunk`。SHA-256 相同内容只解析一次；未变化文件仅追加观察记录；内容变化创建新版本；失踪源只标记 `missing`，不删除历史。单文件失败隔离，日志不输出正文，API/Agent 输入不暴露绝对路径。`.noindex` File Provider 后备目录会 fail closed，避免把占位文件当成真实资料。
+导入器只读扫描源目录，复用现有隔离 PDF/DOCX/TXT/Markdown 解析器，依次形成 `LocalDocumentSource → DocumentVersion → DocumentExtraction → DocumentSegment → KnowledgeDocument → KnowledgeChunk`。只有“成功 Extraction + Segment + KnowledgeDocument”才可作为 unchanged/dedup 目标；失败或中断会在同一 Version 上追加新的 Extraction 尝试。提取前后重新校验 SHA-256、size 和 mtime，发生竞态即安全失败并等待下次扫描。长 Segment 在 Knowledge 注册阶段按安全文本边界拆分，每个 Chunk 不超过配置的单 Chunk Token 上限并保留字符 offset locator。失踪源只标记 `missing`，不删除历史。单文件失败隔离，日志不输出正文，API/Agent 输入不暴露绝对路径。`.noindex` File Provider 后备目录会 fail closed，避免把占位文件当成真实资料。
 
-首次分类仅使用目录、文件名和现有元数据的确定性规则。无法可靠识别的资料保存为 `unknown/pending_metadata`，再由单机知识管理页人工修正类型、法域、效力日期和启停状态，并查看 Chunk 与检索命中。
+首次分类只接受无冲突的精确目录段标记；文件名中的偶然关键词不会升级来源等级。即使类型可推断，效力仍保持 `unknown` 且元数据保持 `pending_metadata`，由单机知识管理页人工确认类型、法域、效力日期/状态和启停，并查看 Chunk 与检索命中。
 
 ## 8. 删除和失效
 
