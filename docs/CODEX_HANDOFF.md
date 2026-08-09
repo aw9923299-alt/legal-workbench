@@ -22,6 +22,18 @@ Workbench OAuth + PKCE → LocalSecretProvider → Feishu User API
 
 Runtime 前后使用独立短事务，不在数据库事务内等待 Codex。任何置信度都不会自动创建 `LegalMatter`。
 
+Phase 2 在人工确认后的 Matter 上增加受控闭环：
+
+```text
+Candidate confirmed / Matter manual trigger
+→ Butler Planning AgentRun → persisted AgentExecutionPlan
+→ bounded specialist DAG (maximum four registered agents)
+→ Butler Synthesis AgentRun
+→ DraftArtifact + pending ReviewPackage
+```
+
+专业 Agent 只读取 Context Builder 明确授权的 ContextSnapshot 与 KnowledgeChunk；所有计划、重试、Parent/Child Run、检索日志和产物均持久化。管家和专业 Agent 均不能修改 Matter/WorkItem、创建任意 Agent、调用 shell 或发送飞书消息。
+
 ## 状态矩阵
 
 | 能力 | 状态 |
@@ -50,7 +62,9 @@ Runtime 前后使用独立短事务，不在数据库事务内等待 Codex。任
 | 飞书补偿同步 | 已实现配置群聊时间窗方案；未配置群聊时明确为部分恢复 |
 | Mac 常驻运维 | 当前 Mac 已安装并加载 Supervisor/Backup launchd，基础服务、Beat heartbeat、Scheduled Personal Sync、custom backup 与隔离 restore 已验收；`pmset` 计划唤醒要求 root，故物理睡眠/唤醒和唤醒后新消息入库仍为人工待验 |
 | 飞书加密 Webhook | 尚未实现；加密载荷明确拒绝 |
-| 知识解析/检索/专业 Agent/外发 | 本轮未实现 |
+| Legal Butler + 五类专业 Agent | 已实现两阶段 Butler、最多四步无环 DAG、并行/依赖执行、单步重跑、部分成功与失败降级；五类 Agent 使用独立 Prompt/Schema/Fixture/Version 和统一 LegalWorkProduct |
+| 法律知识检索 | 已复用 Document/Segment 管道，新增 PostgreSQL FTS + pg_trgm、六维过滤排序、授权 Context 注入与检索日志；内部意见明确标记 `internal_precedent` |
+| 法律 Agent 人工审核 | Butler 综合结果创建 DraftArtifact 与 pending ReviewPackage；不会创建 Communication，也不会自动发送 |
 
 ## 重要代码入口
 
@@ -94,6 +108,12 @@ Runtime 前后使用独立短事务，不在数据库事务内等待 Codex。任
 - `apps/web/src/pages/FeishuScopesPage.tsx`：群聊范围登记、允许、排除、暂停、恢复和精确错误证据。
 - `scripts/legal_workbench_ops.py`、`infra/launchd/*.plist.example`：Mac 安全启停、唤醒恢复、PostgreSQL 备份、运行目录保留、脱敏诊断和定时模板；
 - `scripts/smoke_test_downstream_loop.py`：真实 PostgreSQL 组件、隔离 Redis DB 清空恢复 + 11 类 Fake/显式真实 Runtime 的组合验证，明确不冒充单对象 E2E 或宿主运维验收。
+- `agents/{legal_butler,legal_contracts,professional_legal}.py`：Butler Planning/Synthesis 与五类专业 Agent 的严格输入输出契约、Prompt 和版本。
+- `application/legal_agent_orchestrator.py`：两阶段、有限 DAG、并行波次、失败降级、单 Step 重跑、DraftArtifact/ReviewPackage 人工门禁。
+- `application/legal_context.py`、`infrastructure/knowledge.py`：Document/Segment 授权上下文与 PostgreSQL FTS/pg_trgm 检索、过滤、排序和检索审计。
+- `api/routes/legal_agent_plans.py`、`workers/tasks.py`：Matter 人工触发、计划查询、Step 重跑与唯一 Worker 入口。
+- `apps/web/src/components/LegalButlerPanel.tsx`、`pages/{TaskDetailPage,AgentCenterPage}.tsx`：Matter 管家入口、执行计划/综合意见，以及 Parent/Child Run 树。
+- `tests/test_real_codex_legal_agent_e2e.py`：显式门禁下的真实单 Agent 与合同+知识产权多 Agent E2E。
 
 ## 配置门禁
 
@@ -115,4 +135,6 @@ Runtime 将唯一授权 ContextSnapshot 作为不可信 JSON 直接送入 stdin�
 1. 在取得 `pmset` root 权限或有人现场操作时执行真实睡眠/唤醒，并在唤醒后发送一条新的非敏感飞书消息完成新增入库证据；
 2. 如需本地消息补充，等待飞书客户端出现明确支持的明文消息 Schema；继续保持 fail-closed，不尝试解密；
 3. 提供现有 P2P chat、Thread 和可读 docx 的非敏感 fixture 后，补齐 P2P history、Thread replies 和 Document Markdown 实探；未读状态仍需另一账号配合；
-4. 为非本地环境补齐生产会话签发器；本轮真实 Candidate 继续保持 `pending_confirmation`，不得自动创建 Matter 或 WorkItem。
+4. 为非本地环境补齐生产会话签发器；本轮真实 Candidate 继续保持 `pending_confirmation`，不得自动创建 Matter 或 WorkItem；仅人工确认动作可进入 Matter 后续闭环；
+5. 用已审核、非敏感的公司制度/模板/历史意见扩大 Knowledge fixture，并继续以真实 Codex 评估专业质量；首期不接入 Embedding 服务；
+6. Real Codex E2E 依赖显式隔离认证目录与本机 CLI，不进入默认离线测试；任何模型、法规时效或资料不足仍应由 ReviewPackage 人工判断。

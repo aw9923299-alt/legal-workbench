@@ -27,6 +27,15 @@ Query Context
 
 首期不依赖向量字段即可上线。
 
+Context Builder 每次检索必须显式提供并记录以下范围：
+
+```text
+agent_type + matter_type + jurisdiction + document_type
++ effective_date + source_priority
+```
+
+只有命中该授权范围的片段会进入专业 Agent 的 `authorizedContext` 与 `authorizedSourceRefs`。Agent 不持有数据库凭证，也不能直接遍历文件系统、文档表或历史 Matter。
+
 ## 3. pgvector策略
 
 数据库启用`vector`扩展，但`knowledge_chunks.embedding`必须允许为空。向量召回只有在以下条件满足后启用：
@@ -43,6 +52,7 @@ Query Context
 
 `KnowledgeDocument`保存：
 
+- 对既有 `Document` / `DocumentSegment` 解析结果的引用，不复制文件解析正文；
 - 原始文件ID、路径和SHA-256；
 - 文件类型和解析状态；
 - 公司主体、业务线和事项类型；
@@ -50,6 +60,8 @@ Query Context
 - 版本、生效日、失效日和批准状态；
 - 保密等级和访问策略；
 - 删除、撤权和Legal Hold状态。
+
+首期允许登记的来源类型包括公司制度、合同模板、历史法律意见、历史 Matter/已审核处理方案、法规资料和业务规则。历史内部意见和已审核历史方案必须保存 `internal_precedent=true`；它们可以支持处理口径和表达，但不能填入专业 Agent 的正式 `legalBasis`。
 
 `KnowledgeChunk`保存：
 
@@ -83,6 +95,8 @@ keyword score
 ```
 
 正式制度和批准模板优先于历史事项；历史审核样例只能影响表达和流程，不自动成为法律规则。
+
+首期排序先执行 effective-date 与元数据硬过滤，再按 `source_priority`、全文相关度、`pg_trgm` 相似度、资料权威等级和生效时间确定顺序。每次检索的 Query、过滤器、命中片段和 Correlation ID 均写入只追加审计日志。
 
 ## 6. 引用
 

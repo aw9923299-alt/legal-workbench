@@ -284,30 +284,41 @@ interface PriorityDecisionInput {
 ```http
 GET    /api/v1/agents
 GET    /api/v1/agents/:agentId
-POST   /api/v1/matters/:matterId/execution-plans
-POST   /api/v1/execution-plans/:planId/approve
-POST   /api/v1/execution-plans/:planId/start
+POST   /api/v1/matters/:matterId/legal-agent-plans
+GET    /api/v1/matters/:matterId/legal-agent-plans
+GET    /api/v1/legal-agent-plans/:planId
+POST   /api/v1/legal-agent-plans/:planId/steps/:stepId/rerun
 POST   /api/v1/agent-runs/:runId/retry
 POST   /api/v1/agent-runs/:runId/cancel
+GET    /api/v1/agent-runs
 GET    /api/v1/agent-runs/:runId
 GET    /api/v1/agent-runs/:runId/logs
 GET    /api/v1/agent-runs/:runId/artifacts
 ```
 
-创建执行计划：
+请求管家处理：
 
 ```ts
-interface CreateExecutionPlanRequest {
+interface LegalAgentRequest {
   workItemId?: string;
+  contextSnapshotId?: string;
   objective: string;
-  requestedArtifactTypes: string[];
-  permittedFileIds: string[];
-  permittedKnowledgeScopes: string[];
-  planProposalRunId?: string;
+  specialRequirements?: string;
+  specialistOnly?:
+    | 'legal_consultation'
+    | 'contract_review'
+    | 'dispute_complaint'
+    | 'ip_copyright'
+    | 'labor_employment';
+  jurisdiction?: string;
 }
 ```
 
-后端必须验证资源均属于该事项或当前用户明确授权。
+写接口要求认证 Session、`Idempotency-Key` 和 Correlation ID，返回 `202`；同一幂等键重放返回原请求。API 只登记确定性 Outbox 请求，不在 HTTP 事务中运行 Codex。
+
+Butler Planning 输出经后端校验后才持久化：只允许五个注册专业 Agent、最多四步、Step ID 唯一、依赖必须存在且 DAG 无环。运行响应包含 `executionPlanId`、`planStepId`、`parentRunId`、`retryOfRunId` 和 `runRole`，用于完整 Parent/Child 审计。单 Step 重跑只允许已存在的 Specialist Step，并创建新的 Child AgentRun；Agent 本身不能调用该接口。
+
+计划完成后由编排器创建 `DraftArtifact` 与 pending `ReviewPackage`。接口不会修改 Matter/WorkItem，也不会创建或发送 Communication。
 
 ## 9. 审核接口
 
@@ -388,11 +399,12 @@ GET    /api/v1/knowledge/search-audit
 ```ts
 interface KnowledgeSearchRequest {
   query: string;
-  domains: string[];
-  applicableEntityIds: string[];
-  matterCategories: string[];
-  asOf: string;
-  maxConfidentiality: string;
+  agentType: string;
+  matterType?: string;
+  jurisdiction?: string;
+  documentTypes: string[];
+  effectiveDate?: string;
+  minimumSourcePriority?: number;
   topK: number;
 }
 
@@ -403,14 +415,16 @@ interface KnowledgeSearchResult {
   locator: string;
   text: string;
   keywordScore: number;
-  vectorScore?: number;
+  trigramScore: number;
   metadataScore: number;
-  effectiveStatus: string;
+  sourcePriority: number;
+  effectiveDate?: string;
+  internalPrecedent: boolean;
   citationId: string;
 }
 ```
 
-Agent只能通过该接口检索，不直接查询PostgreSQL表或扫描本地目录。向量召回未启用时`vectorScore`为空。
+该检索是 Context Builder 的内部端口，不暴露给 Agent 自由调用。首期仅使用 PostgreSQL 全文检索、`pg_trgm` 与元数据排序，不生成 Embedding。ContextSnapshot 必须保存授权结果的稳定引用，检索日志保存筛选条件和命中；`internalPrecedent=true` 只能作为内部处理先例，不得成为正式法律依据。Agent 不直接查询 PostgreSQL 或扫描本地目录。
 
 ## 12. 学习和规则接口
 
