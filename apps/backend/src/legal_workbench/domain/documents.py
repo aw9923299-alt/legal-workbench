@@ -185,6 +185,20 @@ class LocalDocumentSource:
         if self.version < 1:
             raise DomainValidationError("Local document source version is invalid.")
 
+    def mark_seen(self, *, now: datetime | None = None) -> None:
+        timestamp = now or utc_now()
+        self.status = LocalDocumentSourceStatus.ACTIVE
+        self.last_seen_at = timestamp
+        self.updated_at = timestamp
+        self.version += 1
+
+    def mark_missing(self, *, now: datetime | None = None) -> None:
+        if self.status == LocalDocumentSourceStatus.DISABLED:
+            return
+        self.status = LocalDocumentSourceStatus.MISSING
+        self.updated_at = now or utc_now()
+        self.version += 1
+
 
 @dataclass(frozen=True, slots=True)
 class LocalDocumentObservation:
@@ -211,6 +225,7 @@ class LocalKnowledgeScan:
     discovered_count: int = 0
     unchanged_count: int = 0
     imported_count: int = 0
+    deduplicated_count: int = 0
     failed_count: int = 0
     unsupported_count: int = 0
     missing_count: int = 0
@@ -222,6 +237,7 @@ class LocalKnowledgeScan:
             self.discovered_count,
             self.unchanged_count,
             self.imported_count,
+            self.deduplicated_count,
             self.failed_count,
             self.unsupported_count,
             self.missing_count,
@@ -230,6 +246,14 @@ class LocalKnowledgeScan:
             count < 0 for count in counts
         ):
             raise DomainValidationError("Local knowledge scan metadata is invalid.")
+
+    def finish(self, *, now: datetime | None = None) -> None:
+        self.status = (
+            LocalKnowledgeScanStatus.COMPLETED
+            if self.failed_count == 0
+            else LocalKnowledgeScanStatus.PARTIAL
+        )
+        self.finished_at = now or utc_now()
 
 
 @dataclass(slots=True)

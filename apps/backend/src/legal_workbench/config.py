@@ -72,6 +72,7 @@ class Settings(BaseSettings):
     document_extraction_max_output_bytes: int = 5 * 1024 * 1024
 
     knowledge_root: str = "/data/knowledge"
+    knowledge_import_max_file_bytes: int = 100 * 1024 * 1024
     codex_runs_root: str = "/data/codex-runs"
     codex_auth_home: str | None = None
     setup_secret_root: str = "/data/local-secrets"
@@ -175,6 +176,8 @@ class Settings(BaseSettings):
             raise ValueError("Backup age and Codex retention settings must be positive.")
         if self.minimum_disk_free_bytes < 0:
             raise ValueError("Minimum disk free bytes cannot be negative.")
+        if self.knowledge_import_max_file_bytes < 1:
+            raise ValueError("Knowledge import maximum file size must be positive.")
         if self.analysis_recovery_stale_seconds < 1:
             raise ValueError("Analysis recovery stale seconds must be positive.")
         return self

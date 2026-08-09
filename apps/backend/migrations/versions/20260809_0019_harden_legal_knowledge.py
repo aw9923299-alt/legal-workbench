@@ -27,6 +27,7 @@ def upgrade() -> None:
         sa.Column("discovered_count", sa.Integer(), server_default="0", nullable=False),
         sa.Column("unchanged_count", sa.Integer(), server_default="0", nullable=False),
         sa.Column("imported_count", sa.Integer(), server_default="0", nullable=False),
+        sa.Column("deduplicated_count", sa.Integer(), server_default="0", nullable=False),
         sa.Column("failed_count", sa.Integer(), server_default="0", nullable=False),
         sa.Column("unsupported_count", sa.Integer(), server_default="0", nullable=False),
         sa.Column("missing_count", sa.Integer(), server_default="0", nullable=False),
@@ -49,6 +50,7 @@ def upgrade() -> None:
         ),
         sa.CheckConstraint(
             "discovered_count >= 0 AND unchanged_count >= 0 AND imported_count >= 0 "
+            "AND deduplicated_count >= 0 "
             "AND failed_count >= 0 AND unsupported_count >= 0 AND missing_count >= 0",
             name="local_knowledge_scan_counts_nonnegative",
         ),

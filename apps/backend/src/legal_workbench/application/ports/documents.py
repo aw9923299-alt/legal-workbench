@@ -11,6 +11,9 @@ from legal_workbench.domain.documents import (
     DocumentVersion,
     FeishuDocument,
     FeishuDocumentSubscription,
+    LocalDocumentObservation,
+    LocalDocumentSource,
+    LocalKnowledgeScan,
 )
 from legal_workbench.domain.knowledge import (
     KnowledgeChunk,
@@ -28,6 +31,27 @@ __all__ = [
 
 
 class DocumentRepository(Protocol):
+    async def add_local_scan(self, scan: LocalKnowledgeScan) -> None: ...
+    async def save_local_scan(self, scan: LocalKnowledgeScan) -> None: ...
+    async def find_local_source(
+        self, *, source_root_key: str, relative_path: str
+    ) -> LocalDocumentSource | None: ...
+    async def list_local_sources(
+        self, *, source_root_key: str
+    ) -> Sequence[LocalDocumentSource]: ...
+    async def add_local_source(self, source: LocalDocumentSource) -> None: ...
+    async def save_local_source(self, source: LocalDocumentSource) -> None: ...
+    async def add_local_observation(self, observation: LocalDocumentObservation) -> None: ...
+    async def find_latest_local_observation(
+        self, local_source_id: UUID
+    ) -> LocalDocumentObservation | None: ...
+    async def find_any_local_version_by_sha256(
+        self, content_sha256: str
+    ) -> DocumentVersion | None: ...
+    async def find_local_version(
+        self, *, local_source_id: UUID, content_sha256: str
+    ) -> DocumentVersion | None: ...
+    async def next_local_version(self, local_source_id: UUID) -> int: ...
     async def find_feishu_document(
         self, *, authorization_id: UUID, document_token: str
     ) -> FeishuDocument | None: ...
@@ -74,6 +98,9 @@ class DocumentRepository(Protocol):
     async def list_latest_feishu_segments_for_messages(
         self, message_ids: Sequence[UUID]
     ) -> Sequence[tuple[FeishuDocument, DocumentSegment]]: ...
+    async def list_segments_for_version(
+        self, document_version_id: UUID
+    ) -> Sequence[DocumentSegment]: ...
 
 
 class KnowledgeRepository(Protocol):

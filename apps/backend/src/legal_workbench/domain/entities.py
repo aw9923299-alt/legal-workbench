@@ -33,6 +33,9 @@ from legal_workbench.domain.documents import (
     ExtractedSegment,
     FeishuDocument,
     FeishuDocumentSubscription,
+    LocalDocumentObservation,
+    LocalDocumentSource,
+    LocalKnowledgeScan,
 )
 from legal_workbench.domain.evaluations import (
     EvaluationCase,
@@ -124,6 +127,9 @@ __all__ = [
     "KnowledgeSearchRequest",
     "KnowledgeSearchResult",
     "LegalMatter",
+    "LocalDocumentObservation",
+    "LocalDocumentSource",
+    "LocalKnowledgeScan",
     "MatterUpdateProposal",
     "MessageAttachment",
     "MessageCandidate",

@@ -1168,6 +1168,9 @@ class LocalKnowledgeScanModel(UuidPrimaryKeyMixin, Base):
     discovered_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
     unchanged_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
     imported_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    deduplicated_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="0"
+    )
     failed_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
     unsupported_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
     missing_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
