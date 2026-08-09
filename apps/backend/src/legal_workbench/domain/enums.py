@@ -381,6 +381,58 @@ class DocumentExtractionStatus(StrEnum):
     FAILED = "failed"
 
 
+class AuthorityType(StrEnum):
+    UNKNOWN = "unknown"
+    LAW = "law"
+    ADMINISTRATIVE_REGULATION = "administrative_regulation"
+    JUDICIAL_INTERPRETATION = "judicial_interpretation"
+    DEPARTMENT_RULE = "department_rule"
+    LOCAL_REGULATION = "local_regulation"
+    LOCAL_GOVERNMENT_RULE = "local_government_rule"
+    NORMATIVE_DOCUMENT = "normative_document"
+    GUIDING_CASE = "guiding_case"
+    COURT_CASE = "court_case"
+    REGULATORY_GUIDANCE = "regulatory_guidance"
+    CONTRACT = "contract"
+    COMPANY_POLICY = "company_policy"
+    BUSINESS_RULE = "business_rule"
+    LEGAL_OPINION = "legal_opinion"
+    INTERNAL_PRECEDENT = "internal_precedent"
+
+
+class AuthorityRole(StrEnum):
+    FORMAL_LEGAL_BASIS = "formal_legal_basis"
+    PERSUASIVE_AUTHORITY = "persuasive_authority"
+    CONTRACTUAL_BASIS = "contractual_basis"
+    INTERNAL_BASIS = "internal_basis"
+    STRATEGY_REFERENCE = "strategy_reference"
+
+
+class AuthorityStatus(StrEnum):
+    EFFECTIVE = "effective"
+    SUPERSEDED = "superseded"
+    REPEALED = "repealed"
+    UNKNOWN = "unknown"
+
+
+class KnowledgeMetadataStatus(StrEnum):
+    READY = "ready"
+    PENDING_METADATA = "pending_metadata"
+
+
+class LocalDocumentSourceStatus(StrEnum):
+    ACTIVE = "active"
+    MISSING = "missing"
+    DISABLED = "disabled"
+
+
+class LocalKnowledgeScanStatus(StrEnum):
+    RUNNING = "running"
+    COMPLETED = "completed"
+    PARTIAL = "partial"
+    FAILED = "failed"
+
+
 class EvaluationRuntimeType(StrEnum):
     FAKE = "fake"
     REAL = "real"

@@ -40,6 +40,9 @@ from legal_workbench.domain.enums import (
     AgentRunSourceType,
     AgentRunStatus,
     AttachmentDownloadStatus,
+    AuthorityRole,
+    AuthorityStatus,
+    AuthorityType,
     BusinessImpact,
     CandidateMatterRelation,
     CandidateStatus,
@@ -66,8 +69,11 @@ from legal_workbench.domain.enums import (
     IntegrationScopeStatus,
     IntegrationScopeType,
     IntegrationSyncMode,
+    KnowledgeMetadataStatus,
     LegalRelevance,
     LegalRisk,
+    LocalDocumentSourceStatus,
+    LocalKnowledgeScanStatus,
     MatterCategory,
     MatterLifecycleStatus,
     MatterUpdateProposalStatus,
@@ -1146,11 +1152,56 @@ class FeishuDocumentSubscriptionModel(
     last_error_code: Mapped[str | None] = mapped_column(String(100))
 
 
+class LocalKnowledgeScanModel(UuidPrimaryKeyMixin, Base):
+    __tablename__ = "local_knowledge_scans"
+    __table_args__ = (
+        Index("ix_local_knowledge_scans_root_started", "source_root_key", "started_at"),
+        Index("ix_local_knowledge_scans_status_started", "status", "started_at"),
+    )
+
+    source_root_key: Mapped[str] = mapped_column(String(120), nullable=False)
+    correlation_id: Mapped[str] = mapped_column(String(80), nullable=False)
+    status: Mapped[LocalKnowledgeScanStatus] = mapped_column(
+        enum_type(LocalKnowledgeScanStatus, name="local_knowledge_scan_status", length=20),
+        nullable=False,
+    )
+    discovered_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    unchanged_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    imported_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    failed_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    unsupported_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    missing_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class LocalDocumentSourceModel(UuidPrimaryKeyMixin, TimestampMixin, VersionedMixin, Base):
+    __tablename__ = "local_document_sources"
+    __table_args__ = (
+        UniqueConstraint("source_root_key", "relative_path", name="uq_local_document_source_path"),
+        Index("ix_local_document_sources_root_status", "source_root_key", "status"),
+    )
+
+    source_root_key: Mapped[str] = mapped_column(String(120), nullable=False)
+    relative_path: Mapped[str] = mapped_column(Text, nullable=False)
+    display_name: Mapped[str] = mapped_column(String(500), nullable=False)
+    status: Mapped[LocalDocumentSourceStatus] = mapped_column(
+        enum_type(LocalDocumentSourceStatus, name="local_document_source_status", length=20),
+        nullable=False,
+    )
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 class DocumentVersionModel(UuidPrimaryKeyMixin, Base):
     __tablename__ = "document_versions"
     __table_args__ = (
         CheckConstraint(
-            "(attachment_id IS NULL) <> (feishu_document_id IS NULL)",
+            "num_nonnulls(attachment_id, feishu_document_id, local_source_id) = 1",
             name="document_version_exactly_one_source",
         ),
         Index(
@@ -1181,6 +1232,20 @@ class DocumentVersionModel(UuidPrimaryKeyMixin, Base):
             unique=True,
             postgresql_where=sql_text("feishu_document_id IS NOT NULL"),
         ),
+        Index(
+            "uq_document_versions_local_version",
+            "local_source_id",
+            "version",
+            unique=True,
+            postgresql_where=sql_text("local_source_id IS NOT NULL"),
+        ),
+        Index(
+            "uq_document_versions_local_sha256",
+            "local_source_id",
+            "content_sha256",
+            unique=True,
+            postgresql_where=sql_text("local_source_id IS NOT NULL"),
+        ),
         Index("ix_document_versions_attachment_created", "attachment_id", "created_at"),
     )
 
@@ -1194,6 +1259,11 @@ class DocumentVersionModel(UuidPrimaryKeyMixin, Base):
         nullable=True,
         index=True,
     )
+    local_source_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("local_document_sources.id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
+    )
     version: Mapped[int] = mapped_column(Integer, nullable=False)
     content_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
     file_name: Mapped[str] = mapped_column(String(500), nullable=False)
@@ -1201,6 +1271,31 @@ class DocumentVersionModel(UuidPrimaryKeyMixin, Base):
     size: Mapped[int] = mapped_column(BigInteger, nullable=False)
     local_path: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class LocalDocumentObservationModel(UuidPrimaryKeyMixin, Base):
+    __tablename__ = "local_document_observations"
+    __table_args__ = (
+        UniqueConstraint("local_source_id", "scan_id", name="uq_local_document_observation_scan"),
+        Index("ix_local_document_observations_source_seen", "local_source_id", "observed_at"),
+        Index("ix_local_document_observations_sha256", "content_sha256"),
+    )
+
+    local_source_id: Mapped[UUID] = mapped_column(
+        ForeignKey("local_document_sources.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    scan_id: Mapped[UUID] = mapped_column(
+        ForeignKey("local_knowledge_scans.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    document_version_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("document_versions.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    content_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    size: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    modified_at_ns: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    observed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
 
@@ -1261,8 +1356,13 @@ class DocumentSegmentModel(UuidPrimaryKeyMixin, Base):
             "feishu_document_id",
             "paragraph_number",
         ),
+        Index(
+            "ix_document_segments_local_order",
+            "local_source_id",
+            "paragraph_number",
+        ),
         CheckConstraint(
-            "(attachment_id IS NULL) <> (feishu_document_id IS NULL)",
+            "num_nonnulls(attachment_id, feishu_document_id, local_source_id) = 1",
             name="document_segment_exactly_one_source",
         ),
     )
@@ -1279,6 +1379,11 @@ class DocumentSegmentModel(UuidPrimaryKeyMixin, Base):
     )
     attachment_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("message_attachments.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
+    local_source_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("local_document_sources.id", ondelete="RESTRICT"),
         nullable=True,
         index=True,
     )
@@ -1332,6 +1437,32 @@ class KnowledgeDocumentModel(UuidPrimaryKeyMixin, TimestampMixin, VersionedMixin
     )
     confidentiality: Mapped[str] = mapped_column(String(24), nullable=False)
     approved_by: Mapped[str | None] = mapped_column(String(160))
+    authority_type: Mapped[AuthorityType] = mapped_column(
+        enum_type(AuthorityType, name="authority_type", length=40),
+        nullable=False,
+        default=AuthorityType.UNKNOWN,
+        server_default=AuthorityType.UNKNOWN.value,
+    )
+    authority_role: Mapped[AuthorityRole | None] = mapped_column(
+        enum_type(AuthorityRole, name="authority_role", length=32), nullable=True
+    )
+    authority_status: Mapped[AuthorityStatus] = mapped_column(
+        enum_type(AuthorityStatus, name="authority_status", length=20),
+        nullable=False,
+        default=AuthorityStatus.UNKNOWN,
+        server_default=AuthorityStatus.UNKNOWN.value,
+    )
+    metadata_status: Mapped[KnowledgeMetadataStatus] = mapped_column(
+        enum_type(KnowledgeMetadataStatus, name="knowledge_metadata_status", length=24),
+        nullable=False,
+        default=KnowledgeMetadataStatus.PENDING_METADATA,
+        server_default=KnowledgeMetadataStatus.PENDING_METADATA.value,
+    )
+    issuer: Mapped[str | None] = mapped_column(String(300))
+    document_number: Mapped[str | None] = mapped_column(String(160))
+    enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default=sql_text("true")
+    )
 
 
 class KnowledgeChunkModel(UuidPrimaryKeyMixin, Base):
@@ -1359,6 +1490,15 @@ class KnowledgeChunkModel(UuidPrimaryKeyMixin, Base):
     text: Mapped[str] = mapped_column(Text, nullable=False)
     normalized_text: Mapped[str] = mapped_column(Text, nullable=False)
     text_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    estimated_token_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    token_estimator: Mapped[str] = mapped_column(
+        String(80), nullable=False, default="utf8-bytes-v1", server_default="utf8-bytes-v1"
+    )
+    token_count_estimated: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default=sql_text("true")
+    )
     search_vector: Mapped[object] = mapped_column(
         TSVECTOR,
         Computed("to_tsvector('simple', coalesce(normalized_text, ''))", persisted=True),
@@ -1382,6 +1522,21 @@ class KnowledgeRetrievalLogModel(UuidPrimaryKeyMixin, Base):
     correlation_id: Mapped[str] = mapped_column(String(80), nullable=False)
     agent_run_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("agent_runs.id", ondelete="SET NULL"), nullable=True
+    )
+    candidate_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    selected_chunk_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    selected_token_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    excluded_by_token_budget_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    budget: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=JSON_EMPTY_OBJECT
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
