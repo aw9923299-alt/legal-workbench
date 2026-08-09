@@ -135,6 +135,34 @@ async def test_real_codex_single_and_multi_agent_e2e() -> None:
             "expected_agents": {"legal_consultation"},
         },
         {
+            "name": "dispute",
+            "title": "非敏感虚构服务费争议",
+            "category": MatterCategory.DISPUTE,
+            "secondary": [],
+            "objective": "整理虚构服务费争议时间线、主张、抗辩与证据缺口",
+            "text": (
+                "虚构服务项目约定完成验收后付款。服务方称已通过邮件交付，客户以未达到"
+                "验收标准为由拒付。目前只有服务方制作的工作汇总，没有签字验收记录、"
+                "完整往来邮件、付款凭证或客户提出质量异议的时间记录。"
+            ),
+            "specialist": "dispute_complaint",
+            "expected_agents": {"dispute_complaint"},
+        },
+        {
+            "name": "labor",
+            "title": "非敏感虚构违纪解除评估",
+            "category": MatterCategory.EMPLOYMENT,
+            "secondary": [],
+            "objective": "分开评估虚构违纪解除的实体依据和程序风险",
+            "text": (
+                "虚构员工一个月内多次迟到，公司拟以严重违纪解除。目前只有考勤汇总，"
+                "未提供规章制度的制定程序、公示或签收记录、历次处分、员工申辩、工会"
+                "通知及解除通知送达记录。"
+            ),
+            "specialist": "labor_employment",
+            "expected_agents": {"labor_employment"},
+        },
+        {
             "name": "multi",
             "title": "非敏感合作合同与图片授权审查",
             "category": MatterCategory.CONTRACT,
