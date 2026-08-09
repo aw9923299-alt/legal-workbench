@@ -12,6 +12,7 @@ from legal_workbench.agents.legal_butler import ButlerPlanningOutput
 from legal_workbench.agents.legal_contracts import (
     ContractReviewProduct,
     LegalConsultationProduct,
+    validate_legal_work_product_sources,
 )
 from legal_workbench.agents.professional import LEGAL_SPECIALIST_KEYS
 
@@ -104,6 +105,43 @@ def test_contract_review_requires_clause_locator_and_grounded_legal_basis() -> N
     payload["legalBasis"][0]["sourceRefs"] = []
     with pytest.raises(ValidationError):
         ContractReviewProduct.model_validate(payload)
+
+
+def test_domain_specific_source_refs_are_authorized_and_precedent_is_not_legal_basis() -> None:
+    payload = _grounded_envelope() | {
+        "contractSummary": "渠道合作合同",
+        "parties": ["甲方", "乙方"],
+        "commercialTerms": [],
+        "clauseRisks": [
+            {
+                "clauseLocator": "第8.2条",
+                "clauseText": "乙方承担全部责任",
+                "risk": "责任范围无上限",
+                "severity": "high",
+                "sourceRefs": ["ctx:segment:unauthorized"],
+            }
+        ],
+        "missingTerms": [],
+        "proposedChanges": [],
+        "fallbackPositions": [],
+        "negotiationPoints": [],
+    }
+    product = ContractReviewProduct.model_validate(payload)
+
+    with pytest.raises(ValueError, match="Unauthorized"):
+        validate_legal_work_product_sources(
+            product,
+            authorized_source_refs={"ctx:message:m-1", "knowledge:chunk:k-1"},
+        )
+
+    payload["clauseRisks"][0]["sourceRefs"] = ["ctx:message:m-1"]
+    product = ContractReviewProduct.model_validate(payload)
+    with pytest.raises(ValueError, match="formal legal basis"):
+        validate_legal_work_product_sources(
+            product,
+            authorized_source_refs={"ctx:message:m-1", "knowledge:chunk:k-1"},
+            internal_precedent_refs={"knowledge:chunk:k-1"},
+        )
 
 
 def test_consultation_keeps_assumptions_separate_from_grounded_facts() -> None:

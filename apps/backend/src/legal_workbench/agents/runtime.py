@@ -5,7 +5,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
-from legal_workbench.agents.message_judgement import MessageJudgementResult
+from pydantic import BaseModel
+
 from legal_workbench.domain.entities import AgentDefinition, AgentRun, ContextSnapshot
 
 HeartbeatCallback = Callable[[], Awaitable[None]]
@@ -15,11 +16,14 @@ HeartbeatCallback = Callable[[], Awaitable[None]]
 class AgentExecutionContext:
     snapshot: ContextSnapshot
     heartbeat: HeartbeatCallback | None = None
+    input_payload: dict[str, object] | None = None
+    authorized_source_refs: frozenset[str] = frozenset()
+    internal_precedent_refs: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True, slots=True)
 class AgentExecutionResult:
-    output: MessageJudgementResult
+    output: BaseModel
     raw_stdout: str
     raw_stderr: str
     output_path: Path

@@ -207,12 +207,24 @@ def validate_legal_work_product_sources(
 ) -> None:
     """Fail closed when a specialist cites anything outside its authorized context."""
 
-    used = (
-        {ref for item in product.facts for ref in item.source_refs}
-        | {ref for item in product.legal_basis for ref in item.source_refs}
-        | {ref for item in product.analysis for ref in item.support_refs}
-        | {item.source_ref for item in product.citations}
-    )
+    used: set[str] = set()
+
+    def collect(value: object, *, field_name: str | None = None) -> None:
+        if isinstance(value, list):
+            if field_name in {"sourceRefs", "supportRefs", "basisRefs", "evidenceRefs"}:
+                used.update(item for item in value if isinstance(item, str))
+            else:
+                for item in value:
+                    collect(item)
+            return
+        if not isinstance(value, dict):
+            if field_name == "sourceRef" and isinstance(value, str):
+                used.add(value)
+            return
+        for key, item in value.items():
+            collect(item, field_name=key)
+
+    collect(product.model_dump(by_alias=True, mode="json"))
     unauthorized = sorted(used - authorized_source_refs)
     if unauthorized:
         raise ValueError(f"Unauthorized legal source references: {unauthorized}")
@@ -222,3 +234,10 @@ def validate_legal_work_product_sources(
     )
     if invalid_basis:
         raise ValueError(f"Internal precedent cannot ground formal legal basis: {invalid_basis}")
+    mislabeled = sorted(
+        citation.source_ref
+        for citation in product.citations
+        if citation.internal_precedent != (citation.source_ref in precedents)
+    )
+    if mislabeled:
+        raise ValueError(f"Internal precedent citation labels do not match context: {mislabeled}")
