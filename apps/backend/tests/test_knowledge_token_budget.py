@@ -17,6 +17,7 @@ from legal_workbench.domain.enums import (
 from legal_workbench.domain.knowledge import (
     KnowledgeChunk,
     KnowledgeDocument,
+    KnowledgeSearchBatch,
     KnowledgeSearchRequest,
     KnowledgeSearchResult,
 )
@@ -80,8 +81,11 @@ class _KnowledgeRepository:
         self.results = results
         self.logs = []
 
-    async def search(self, request: KnowledgeSearchRequest):
-        return list(self.results)
+    async def search(self, request: KnowledgeSearchRequest) -> KnowledgeSearchBatch:
+        return KnowledgeSearchBatch(
+            candidates=tuple(self.results),
+            candidate_count=len(self.results),
+        )
 
     async def add_retrieval_log(self, log) -> None:
         self.logs.append(log)

@@ -259,6 +259,7 @@ class KnowledgeSearchRequest:
     agent_run_id: UUID | None = None
     source_priority_min: int = 0
     limit: int = 8
+    max_candidate_tokens: int | None = None
 
     def __post_init__(self) -> None:
         if not self.query.strip() or not self.agent_type.strip() or not self.matter_type.strip():
@@ -267,6 +268,8 @@ class KnowledgeSearchRequest:
             raise DomainValidationError("Knowledge jurisdiction and document type are required.")
         if not 0 <= self.source_priority_min <= 100 or not 1 <= self.limit <= 50:
             raise DomainValidationError("Knowledge priority or result limit is invalid.")
+        if self.max_candidate_tokens is not None and self.max_candidate_tokens < 1:
+            raise DomainValidationError("Knowledge candidate token limit must be positive.")
 
 
 @dataclass(frozen=True, slots=True)
@@ -280,3 +283,27 @@ class KnowledgeSearchResult:
     @property
     def internal_precedent(self) -> bool:
         return self.document.internal_precedent
+
+
+@dataclass(frozen=True, slots=True)
+class KnowledgeSearchBatch:
+    candidates: tuple[KnowledgeSearchResult, ...]
+    candidate_count: int
+    excluded_by_token_budget_count: int = 0
+    excluded_duplicate_count: int = 0
+
+    def __post_init__(self) -> None:
+        counts = (
+            self.candidate_count,
+            self.excluded_by_token_budget_count,
+            self.excluded_duplicate_count,
+        )
+        if any(value < 0 for value in counts):
+            raise DomainValidationError("Knowledge candidate audit counts are invalid.")
+        accounted_for = (
+            len(self.candidates)
+            + self.excluded_by_token_budget_count
+            + self.excluded_duplicate_count
+        )
+        if accounted_for > self.candidate_count:
+            raise DomainValidationError("Knowledge candidate audit counts are inconsistent.")

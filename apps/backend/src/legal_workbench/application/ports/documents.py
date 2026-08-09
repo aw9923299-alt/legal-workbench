@@ -20,8 +20,8 @@ from legal_workbench.domain.knowledge import (
     KnowledgeChunk,
     KnowledgeDocument,
     KnowledgeRetrievalLog,
+    KnowledgeSearchBatch,
     KnowledgeSearchRequest,
-    KnowledgeSearchResult,
 )
 
 __all__ = [
@@ -130,7 +130,7 @@ class KnowledgeRepository(Protocol):
     ) -> Sequence[KnowledgeRetrievalLog]: ...
     async def search(
         self, request: KnowledgeSearchRequest
-    ) -> Sequence[KnowledgeSearchResult]: ...
+    ) -> KnowledgeSearchBatch: ...
 
 
 class AttachmentStorageQuotaRepository(Protocol):

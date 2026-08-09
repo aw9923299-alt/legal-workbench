@@ -50,6 +50,7 @@ from legal_workbench.domain.entities import (
     KnowledgeChunk,
     KnowledgeDocument,
     KnowledgeRetrievalLog,
+    KnowledgeSearchBatch,
     KnowledgeSearchRequest,
     KnowledgeSearchResult,
     LegalMatter,
@@ -1410,9 +1411,10 @@ class SqlAlchemyKnowledgeRepository:
 
     async def search(
         self, request: KnowledgeSearchRequest
-    ) -> Sequence[KnowledgeSearchResult]:
+    ) -> KnowledgeSearchBatch:
         rows = (await self._session.execute(build_knowledge_search_statement(request))).all()
-        return [
+        diagnostics = rows[0]
+        candidates = tuple(
             KnowledgeSearchResult(
                 document=self._document_to_domain(document_model),
                 chunk=self._chunk_to_domain(chunk_model),
@@ -1433,8 +1435,20 @@ class SqlAlchemyKnowledgeRepository:
                 priority_score,
                 effective_score,
                 total_score,
+                _candidate_count,
+                _excluded_by_token_budget_count,
+                _excluded_duplicate_count,
             ) in rows
-        ]
+            if chunk_model is not None and document_model is not None
+        )
+        return KnowledgeSearchBatch(
+            candidates=candidates,
+            candidate_count=int(diagnostics.candidate_count),
+            excluded_by_token_budget_count=int(
+                diagnostics.excluded_by_token_budget_count
+            ),
+            excluded_duplicate_count=int(diagnostics.excluded_duplicate_count),
+        )
 
     @staticmethod
     def _document_to_domain(model: KnowledgeDocumentModel) -> KnowledgeDocument:

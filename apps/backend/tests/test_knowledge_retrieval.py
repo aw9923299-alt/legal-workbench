@@ -18,6 +18,7 @@ from legal_workbench.domain.entities import (
     DocumentSegment,
     KnowledgeChunk,
     KnowledgeDocument,
+    KnowledgeSearchBatch,
     KnowledgeSearchRequest,
     KnowledgeSearchResult,
 )
@@ -50,8 +51,11 @@ class FakeKnowledgeRepository:
 
     async def search(
         self, request: KnowledgeSearchRequest
-    ) -> list[KnowledgeSearchResult]:
-        return list(self.results)
+    ) -> KnowledgeSearchBatch:
+        return KnowledgeSearchBatch(
+            candidates=tuple(self.results),
+            candidate_count=len(self.results),
+        )
 
     async def add_retrieval_log(self, log: object) -> None:
         self.logs.append(log)

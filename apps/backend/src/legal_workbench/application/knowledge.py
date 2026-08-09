@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 from hashlib import sha256
 from uuid import UUID, uuid4
@@ -22,6 +22,7 @@ from legal_workbench.domain.entities import (
     KnowledgeChunk,
     KnowledgeDocument,
     KnowledgeRetrievalLog,
+    KnowledgeSearchBatch,
     KnowledgeSearchRequest,
     KnowledgeSearchResult,
 )
@@ -226,14 +227,21 @@ class KnowledgeRetrievalService:
         request: KnowledgeSearchRequest,
         budget: KnowledgeBudget | None = None,
     ) -> list[KnowledgeSearchResult]:
+        configured_budget = budget or self._default_budget
+        effective_budget = KnowledgeBudget(
+            max_chunks=min(configured_budget.max_chunks, request.limit),
+            max_tokens=configured_budget.max_tokens,
+            max_single_chunk_tokens=configured_budget.max_single_chunk_tokens,
+        )
+        bounded_request = replace(
+            request,
+            max_candidate_tokens=effective_budget.max_single_chunk_tokens,
+        )
         async with self._uow_factory() as uow:
-            candidates = list(await uow.knowledge.search(request))
-            configured_budget = budget or self._default_budget
-            effective_budget = KnowledgeBudget(
-                max_chunks=min(configured_budget.max_chunks, request.limit),
-                max_tokens=configured_budget.max_tokens,
-                max_single_chunk_tokens=configured_budget.max_single_chunk_tokens,
+            candidate_batch: KnowledgeSearchBatch = await uow.knowledge.search(
+                bounded_request
             )
+            candidates = list(candidate_batch.candidates)
             selection = select_budgeted_knowledge(
                 candidates,
                 budget=effective_budget,
@@ -263,13 +271,17 @@ class KnowledgeRetrievalService:
                     },
                     correlation_id=request.correlation_id,
                     agent_run_id=request.agent_run_id,
-                    candidate_count=len(candidates),
+                    candidate_count=candidate_batch.candidate_count,
                     selected_chunk_count=len(results),
                     selected_token_count=selection.selected_token_count,
                     excluded_by_token_budget_count=(
-                        selection.excluded_by_token_budget_count
+                        candidate_batch.excluded_by_token_budget_count
+                        + selection.excluded_by_token_budget_count
                     ),
-                    excluded_duplicate_count=selection.excluded_duplicate_count,
+                    excluded_duplicate_count=(
+                        candidate_batch.excluded_duplicate_count
+                        + selection.excluded_duplicate_count
+                    ),
                     budget=effective_budget.as_audit_dict(),
                 )
             )

@@ -8,6 +8,7 @@ from uuid import uuid4
 import pytest
 
 from legal_workbench.application.knowledge import KnowledgeRetrievalService
+from legal_workbench.application.token_budget import KnowledgeBudget
 from legal_workbench.domain.entities import (
     KnowledgeChunk,
     KnowledgeDocument,
@@ -168,6 +169,150 @@ async def test_postgres_retrieval_filters_and_ranks_authorized_knowledge() -> No
             await session.execute(
                 delete(KnowledgeDocumentModel).where(
                     KnowledgeDocumentModel.source_type == "fixture",
+                    KnowledgeDocumentModel.source_id.like(f"{source_suffix}:%"),
+                )
+            )
+        await engine.dispose()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_postgres_candidate_window_rejects_duplicate_and_oversized_noise() -> None:
+    if os.getenv("RUN_POSTGRES_INTEGRATION_TESTS") != "1":
+        pytest.skip("PostgreSQL integration tests are disabled")
+
+    from sqlalchemy import delete, select
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    from legal_workbench.infrastructure.models import (
+        KnowledgeDocumentModel,
+        KnowledgeRetrievalLogModel,
+    )
+    from legal_workbench.infrastructure.unit_of_work import SqlAlchemyUnitOfWorkFactory
+
+    engine = create_async_engine(os.environ["LEGAL_WORKBENCH_TEST_DATABASE_URL"])
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    factory = SqlAlchemyUnitOfWorkFactory(session_factory)
+    source_suffix = uuid4().hex
+    marker = f"candidatewindow{source_suffix}"
+
+    def make_document(name: str, priority: int) -> KnowledgeDocument:
+        return KnowledgeDocument(
+            id=uuid4(),
+            source_type="candidate_window_fixture",
+            source_id=f"{source_suffix}:{name}",
+            title=name,
+            document_type="law",
+            agent_types=["contract_review"],
+            matter_types=["contract"],
+            jurisdiction="CN",
+            source_priority=priority,
+            internal_precedent=False,
+            confidentiality="internal",
+        )
+
+    oversized_documents = [
+        make_document(f"oversized-{index}", 100) for index in range(12)
+    ]
+    duplicate_documents = [
+        make_document(f"duplicate-{index}", 95) for index in range(12)
+    ]
+    eligible = make_document("eligible", 50)
+    documents = [*oversized_documents, *duplicate_documents, eligible]
+    duplicate_hash = sha256(f"{marker}:duplicate".encode()).hexdigest()
+    chunks = [
+        KnowledgeChunk(
+            id=uuid4(),
+            knowledge_document_id=value.id,
+            sequence=1,
+            locator="第一条",
+            text=f"{marker} 高排名但超过单 Chunk 预算。",
+            normalized_text=f"{marker} 高排名但超过单 Chunk 预算。",
+            text_hash=sha256(f"{marker}:oversized:{value.id}".encode()).hexdigest(),
+            estimated_token_count=10_000,
+        )
+        for value in oversized_documents
+    ]
+    chunks.extend(
+        KnowledgeChunk(
+            id=uuid4(),
+            knowledge_document_id=value.id,
+            sequence=1,
+            locator="第二条",
+            text=f"{marker} 重复法条。",
+            normalized_text=f"{marker} 重复法条。",
+            text_hash=duplicate_hash,
+            estimated_token_count=8,
+        )
+        for value in duplicate_documents
+    )
+    chunks.append(
+        KnowledgeChunk(
+            id=uuid4(),
+            knowledge_document_id=eligible.id,
+            sequence=1,
+            locator="第三条",
+            text=f"{marker} 可用且不重复的法条。",
+            normalized_text=f"{marker} 可用且不重复的法条。",
+            text_hash=sha256(f"{marker}:eligible".encode()).hexdigest(),
+            estimated_token_count=8,
+        )
+    )
+    request = KnowledgeSearchRequest(
+        query=marker,
+        agent_type="contract_review",
+        matter_type="contract",
+        jurisdiction="CN",
+        document_types=("law",),
+        effective_date=date(2026, 8, 10),
+        correlation_id=f"candidate-window-{source_suffix}",
+        limit=2,
+    )
+
+    try:
+        async with factory() as uow:
+            for value in documents:
+                await uow.knowledge.add_document(value)
+            await uow.flush()
+            await uow.knowledge.add_chunks(chunks)
+            await uow.commit()
+
+        results = await KnowledgeRetrievalService(factory).search(
+            request,
+            budget=KnowledgeBudget(
+                max_chunks=2,
+                max_tokens=40,
+                max_single_chunk_tokens=20,
+            ),
+        )
+
+        assert len(results) == 2
+        assert eligible.id in {value.document.id for value in results}
+        assert len({value.chunk.text_hash for value in results}) == 2
+        assert all(value.chunk.estimated_token_count <= 20 for value in results)
+        async with session_factory() as session:
+            retrieval_log = (
+                await session.execute(
+                    select(KnowledgeRetrievalLogModel).where(
+                        KnowledgeRetrievalLogModel.correlation_id
+                        == request.correlation_id
+                    )
+                )
+            ).scalar_one()
+        assert retrieval_log.candidate_count == 25
+        assert retrieval_log.excluded_duplicate_count == 11
+        assert retrieval_log.excluded_by_token_budget_count == 12
+    finally:
+        async with session_factory() as session, session.begin():
+            await session.execute(
+                delete(KnowledgeRetrievalLogModel).where(
+                    KnowledgeRetrievalLogModel.correlation_id
+                    == request.correlation_id
+                )
+            )
+            await session.execute(
+                delete(KnowledgeDocumentModel).where(
+                    KnowledgeDocumentModel.source_type == "candidate_window_fixture",
                     KnowledgeDocumentModel.source_id.like(f"{source_suffix}:%"),
                 )
             )
