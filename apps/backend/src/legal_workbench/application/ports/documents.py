@@ -16,6 +16,8 @@ from legal_workbench.domain.knowledge import (
     KnowledgeChunk,
     KnowledgeDocument,
     KnowledgeRetrievalLog,
+    KnowledgeSearchRequest,
+    KnowledgeSearchResult,
 )
 
 __all__ = [
@@ -83,6 +85,9 @@ class KnowledgeRepository(Protocol):
     async def add_chunks(self, chunks: Sequence[KnowledgeChunk]) -> None: ...
     async def list_chunks(self, document_id: UUID) -> Sequence[KnowledgeChunk]: ...
     async def add_retrieval_log(self, log: KnowledgeRetrievalLog) -> None: ...
+    async def search(
+        self, request: KnowledgeSearchRequest
+    ) -> Sequence[KnowledgeSearchResult]: ...
 
 
 class AttachmentStorageQuotaRepository(Protocol):

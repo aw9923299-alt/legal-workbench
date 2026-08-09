@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from uuid import UUID
 
 from legal_workbench.domain.common import utc_now
 from legal_workbench.domain.errors import DomainValidationError
+
+
+def normalize_knowledge_text(value: str) -> str:
+    return re.sub(r"\s+", " ", value.casefold()).strip()
 
 
 @dataclass(slots=True)
@@ -73,3 +78,38 @@ class KnowledgeRetrievalLog:
     def __post_init__(self) -> None:
         if len(self.query_hash) != 64 or not self.correlation_id.strip():
             raise DomainValidationError("Knowledge retrieval audit metadata is invalid.")
+
+
+@dataclass(frozen=True, slots=True)
+class KnowledgeSearchRequest:
+    query: str
+    agent_type: str
+    matter_type: str
+    jurisdiction: str
+    document_types: tuple[str, ...]
+    effective_date: date
+    correlation_id: str
+    agent_run_id: UUID | None = None
+    source_priority_min: int = 0
+    limit: int = 8
+
+    def __post_init__(self) -> None:
+        if not self.query.strip() or not self.agent_type.strip() or not self.matter_type.strip():
+            raise DomainValidationError("Knowledge query and Agent/Matter filters are required.")
+        if not self.jurisdiction.strip() or not self.document_types:
+            raise DomainValidationError("Knowledge jurisdiction and document type are required.")
+        if not 0 <= self.source_priority_min <= 100 or not 1 <= self.limit <= 50:
+            raise DomainValidationError("Knowledge priority or result limit is invalid.")
+
+
+@dataclass(frozen=True, slots=True)
+class KnowledgeSearchResult:
+    document: KnowledgeDocument
+    chunk: KnowledgeChunk
+    source_ref: str
+    score: float
+    component_scores: dict[str, float]
+
+    @property
+    def internal_precedent(self) -> bool:
+        return self.document.internal_precedent

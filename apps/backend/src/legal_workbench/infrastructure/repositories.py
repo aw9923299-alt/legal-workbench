@@ -50,6 +50,8 @@ from legal_workbench.domain.entities import (
     KnowledgeChunk,
     KnowledgeDocument,
     KnowledgeRetrievalLog,
+    KnowledgeSearchRequest,
+    KnowledgeSearchResult,
     LegalMatter,
     MatterUpdateProposal,
     MessageCandidate,
@@ -78,6 +80,7 @@ from legal_workbench.domain.enums import (
     ReviewPackageStatus,
 )
 from legal_workbench.domain.errors import StaleAgentAttemptError
+from legal_workbench.infrastructure.knowledge import build_knowledge_search_statement
 from legal_workbench.infrastructure.models import (
     AgentDefinitionModel,
     AgentExecutionPlanModel,
@@ -1239,6 +1242,34 @@ class SqlAlchemyKnowledgeRepository:
                 created_at=log.created_at,
             )
         )
+
+    async def search(
+        self, request: KnowledgeSearchRequest
+    ) -> Sequence[KnowledgeSearchResult]:
+        rows = (await self._session.execute(build_knowledge_search_statement(request))).all()
+        return [
+            KnowledgeSearchResult(
+                document=self._document_to_domain(document_model),
+                chunk=self._chunk_to_domain(chunk_model),
+                source_ref=f"knowledge:chunk:{chunk_model.id}",
+                score=float(total_score),
+                component_scores={
+                    "fullText": float(full_text_score),
+                    "trigram": float(trigram_score),
+                    "priority": float(priority_score),
+                    "effective": float(effective_score),
+                },
+            )
+            for (
+                chunk_model,
+                document_model,
+                full_text_score,
+                trigram_score,
+                priority_score,
+                effective_score,
+                total_score,
+            ) in rows
+        ]
 
     @staticmethod
     def _document_to_domain(model: KnowledgeDocumentModel) -> KnowledgeDocument:

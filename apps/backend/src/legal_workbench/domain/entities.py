@@ -54,6 +54,8 @@ from legal_workbench.domain.knowledge import (
     KnowledgeChunk,
     KnowledgeDocument,
     KnowledgeRetrievalLog,
+    KnowledgeSearchRequest,
+    KnowledgeSearchResult,
 )
 from legal_workbench.domain.matters import (
     LegalMatter,
@@ -119,6 +121,8 @@ __all__ = [
     "KnowledgeChunk",
     "KnowledgeDocument",
     "KnowledgeRetrievalLog",
+    "KnowledgeSearchRequest",
+    "KnowledgeSearchResult",
     "LegalMatter",
     "MatterUpdateProposal",
     "MessageAttachment",
