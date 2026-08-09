@@ -71,6 +71,7 @@ class LegalAgentTrigger:
     special_requirements: str | None = None
     specialist_only: str | None = None
     jurisdiction: str = "CN"
+    historical_as_of: date | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -268,6 +269,8 @@ class LegalAgentOrchestrator:
             actor_id=plan.created_by,
             correlation_id=correlation_id or plan.correlation_id,
             idempotency_key=plan.idempotency_key,
+            jurisdiction=plan.analysis_jurisdiction,
+            historical_as_of=plan.historical_as_of,
         )
         if planning_run.status == AgentRunStatus.QUEUED:
             accepted = await self._run_planning_phase(
@@ -375,6 +378,15 @@ class LegalAgentOrchestrator:
                 "specialRequirements": trigger.special_requirements,
                 "specialistOnly": trigger.specialist_only,
                 "registeredSpecialists": sorted(LEGAL_SPECIALIST_KEYS),
+                "analysisJurisdiction": trigger.jurisdiction,
+                "analysisEffectiveDate": (
+                    trigger.historical_as_of or date.today()
+                ).isoformat(),
+                "analysisHistoricalAsOf": (
+                    trigger.historical_as_of.isoformat()
+                    if trigger.historical_as_of is not None
+                    else None
+                ),
             },
         )
         try:
@@ -448,6 +460,8 @@ class LegalAgentOrchestrator:
             actor_id=actor_id,
             correlation_id=correlation_id,
             idempotency_key=f"rerun:{plan.id}:{step.id}:{uuid4().hex}",
+            jurisdiction=plan.analysis_jurisdiction,
+            historical_as_of=plan.historical_as_of,
         )
         persisted_results = await self._list_step_results(plan.id)
         dependency_context = self._dependency_assembler.build(
@@ -572,6 +586,8 @@ class LegalAgentOrchestrator:
                 correlation_id=trigger.correlation_id,
                 idempotency_key=trigger.idempotency_key,
                 created_by=trigger.actor_id,
+                analysis_jurisdiction=trigger.jurisdiction,
+                historical_as_of=trigger.historical_as_of,
             )
             await uow.agent_execution_plans.add(plan)
             await uow.flush()
@@ -635,6 +651,8 @@ class LegalAgentOrchestrator:
                 correlation_id=plan.correlation_id,
                 idempotency_key=plan.idempotency_key,
                 created_by=plan.created_by,
+                analysis_jurisdiction=plan.analysis_jurisdiction,
+                historical_as_of=plan.historical_as_of,
                 steps=steps,
                 planning_run_id=run.id,
                 created_at=plan.created_at,
@@ -692,7 +710,8 @@ class LegalAgentOrchestrator:
             matter_type=matter_type,
             objective=step.objective,
             jurisdiction=trigger.jurisdiction,
-            effective_date=date.today(),
+            effective_date=trigger.historical_as_of or date.today(),
+            historical_as_of=trigger.historical_as_of,
             correlation_id=trigger.correlation_id,
             agent_run_id=run.id,
             upstream_outputs=dependency_context.upstream_outputs,
@@ -866,9 +885,35 @@ class LegalAgentOrchestrator:
             for result in step_results
             for source_ref, metadata in result.source_authorities.items()
         }
+        persisted_source_metadata = await self._source_metadata_for_runs(
+            [
+                value
+                for value in [
+                    synthesis_run.id,
+                    *(result.run_id for result in step_results),
+                ]
+                if value is not None
+            ]
+        )
+        source_authorities.update(persisted_source_metadata)
+        source_refs = source_refs | frozenset(persisted_source_metadata)
+        precedents = precedents | frozenset(
+            source_ref
+            for source_ref, metadata in persisted_source_metadata.items()
+            if metadata.get("internalPrecedent") is True
+        )
         context = AuthorizedLegalContext(
             payload={
                 "contextSnapshot": self._context_builder.planning(snapshot).payload,
+                "analysisJurisdiction": trigger.jurisdiction,
+                "analysisEffectiveDate": (
+                    trigger.historical_as_of or date.today()
+                ).isoformat(),
+                "analysisHistoricalAsOf": (
+                    trigger.historical_as_of.isoformat()
+                    if trigger.historical_as_of is not None
+                    else None
+                ),
                 "specialistFailures": [
                     {
                         "stepId": result.step_id,
@@ -1588,6 +1633,63 @@ class LegalAgentOrchestrator:
         async with self._uow_factory() as uow:
             return await uow.agent_execution_plans.get_by_idempotency_key(key)
 
+    async def _source_metadata_for_runs(
+        self,
+        run_ids: list[UUID],
+    ) -> dict[str, dict[str, object]]:
+        async with self._uow_factory() as uow:
+            sources = [
+                source
+                for run_id in dict.fromkeys(run_ids)
+                for source in await uow.agent_run_sources.list_by_run(run_id)
+            ]
+        return self._source_metadata(sources)
+
+    @staticmethod
+    def _source_metadata(
+        sources: list[AgentRunSource],
+    ) -> dict[str, dict[str, object]]:
+        source_type_map = {
+            AgentRunSourceType.FEISHU_MESSAGE: "feishu_message",
+            AgentRunSourceType.CONTEXT_SNAPSHOT: "context_snapshot",
+            AgentRunSourceType.ATTACHMENT: "attachment",
+            AgentRunSourceType.KNOWLEDGE_DOCUMENT: "knowledge_document",
+            AgentRunSourceType.HISTORICAL_MATTER: "historical_matter",
+            AgentRunSourceType.APPROVED_EXAMPLE: "approved_example",
+        }
+        values: dict[str, dict[str, object]] = {}
+        for source in sources:
+            source_ref = source.citation_metadata.get("sourceRef")
+            if not isinstance(source_ref, str) or not source_ref:
+                continue
+            metadata = {
+                "title": source.display_name,
+                "sourceType": source.citation_metadata.get("sourceType")
+                or source_type_map[source.source_type],
+                "locator": source.citation_metadata.get("locator"),
+                "contentHash": source.source_hash,
+                "internalPrecedent": source.citation_metadata.get(
+                    "internalPrecedent", False
+                ),
+            }
+            metadata.update(
+                {
+                    key: source.citation_metadata.get(key)
+                    for key in (
+                        "authorityType",
+                        "authorityRole",
+                        "authorityStatus",
+                        "metadataStatus",
+                        "jurisdiction",
+                        "effectiveFrom",
+                        "effectiveTo",
+                    )
+                    if source.citation_metadata.get(key) is not None
+                }
+            )
+            values[source_ref] = metadata
+        return values
+
     async def _list_step_results(self, plan_id: UUID) -> list[SpecialistStepExecution]:
         async with self._uow_factory() as uow:
             plan = await uow.agent_execution_plans.get(plan_id)
@@ -1602,10 +1704,20 @@ class LegalAgentOrchestrator:
         steps_by_id = {step.step_id: step for step in plan.steps}
         values: list[SpecialistStepExecution] = []
         for step in plan.steps:
-            stale_dependency = self._step_has_stale_dependencies(
-                step,
-                steps_by_id=steps_by_id,
-                runs_by_id=by_id,
+            stale_dependency = (
+                step.status
+                in {
+                    AgentPlanStepStatus.COMPLETED,
+                    AgentPlanStepStatus.NEEDS_INFORMATION,
+                }
+                and self._step_has_stale_dependencies(
+                    step,
+                    steps_by_id=steps_by_id,
+                    runs_by_id=by_id,
+                )
+            ) or (
+                step.status == AgentPlanStepStatus.SKIPPED
+                and step.failure_code == "STALE_DEPENDENCY_RUN"
             )
             effective_status = (
                 AgentPlanStepStatus.SKIPPED if stale_dependency else step.status
@@ -1652,23 +1764,7 @@ class LegalAgentOrchestrator:
                 if source.citation_metadata.get("sourceRef")
                 and source.citation_metadata.get("internalPrecedent") is True
             )
-            source_authorities = {
-                str(source.citation_metadata["sourceRef"]): {
-                    key: source.citation_metadata.get(key)
-                    for key in (
-                        "authorityType",
-                        "authorityRole",
-                        "authorityStatus",
-                        "metadataStatus",
-                        "jurisdiction",
-                        "effectiveFrom",
-                        "effectiveTo",
-                    )
-                }
-                for source in run_sources
-                if source.citation_metadata.get("sourceRef")
-                and source.citation_metadata.get("authorityType")
-            }
+            source_authorities = self._source_metadata(run_sources)
             values.append(
                 SpecialistStepExecution(
                     step_id=step.step_id,

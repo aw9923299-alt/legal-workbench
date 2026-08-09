@@ -228,7 +228,12 @@ class KnowledgeRetrievalService:
     ) -> list[KnowledgeSearchResult]:
         async with self._uow_factory() as uow:
             candidates = list(await uow.knowledge.search(request))
-            effective_budget = budget or self._default_budget
+            configured_budget = budget or self._default_budget
+            effective_budget = KnowledgeBudget(
+                max_chunks=min(configured_budget.max_chunks, request.limit),
+                max_tokens=configured_budget.max_tokens,
+                max_single_chunk_tokens=configured_budget.max_single_chunk_tokens,
+            )
             selection = select_budgeted_knowledge(
                 candidates,
                 budget=effective_budget,
@@ -245,6 +250,11 @@ class KnowledgeRetrievalService:
                         "jurisdiction": request.jurisdiction,
                         "documentTypes": list(request.document_types),
                         "effectiveDate": request.effective_date.isoformat(),
+                        "historicalAsOf": (
+                            request.historical_as_of.isoformat()
+                            if request.historical_as_of is not None
+                            else None
+                        ),
                         "sourcePriorityMin": request.source_priority_min,
                     },
                     selected_chunk_ids=[result.chunk.id for result in results],

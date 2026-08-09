@@ -1645,6 +1645,10 @@ class AgentExecutionPlanModel(UuidPrimaryKeyMixin, TimestampMixin, VersionedMixi
     correlation_id: Mapped[str] = mapped_column(String(80), nullable=False)
     idempotency_key: Mapped[str] = mapped_column(String(240), nullable=False)
     created_by: Mapped[str] = mapped_column(String(160), nullable=False)
+    analysis_jurisdiction: Mapped[str] = mapped_column(
+        String(64), nullable=False, default="CN", server_default="CN"
+    )
+    historical_as_of: Mapped[date | None] = mapped_column(Date)
 
 
 class AgentPlanStepModel(UuidPrimaryKeyMixin, TimestampMixin, VersionedMixin, Base):

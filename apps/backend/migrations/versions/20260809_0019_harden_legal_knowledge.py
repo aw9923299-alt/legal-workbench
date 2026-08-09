@@ -19,6 +19,19 @@ depends_on: str | Sequence[str] | None = None
 
 def upgrade() -> None:
     op.add_column(
+        "agent_execution_plans",
+        sa.Column(
+            "analysis_jurisdiction",
+            sa.String(length=64),
+            server_default="CN",
+            nullable=False,
+        ),
+    )
+    op.add_column(
+        "agent_execution_plans",
+        sa.Column("historical_as_of", sa.Date()),
+    )
+    op.add_column(
         "review_packages",
         sa.Column(
             "grounding_payload",
@@ -516,3 +529,5 @@ def downgrade() -> None:
     )
     op.drop_column("agent_plan_steps", "latest_valid_run_id")
     op.drop_column("review_packages", "grounding_payload")
+    op.drop_column("agent_execution_plans", "historical_as_of")
+    op.drop_column("agent_execution_plans", "analysis_jurisdiction")

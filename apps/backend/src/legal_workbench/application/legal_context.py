@@ -59,6 +59,7 @@ class LegalContextBuilder:
         objective: str,
         jurisdiction: str,
         effective_date: date,
+        historical_as_of: date | None,
         correlation_id: str,
         agent_run_id: UUID | None,
         upstream_outputs: dict[str, object],
@@ -72,6 +73,7 @@ class LegalContextBuilder:
                 document_types=SUPPORTED_KNOWLEDGE_DOCUMENT_TYPES,
                 effective_date=effective_date,
                 correlation_id=correlation_id,
+                historical_as_of=historical_as_of,
                 agent_run_id=agent_run_id,
             )
         )
@@ -107,6 +109,13 @@ class LegalContextBuilder:
         return AuthorizedLegalContext(
             payload={
                 "contextSnapshot": self._snapshot_payload(snapshot),
+                "analysisJurisdiction": jurisdiction,
+                "analysisEffectiveDate": effective_date.isoformat(),
+                "analysisHistoricalAsOf": (
+                    historical_as_of.isoformat()
+                    if historical_as_of is not None
+                    else None
+                ),
                 "retrievalResults": [
                     {
                         "sourceRef": result.source_ref,

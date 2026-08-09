@@ -255,6 +255,7 @@ class KnowledgeSearchRequest:
     document_types: tuple[str, ...]
     effective_date: date
     correlation_id: str
+    historical_as_of: date | None = None
     agent_run_id: UUID | None = None
     source_priority_min: int = 0
     limit: int = 8

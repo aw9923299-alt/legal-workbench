@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime
 from typing import ClassVar
 from uuid import UUID, uuid4
 
@@ -450,6 +450,8 @@ class AgentExecutionPlan:
     correlation_id: str
     idempotency_key: str
     created_by: str
+    analysis_jurisdiction: str = "CN"
+    historical_as_of: date | None = None
     steps: list[AgentPlanStep] = field(default_factory=list)
     planning_run_id: UUID | None = None
     synthesis_run_id: UUID | None = None
@@ -466,6 +468,8 @@ class AgentExecutionPlan:
             raise DomainValidationError(
                 "Execution plan correlation and idempotency keys are required."
             )
+        if not self.analysis_jurisdiction.strip():
+            raise DomainValidationError("Execution plan analysis jurisdiction is required.")
 
     def validate_steps(self, registered_agent_keys: set[str] | frozenset[str]) -> None:
         if not 1 <= len(self.steps) <= 4:

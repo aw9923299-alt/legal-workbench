@@ -532,6 +532,8 @@ class SqlAlchemyAgentExecutionPlanRepository:
             correlation_id=plan.correlation_id,
             idempotency_key=plan.idempotency_key,
             created_by=plan.created_by,
+            analysis_jurisdiction=plan.analysis_jurisdiction,
+            historical_as_of=plan.historical_as_of,
             created_at=plan.created_at,
             updated_at=plan.updated_at,
             version=plan.version,
@@ -613,6 +615,8 @@ class SqlAlchemyAgentExecutionPlanRepository:
         model.requires_user_input = plan.requires_user_input
         model.planning_run_id = plan.planning_run_id
         model.synthesis_run_id = plan.synthesis_run_id
+        model.analysis_jurisdiction = plan.analysis_jurisdiction
+        model.historical_as_of = plan.historical_as_of
         model.updated_at = plan.updated_at
         model.version = plan.version
 
@@ -661,6 +665,8 @@ class SqlAlchemyAgentExecutionPlanRepository:
             correlation_id=model.correlation_id,
             idempotency_key=model.idempotency_key,
             created_by=model.created_by,
+            analysis_jurisdiction=model.analysis_jurisdiction,
+            historical_as_of=model.historical_as_of,
             steps=[self._step_to_domain(step) for step in step_models],
             created_at=model.created_at,
             updated_at=model.updated_at,

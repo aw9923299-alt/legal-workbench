@@ -16,6 +16,12 @@ from legal_workbench.infrastructure.models import (
 
 def build_knowledge_search_statement(request: KnowledgeSearchRequest) -> Any:
     normalized_query = normalize_knowledge_text(request.query)
+    analysis_date = request.historical_as_of or request.effective_date
+    authority_statuses = (
+        ["effective", "unknown", "repealed", "superseded"]
+        if request.historical_as_of is not None
+        else ["effective", "unknown"]
+    )
     ts_query = func.websearch_to_tsquery("simple", normalized_query)
     full_text_score = func.ts_rank_cd(KnowledgeChunkModel.search_vector, ts_query)
     trigram_score = func.similarity(
@@ -49,7 +55,7 @@ def build_knowledge_search_statement(request: KnowledgeSearchRequest) -> Any:
         .where(
             KnowledgeDocumentModel.status == "active",
             KnowledgeDocumentModel.enabled.is_(True),
-            KnowledgeDocumentModel.authority_status.in_(["effective", "unknown"]),
+            KnowledgeDocumentModel.authority_status.in_(authority_statuses),
             or_(
                 KnowledgeDocumentModel.agent_types.contains([request.agent_type]),
                 KnowledgeDocumentModel.agent_types.contains(["*"]),
@@ -63,11 +69,11 @@ def build_knowledge_search_statement(request: KnowledgeSearchRequest) -> Any:
             KnowledgeDocumentModel.source_priority >= request.source_priority_min,
             or_(
                 KnowledgeDocumentModel.effective_from.is_(None),
-                KnowledgeDocumentModel.effective_from <= request.effective_date,
+                KnowledgeDocumentModel.effective_from <= analysis_date,
             ),
             or_(
                 KnowledgeDocumentModel.effective_to.is_(None),
-                KnowledgeDocumentModel.effective_to >= request.effective_date,
+                KnowledgeDocumentModel.effective_to >= analysis_date,
             ),
             or_(
                 KnowledgeChunkModel.search_vector.op("@@")(ts_query),
@@ -81,5 +87,5 @@ def build_knowledge_search_statement(request: KnowledgeSearchRequest) -> Any:
             KnowledgeDocumentModel.id,
             KnowledgeChunkModel.sequence,
         )
-        .limit(request.limit)
+        .limit(min(request.limit * 5, 250))
     )

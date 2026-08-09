@@ -67,6 +67,91 @@ def test_every_butler_item_is_grounded_in_original_authorized_sources() -> None:
     )
 
 
+def test_butler_unknown_authority_requires_low_confidence_and_missing_information() -> None:
+    payload = _payload()
+    output = ButlerSynthesisOutput.model_validate(payload)
+    metadata = {
+        "ctx:segment:s1": {
+            "title": "合同第八条(数据库)",
+            "sourceType": "attachment",
+            "locator": "第8条",
+            "contentHash": "a" * 64,
+            "internalPrecedent": False,
+        },
+        "knowledge:chunk:k1": {
+            "title": "待核实法规(数据库)",
+            "sourceType": "knowledge_document",
+            "locator": "第一条",
+            "contentHash": "b" * 64,
+            "internalPrecedent": False,
+            "authorityType": "law",
+            "authorityRole": "formal_legal_basis",
+            "authorityStatus": "unknown",
+            "metadataStatus": "pending_metadata",
+            "jurisdiction": "CN",
+            "effectiveFrom": None,
+            "effectiveTo": None,
+        },
+    }
+
+    with pytest.raises(ValueError, match="Unknown authority status"):
+        validate_butler_synthesis_sources(
+            output,
+            authorized_source_refs={"ctx:segment:s1", "knowledge:chunk:k1"},
+            internal_precedent_refs=set(),
+            source_metadata=metadata,
+            analysis_jurisdiction="CN",
+        )
+
+    payload["confidence"] = 0.6
+    payload["missingInformation"] = ["核实法规效力"]
+    payload["citations"][0]["title"] = "模型伪造标题"  # type: ignore[index]
+    payload["citations"][0]["contentHash"] = "f" * 64  # type: ignore[index]
+    canonical = validate_butler_synthesis_sources(
+        ButlerSynthesisOutput.model_validate(payload),
+        authorized_source_refs={"ctx:segment:s1", "knowledge:chunk:k1"},
+        internal_precedent_refs=set(),
+        source_metadata=metadata,
+        analysis_jurisdiction="CN",
+    )
+
+    assert canonical.citations[0].title == "合同第八条(数据库)"
+    assert canonical.citations[0].content_hash == "a" * 64
+
+
+def test_butler_rejects_repealed_authority_outside_backend_historical_mode() -> None:
+    metadata = {
+        "ctx:segment:s1": {
+            "title": "合同第八条",
+            "sourceType": "attachment",
+            "contentHash": "a" * 64,
+            "internalPrecedent": False,
+        },
+        "knowledge:chunk:k1": {
+            "title": "已废止法规",
+            "sourceType": "knowledge_document",
+            "contentHash": "b" * 64,
+            "internalPrecedent": False,
+            "authorityType": "law",
+            "authorityRole": "formal_legal_basis",
+            "authorityStatus": "repealed",
+            "metadataStatus": "ready",
+            "jurisdiction": "CN",
+            "effectiveFrom": "2010-01-01",
+            "effectiveTo": "2020-12-31",
+        },
+    }
+
+    with pytest.raises(ValueError, match="not effective"):
+        validate_butler_synthesis_sources(
+            ButlerSynthesisOutput.model_validate(_payload()),
+            authorized_source_refs={"ctx:segment:s1", "knowledge:chunk:k1"},
+            internal_precedent_refs=set(),
+            source_metadata=metadata,
+            analysis_jurisdiction="CN",
+        )
+
+
 def test_unauthorized_item_support_ref_fails_closed_even_if_citations_are_valid() -> None:
     payload = _payload()
     payload["nextActions"] = [

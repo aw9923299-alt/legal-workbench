@@ -13,6 +13,7 @@ from legal_workbench.domain.entities import (
     KnowledgeDocument,
     KnowledgeSearchRequest,
 )
+from legal_workbench.domain.enums import AuthorityStatus
 
 
 @pytest.mark.integration
@@ -45,6 +46,7 @@ async def test_postgres_retrieval_filters_and_ranks_authorized_knowledge() -> No
         effective_to: date | None = None,
         internal_precedent: bool = False,
         document_type: str = "regulation",
+        authority_status: AuthorityStatus = AuthorityStatus.UNKNOWN,
     ) -> KnowledgeDocument:
         return KnowledgeDocument(
             id=uuid4(),
@@ -60,6 +62,7 @@ async def test_postgres_retrieval_filters_and_ranks_authorized_knowledge() -> No
             source_priority=priority,
             internal_precedent=internal_precedent,
             confidentiality="internal",
+            authority_status=authority_status,
         )
 
     authoritative = document("高优先级法规", priority=95)
@@ -72,7 +75,12 @@ async def test_postgres_retrieval_filters_and_ranks_authorized_knowledge() -> No
     )
     wrong_agent = document("错误 Agent", priority=100, agent_types=["labor_employment"])
     wrong_jurisdiction = document("错误法域", priority=100, jurisdiction="US")
-    expired = document("已失效法规", priority=100, effective_to=date(2025, 1, 1))
+    expired = document(
+        "已失效法规",
+        priority=100,
+        effective_to=date(2025, 1, 1),
+        authority_status=AuthorityStatus.REPEALED,
+    )
     documents = [
         authoritative,
         lower,
@@ -124,6 +132,23 @@ async def test_postgres_retrieval_filters_and_ranks_authorized_knowledge() -> No
         ]
         assert results[1].internal_precedent is True
         assert all(item.source_ref.startswith("knowledge:chunk:") for item in results)
+        historical_request = KnowledgeSearchRequest(
+            query=retrieval_marker,
+            agent_type="contract_review",
+            matter_type="contract",
+            jurisdiction="CN",
+            document_types=("regulation", "internal_opinion"),
+            effective_date=date(2024, 8, 9),
+            historical_as_of=date(2024, 8, 9),
+            source_priority_min=50,
+            limit=10,
+            correlation_id=f"historical-{source_suffix}",
+        )
+        historical_results = await KnowledgeRetrievalService(factory).search(
+            historical_request
+        )
+
+        assert historical_results[0].document.id == expired.id
         async with session_factory() as session:
             audit_count = await session.scalar(
                 select(func.count(KnowledgeRetrievalLogModel.id)).where(
@@ -135,8 +160,9 @@ async def test_postgres_retrieval_filters_and_ranks_authorized_knowledge() -> No
         async with session_factory() as session, session.begin():
             await session.execute(
                 delete(KnowledgeRetrievalLogModel).where(
-                    KnowledgeRetrievalLogModel.correlation_id
-                    == request.correlation_id
+                    KnowledgeRetrievalLogModel.correlation_id.in_(
+                        [request.correlation_id, f"historical-{source_suffix}"]
+                    )
                 )
             )
             await session.execute(

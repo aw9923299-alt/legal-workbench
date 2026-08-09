@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import date
+
 import pytest
 
 from legal_workbench.agents.legal_contracts import (
@@ -8,7 +10,14 @@ from legal_workbench.agents.legal_contracts import (
 )
 
 
-def _product(*, role: str, confidence: float = 0.8, missing: list[str] | None = None):
+def _product(
+    *,
+    role: str,
+    confidence: float = 0.8,
+    missing: list[str] | None = None,
+    effective_date: str = "2026-08-09",
+    historical_analysis: bool = False,
+):
     return LegalConsultationProduct.model_validate(
         {
             "executiveSummary": "结论",
@@ -20,8 +29,8 @@ def _product(*, role: str, confidence: float = 0.8, missing: list[str] | None = 
                     "sourceRefs": ["knowledge:chunk:k1"],
                     "authorityRole": role,
                     "jurisdiction": "CN",
-                    "effectiveDate": "2026-08-09",
-                    "historicalAnalysis": False,
+                    "effectiveDate": effective_date,
+                    "historicalAnalysis": historical_analysis,
                 }
             ],
             "analysis": [
@@ -119,6 +128,40 @@ def test_repealed_law_rejected_for_current_basis() -> None:
                 }
             },
         )
+
+
+def test_historical_basis_requires_backend_as_of_and_valid_period() -> None:
+    product = _product(
+        role="formal_legal_basis",
+        effective_date="2019-06-01",
+        historical_analysis=True,
+    )
+    authority = {
+        "knowledge:chunk:k1": {
+            "authorityType": "law",
+            "authorityRole": "formal_legal_basis",
+            "authorityStatus": "repealed",
+            "metadataStatus": "ready",
+            "jurisdiction": "CN",
+            "effectiveFrom": "2010-01-01",
+            "effectiveTo": "2020-12-31",
+        }
+    }
+
+    with pytest.raises(ValueError, match="authorized by deterministic input"):
+        validate_legal_work_product_sources(
+            product,
+            authorized_source_refs={"ctx:message:m1", "knowledge:chunk:k1"},
+            source_authorities=authority,
+        )
+
+    validate_legal_work_product_sources(
+        product,
+        authorized_source_refs={"ctx:message:m1", "knowledge:chunk:k1"},
+        source_authorities=authority,
+        analysis_effective_date=date(2019, 6, 1),
+        historical_as_of=date(2019, 6, 1),
+    )
 
 
 def test_unknown_status_requires_low_confidence_and_missing_information() -> None:

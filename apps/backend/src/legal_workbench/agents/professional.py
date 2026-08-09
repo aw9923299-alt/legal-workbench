@@ -5,7 +5,7 @@ from __future__ import annotations
 from legal_workbench.agents.legal_butler import LEGAL_SPECIALIST_KEYS
 from legal_workbench.agents.legal_contracts import LEGAL_OUTPUT_MODELS
 
-PROFESSIONAL_AGENT_VERSION = "1.1.0"
+PROFESSIONAL_AGENT_VERSION = "1.2.0"
 
 PROFESSIONAL_AGENT_NAMES: dict[str, str] = {
     "legal_consultation": "一般法律咨询",
@@ -34,6 +34,10 @@ sourceRef。内部意见只能标为 internal_precedent，不得作为正式法�
 missingInformation，禁止虚构法规、条款、案例、文件内容或把假设写成事实。
 每项 legalBasis 必须按 authorized context 中的 authorityRole、法域和效力日期原样声明；
 公司制度、业务规则、合同和历史意见不得声明为 formal_legal_basis。
+legalBasis.effectiveDate 必须等于 authorizedContext.analysisEffectiveDate；只有
+analysisHistoricalAsOf 非空时 historicalAnalysis 才能为 true，且不得自行开启历史模式。
+authorityStatus 或 metadataStatus 未确认时，confidence 不得超过 0.6，并必须列入
+missingInformation；不得用未知、废止或失效来源支撑当前正式法律依据。
 只输出符合输出 Schema 的单一 JSON 对象，不要输出 Markdown 或 Schema 外字段。
 """.strip()
 

@@ -227,6 +227,8 @@ def validate_legal_work_product_sources(
         str, SourceAuthorityMetadata | Mapping[str, object]
     ]
     | None = None,
+    analysis_effective_date: dt.date | None = None,
+    historical_as_of: dt.date | None = None,
 ) -> None:
     """Fail closed when a specialist cites anything outside its authorized context."""
 
@@ -266,22 +268,41 @@ def validate_legal_work_product_sources(
         raise ValueError(f"Internal precedent citation labels do not match context: {mislabeled}")
     if source_authorities is None:
         return
-    authorities = {
-        source_ref: (
-            value
-            if isinstance(value, SourceAuthorityMetadata)
-            else SourceAuthorityMetadata.model_validate(value)
-        )
-        for source_ref, value in source_authorities.items()
-    }
     unknown_status_used = False
     for item in product.legal_basis:
+        if item.historical_analysis != (historical_as_of is not None):
+            raise ValueError(
+                "Historical legal basis mode must be authorized by deterministic input."
+            )
+        expected_date = historical_as_of or analysis_effective_date
+        if expected_date is not None and item.effective_date != expected_date:
+            raise ValueError(
+                "Legal basis effective date must match the deterministic analysis date."
+            )
         for source_ref in item.source_refs:
-            authority = authorities.get(source_ref)
-            if authority is None:
+            metadata = source_authorities.get(source_ref)
+            if metadata is None:
                 raise ValueError(
                     f"Authority metadata is required for legal basis source: {source_ref}"
                 )
+            authority = (
+                metadata
+                if isinstance(metadata, SourceAuthorityMetadata)
+                else SourceAuthorityMetadata.model_validate(
+                    {
+                        key: metadata.get(key)
+                        for key in (
+                            "authorityType",
+                            "authorityRole",
+                            "authorityStatus",
+                            "metadataStatus",
+                            "jurisdiction",
+                            "effectiveFrom",
+                            "effectiveTo",
+                        )
+                    }
+                )
+            )
             if authority.authority_role != item.authority_role:
                 raise ValueError(
                     "Declared legal basis authority role does not match source metadata: "

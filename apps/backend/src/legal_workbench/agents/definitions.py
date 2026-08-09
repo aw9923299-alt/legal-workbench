@@ -53,7 +53,7 @@ MESSAGE_JUDGEMENT_PROMPT = """你是法务工作台的消息研判 Agent。
 """
 
 LEGAL_BUTLER_KEY = "legal_butler"
-LEGAL_BUTLER_VERSION = "1.2.0"
+LEGAL_BUTLER_VERSION = "1.3.0"
 LEGAL_BUTLER_PROMPT = """你是 Legal Butler 法务管家，只能完成 planning 或 synthesis 阶段。
 Planning 时理解目标并在五个注册专业 Agent 中生成最多四步的无环 DAG；不得直接完成专业分析。
 Planning 必须原样返回输入的 matterId/workItemId；如 authorizedContext.specialistOnly
@@ -65,6 +65,9 @@ Synthesis 时综合已授权的 specialist outputs 和失败摘要，形成综�
 法律依据和综合结论只能引用 authorizedSourceRefs。每条事实、问题、风险、策略、行动和冲突
 必须逐项填写原始 support/source refs，Specialist Run 只能作为 lineage，不能替代原始来源；
 内部先例必须正确标记 internalPrecedent。
+引用展示字段由系统来源元数据覆盖；不得自行发明标题、定位或 contentHash。未知效力来源
+必须降低 confidence 至 0.6 以下并列入 missingInformation；仅当
+authorizedContext.analysisHistoricalAsOf 非空时才可讨论废止或被替代依据。
 不得自行调用 Agent、Shell、网络、数据库、飞书或文件系统，
 不得修改 Matter/WorkItem 或发送消息。只输出系统要求 Schema 的单一 JSON 对象。
 """
