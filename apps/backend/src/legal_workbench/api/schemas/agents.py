@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 from uuid import UUID
 
 from pydantic import Field
@@ -139,6 +139,7 @@ class LegalAgentRequest(ApiModel):
     work_item_id: UUID | None = None
     context_snapshot_id: UUID | None = None
     jurisdiction: str = Field(default="CN", min_length=2, max_length=40)
+    historical_as_of: date | None = None
 
 
 class LegalAgentRequestAcceptedResponse(ApiModel):

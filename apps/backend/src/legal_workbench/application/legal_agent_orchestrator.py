@@ -167,6 +167,7 @@ class LegalAgentOrchestrator:
         runs_root: str | Path,
         lease_seconds: int = 60,
         worker_id: str = "legal-agent-worker",
+        timeout_seconds: int = 180,
     ) -> None:
         self._uow_factory = uow_factory
         self._runtime = runtime
@@ -174,7 +175,9 @@ class LegalAgentOrchestrator:
         self._runs_root = Path(runs_root)
         self._lease_seconds = lease_seconds
         self._worker_id = worker_id
-        self._definitions = build_legal_agent_definitions()
+        self._definitions = build_legal_agent_definitions(
+            timeout_seconds=timeout_seconds
+        )
         self._dependency_assembler = DependencyContextAssembler()
 
     async def execute(self, trigger: LegalAgentTrigger) -> LegalAgentOrchestrationResult:
@@ -740,7 +743,19 @@ class LegalAgentOrchestrator:
             trigger=trigger,
             context=context,
             upstream_outputs=dependency_context.upstream_outputs,
-            extra={"stepId": step.step_id, "contextRequirements": step.context_requirements},
+            extra={
+                "stepId": step.step_id,
+                "contextRequirements": step.context_requirements,
+                "analysisJurisdiction": trigger.jurisdiction,
+                "analysisEffectiveDate": (
+                    trigger.historical_as_of or date.today()
+                ).isoformat(),
+                "analysisHistoricalAsOf": (
+                    trigger.historical_as_of.isoformat()
+                    if trigger.historical_as_of is not None
+                    else None
+                ),
+            },
         )
         try:
             execution = await self._runtime.execute(

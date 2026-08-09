@@ -680,6 +680,7 @@ async def test_legal_agent_crash_recovery_resumes_only_incomplete_phase(
         actor_id="user:fixture",
         correlation_id=f"crash-{uuid4().hex}",
         idempotency_key=f"crash-{uuid4().hex}",
+        historical_as_of=date(2024, 1, 15),
     )
     try:
         async with factory() as uow:
@@ -717,6 +718,7 @@ async def test_legal_agent_crash_recovery_resumes_only_incomplete_phase(
             final_plan = await uow.agent_execution_plans.get(plan.id)
             final_runs = list(await uow.agent_runs.list_by_plan(plan.id))
         assert final_plan is not None
+        assert final_plan.historical_as_of == date(2024, 1, 15)
         assert all(step.status.value == "completed" for step in final_plan.steps)
         assert {
             step.step_id: step.latest_valid_run_id
@@ -724,6 +726,9 @@ async def test_legal_agent_crash_recovery_resumes_only_incomplete_phase(
             if step.step_id in completed_before
         } == completed_before
         recovered_run = next(value for value in final_runs if value.attempt_number == 2)
+        assert recovered_run.input_payload["authorizedContext"][
+            "analysisHistoricalAsOf"
+        ] == "2024-01-15"
         async with factory() as uow:
             attempts = list(
                 await uow.agent_run_attempts.list_by_run(recovered_run.id)

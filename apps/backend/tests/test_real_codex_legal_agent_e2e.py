@@ -191,6 +191,7 @@ async def test_real_codex_single_and_multi_agent_e2e() -> None:
         runtime,
         LegalContextBuilder(KnowledgeRetrievalService(factory)),
         runs_root=runs_root,
+        timeout_seconds=900,
     )
     try:
         async with factory() as uow:

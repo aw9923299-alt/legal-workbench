@@ -177,6 +177,7 @@ async def request_legal_agent_plan(
             special_requirements=body.special_requirements,
             specialist_only=body.specialist_only,
             jurisdiction=body.jurisdiction,
+            historical_as_of=body.historical_as_of,
             actor_id=actor.actor_id,
             correlation_id=get_correlation_id(request),
             idempotency_key=idempotency_key,

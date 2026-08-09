@@ -1,4 +1,5 @@
 import asyncio
+from datetime import date
 from hashlib import sha256
 from pathlib import Path
 from typing import Any
@@ -104,6 +105,7 @@ async def _orchestrate_legal_agents(
 ) -> dict[str, object]:
     orchestrator = _build_legal_agent_orchestrator()
     work_item_id = payload.get("workItemId")
+    historical_value = payload.get("historicalAsOf")
     result = await orchestrator.execute(
         LegalAgentTrigger(
             matter_id=UUID(str(payload["matterId"])),
@@ -124,6 +126,9 @@ async def _orchestrate_legal_agents(
                 else None
             ),
             jurisdiction=str(payload.get("jurisdiction") or "CN"),
+            historical_as_of=(
+                date.fromisoformat(str(historical_value)) if historical_value else None
+            ),
         )
     )
     return {
@@ -166,6 +171,7 @@ def _build_legal_agent_orchestrator() -> LegalAgentOrchestrator:
         runs_root=settings.codex_runs_root,
         lease_seconds=settings.agent_run_lease_seconds,
         worker_id="legal-agent-worker",
+        timeout_seconds=settings.codex_run_timeout_seconds,
     )
 
 

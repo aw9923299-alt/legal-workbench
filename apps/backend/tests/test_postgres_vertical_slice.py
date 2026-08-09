@@ -158,6 +158,7 @@ async def test_candidate_to_matter_to_work_item_http_slice() -> None:
                     "objective": "只审查该非敏感合作合同",
                     "specialistOnly": "contract_review",
                     "workItemId": matter_body["workItemIds"][0],
+                    "historicalAsOf": "2024-01-15",
                 },
                 headers=butler_headers,
             )
@@ -171,6 +172,7 @@ async def test_candidate_to_matter_to_work_item_http_slice() -> None:
                     "objective": "只审查该非敏感合作合同",
                     "specialistOnly": "contract_review",
                     "workItemId": matter_body["workItemIds"][0],
+                    "historicalAsOf": "2024-01-15",
                 },
                 headers=butler_headers,
             )
@@ -186,7 +188,19 @@ async def test_candidate_to_matter_to_work_item_http_slice() -> None:
                     ),
                     {"matter_id": matter_id},
                 )
+                manual_event_payload = (
+                    await connection.execute(
+                        text(
+                            "SELECT payload FROM outbox_events "
+                            "WHERE event_type = 'LegalButlerRequested' "
+                            "AND aggregate_id = :matter_id "
+                            "ORDER BY occurred_at DESC, id DESC LIMIT 1"
+                        ),
+                        {"matter_id": matter_id},
+                    )
+                ).scalar_one()
             assert butler_events == 2
+            assert manual_event_payload["historicalAsOf"] == "2024-01-15"
     finally:
         app.dependency_overrides.pop(get_uow_factory, None)
         await engine.dispose()
