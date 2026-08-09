@@ -1,8 +1,17 @@
 from datetime import datetime
 from uuid import UUID
 
+from pydantic import Field
+
 from legal_workbench.api.schemas.base import ApiModel
-from legal_workbench.domain.enums import AgentRunSourceType, AgentRunStatus, FeishuMessageStatus
+from legal_workbench.domain.enums import (
+    AgentExecutionPlanStatus,
+    AgentPlanStepStatus,
+    AgentRunRole,
+    AgentRunSourceType,
+    AgentRunStatus,
+    FeishuMessageStatus,
+)
 
 
 class AgentRunSourceResponse(ApiModel):
@@ -63,6 +72,13 @@ class AgentRunResponse(ApiModel):
     sources: list[AgentRunSourceResponse]
     status_events: list[AgentRunStatusEventResponse]
     candidate_id: UUID | None
+    matter_id: UUID | None
+    work_item_id: UUID | None
+    execution_plan_id: UUID | None
+    plan_step_id: UUID | None
+    parent_run_id: UUID | None
+    retry_of_run_id: UUID | None
+    run_role: AgentRunRole
 
 
 class ContextSnapshotSummaryResponse(ApiModel):
@@ -114,3 +130,62 @@ class MessageAnalysisRequestedResponse(ApiModel):
     message_id: UUID
     message_status: FeishuMessageStatus
     idempotent_replay: bool
+
+
+class LegalAgentRequest(ApiModel):
+    objective: str | None = Field(default=None, max_length=4000)
+    special_requirements: str | None = Field(default=None, max_length=4000)
+    specialist_only: str | None = None
+    work_item_id: UUID | None = None
+    context_snapshot_id: UUID | None = None
+    jurisdiction: str = Field(default="CN", min_length=2, max_length=40)
+
+
+class LegalAgentRequestAcceptedResponse(ApiModel):
+    request_id: UUID
+    matter_id: UUID
+    context_snapshot_id: UUID
+    status: str = "queued"
+    idempotent_replay: bool
+
+
+class LegalAgentStepRerunAcceptedResponse(ApiModel):
+    request_id: UUID
+    plan_id: UUID
+    step_id: str
+    status: str = "queued"
+    idempotent_replay: bool
+
+
+class AgentPlanStepResponse(ApiModel):
+    id: UUID
+    step_id: str
+    sequence: int
+    agent_key: str
+    objective: str
+    depends_on: list[str]
+    context_requirements: list[str]
+    status: AgentPlanStepStatus
+    latest_run_id: UUID | None
+    attempt_count: int
+    failure_code: str | None
+    failure_message: str | None
+
+
+class AgentExecutionPlanResponse(ApiModel):
+    id: UUID
+    matter_id: UUID
+    work_item_id: UUID | None
+    objective: str
+    status: AgentExecutionPlanStatus
+    task_types: list[str]
+    synthesis_strategy: str
+    missing_information: list[str]
+    requires_user_input: bool
+    correlation_id: str
+    planning_run_id: UUID | None
+    synthesis_run_id: UUID | None
+    steps: list[AgentPlanStepResponse]
+    agent_runs: list[AgentRunResponse]
+    created_at: datetime
+    updated_at: datetime

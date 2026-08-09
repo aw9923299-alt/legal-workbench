@@ -1053,6 +1053,10 @@ class LegalAgentOrchestrator:
         async with self._uow_factory() as uow:
             plan = await uow.agent_execution_plans.get(plan_id)
             runs = list(await uow.agent_runs.list_by_plan(plan_id))
+            sources_by_run = {
+                run.id: list(await uow.agent_run_sources.list_by_run(run.id))
+                for run in runs
+            }
         if plan is None:
             return []
         by_id = {run.id: run for run in runs}
@@ -1064,6 +1068,18 @@ class LegalAgentOrchestrator:
                 output = LEGAL_OUTPUT_MODELS[step.agent_key].model_validate(
                     run.output_payload
                 )
+            run_sources = sources_by_run.get(run.id, []) if run else []
+            source_refs = frozenset(
+                str(source.citation_metadata.get("sourceRef"))
+                for source in run_sources
+                if source.citation_metadata.get("sourceRef")
+            )
+            internal_precedent_refs = frozenset(
+                str(source.citation_metadata.get("sourceRef"))
+                for source in run_sources
+                if source.citation_metadata.get("sourceRef")
+                and source.citation_metadata.get("internalPrecedent") is True
+            )
             values.append(
                 SpecialistStepExecution(
                     step_id=step.step_id,
@@ -1073,6 +1089,8 @@ class LegalAgentOrchestrator:
                     output=output,
                     failure_code=step.failure_code,
                     failure_message=step.failure_message,
+                    source_refs=source_refs,
+                    internal_precedent_refs=internal_precedent_refs,
                 )
             )
         return values

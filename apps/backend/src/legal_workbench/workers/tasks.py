@@ -15,6 +15,12 @@ from legal_workbench.application.evaluations import (
     EvaluationFixtureCase,
     RealCodexEvaluationExecutor,
 )
+from legal_workbench.application.knowledge import KnowledgeRetrievalService
+from legal_workbench.application.legal_agent_orchestrator import (
+    LegalAgentOrchestrator,
+    LegalAgentTrigger,
+)
+from legal_workbench.application.legal_context import LegalContextBuilder
 from legal_workbench.application.message_analysis import (
     AnalyseFeishuMessageCommand,
     AnalyseFeishuMessageHandler,
@@ -90,6 +96,99 @@ def scheduler_heartbeat() -> dict[str, str]:
 def publish_outbox() -> dict[str, int]:
     count = asyncio.run(OutboxDispatcher().publish_batch())
     return {"claimed": count}
+
+
+async def _orchestrate_legal_agents(
+    payload: dict[str, object], correlation_id: str
+) -> dict[str, object]:
+    orchestrator = _build_legal_agent_orchestrator()
+    work_item_id = payload.get("workItemId")
+    result = await orchestrator.execute(
+        LegalAgentTrigger(
+            matter_id=UUID(str(payload["matterId"])),
+            work_item_id=UUID(str(work_item_id)) if work_item_id else None,
+            context_snapshot_id=UUID(str(payload["contextSnapshotId"])),
+            objective=str(payload["objective"]),
+            actor_id=str(payload.get("actorId") or "local-legal-user"),
+            correlation_id=correlation_id,
+            idempotency_key=str(payload["idempotencyKey"]),
+            special_requirements=(
+                str(payload["specialRequirements"])
+                if payload.get("specialRequirements")
+                else None
+            ),
+            specialist_only=(
+                str(payload["specialistOnly"])
+                if payload.get("specialistOnly")
+                else None
+            ),
+            jurisdiction=str(payload.get("jurisdiction") or "CN"),
+        )
+    )
+    return {
+        "planId": str(result.plan_id),
+        "status": result.status.value,
+        "planningRunId": str(result.planning_run_id) if result.planning_run_id else None,
+        "synthesisRunId": str(result.synthesis_run_id) if result.synthesis_run_id else None,
+        "artifactId": str(result.artifact_id) if result.artifact_id else None,
+        "reviewPackageId": (
+            str(result.review_package_id) if result.review_package_id else None
+        ),
+        "idempotentReplay": result.idempotent_replay,
+        "correlationId": correlation_id,
+    }
+
+
+def _build_legal_agent_orchestrator() -> LegalAgentOrchestrator:
+    settings = get_settings()
+    uow_factory = SqlAlchemyUnitOfWorkFactory()
+    runtime = (
+        CodexCliRuntime(runs_root=settings.codex_runs_root)
+        if settings.enable_real_codex
+        else DisabledAgentRuntime()
+    )
+    return LegalAgentOrchestrator(
+        uow_factory,
+        runtime,
+        LegalContextBuilder(KnowledgeRetrievalService(uow_factory)),
+        runs_root=settings.codex_runs_root,
+    )
+
+
+@celery_app.task(name="legal_agents.orchestrate")  # type: ignore[untyped-decorator]
+def orchestrate_legal_agents(
+    payload: dict[str, object], correlation_id: str = ""
+) -> dict[str, object]:
+    correlation = correlation_id or str(payload.get("correlationId") or "")
+    return asyncio.run(_orchestrate_legal_agents(payload, correlation))
+
+
+async def _rerun_legal_agent_step(
+    payload: dict[str, object], correlation_id: str
+) -> dict[str, object]:
+    result = await _build_legal_agent_orchestrator().rerun_step(
+        plan_id=UUID(str(payload["planId"])),
+        step_id=str(payload["stepId"]),
+        actor_id=str(payload.get("actorId") or "local-legal-user"),
+        correlation_id=correlation_id,
+    )
+    return {
+        "planId": str(result.plan_id),
+        "status": result.status.value,
+        "synthesisRunId": str(result.synthesis_run_id) if result.synthesis_run_id else None,
+        "artifactId": str(result.artifact_id) if result.artifact_id else None,
+        "reviewPackageId": (
+            str(result.review_package_id) if result.review_package_id else None
+        ),
+        "correlationId": correlation_id,
+    }
+
+
+@celery_app.task(name="legal_agents.rerun_step")  # type: ignore[untyped-decorator]
+def rerun_legal_agent_step(
+    payload: dict[str, object], correlation_id: str = ""
+) -> dict[str, object]:
+    return asyncio.run(_rerun_legal_agent_step(payload, correlation_id))
 
 
 @celery_app.task(name="analysis.recover")  # type: ignore[untyped-decorator]

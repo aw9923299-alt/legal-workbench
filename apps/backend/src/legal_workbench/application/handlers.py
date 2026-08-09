@@ -43,6 +43,35 @@ def _request_hash(payload: dict[str, object]) -> str:
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
 
+def _legal_butler_requested_event(
+    *,
+    candidate: MessageCandidate,
+    matter: LegalMatter,
+    work_item_id: UUID | None,
+    actor_id: str,
+    correlation_id: str,
+) -> OutboxEvent:
+    return OutboxEvent(
+        id=uuid4(),
+        event_type="LegalButlerRequested",
+        aggregate_type="legal_matter",
+        aggregate_id=matter.id,
+        payload={
+            "matterId": str(matter.id),
+            "workItemId": str(work_item_id) if work_item_id else None,
+            "contextSnapshotId": str(candidate.context_snapshot_id),
+            "objective": matter.objective or matter.title,
+            "actorId": actor_id,
+            "idempotencyKey": f"candidate:{candidate.id}:matter:{matter.id}",
+            "triggerSource": "candidate_confirmed",
+            "specialRequirements": None,
+            "specialistOnly": None,
+            "jurisdiction": "CN",
+        },
+        correlation_id=correlation_id,
+    )
+
+
 def _candidate_result_from_replay(record: IdempotencyRecord) -> CandidateCreatedResult:
     return CandidateCreatedResult(
         candidate_id=UUID(str(record.response_payload["candidateId"])),
@@ -364,6 +393,15 @@ class ConfirmCandidateCreateMatterHandler:
                     correlation_id=command.correlation_id,
                 )
             )
+            await uow.outbox_events.add(
+                _legal_butler_requested_event(
+                    candidate=candidate,
+                    matter=matter,
+                    work_item_id=work_items[0].id,
+                    actor_id=command.actor_id,
+                    correlation_id=command.correlation_id,
+                )
+            )
 
             response_payload: dict[str, object] = {
                 "matterId": str(matter.id),
@@ -485,6 +523,18 @@ class ResolveCandidateHandler:
                     correlation_id=command.correlation_id,
                 )
             )
+            if command.matter_id is not None:
+                if matter is None:
+                    raise EntityNotFoundError("Legal matter was not found.")
+                await uow.outbox_events.add(
+                    _legal_butler_requested_event(
+                        candidate=candidate,
+                        matter=matter,
+                        work_item_id=None,
+                        actor_id=command.actor_id,
+                        correlation_id=command.correlation_id,
+                    )
+                )
             await uow.idempotency.add(
                 IdempotencyRecord(
                     id=uuid4(),

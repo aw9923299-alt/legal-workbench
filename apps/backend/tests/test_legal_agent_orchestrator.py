@@ -369,5 +369,28 @@ async def test_multi_agent_orchestration_persists_lineage_draft_and_review() -> 
         replay = await orchestrator.execute(trigger)
         assert replay.idempotent_replay is True
         assert replay.plan_id == result.plan_id
+
+        rerun = await orchestrator.rerun_step(
+            plan_id=result.plan_id,
+            step_id="contract",
+            actor_id="user:fixture",
+            correlation_id=f"rerun-{uuid4().hex}",
+        )
+        assert rerun.status == AgentExecutionPlanStatus.COMPLETED
+        async with factory() as uow:
+            rerun_plan = await uow.agent_execution_plans.get(result.plan_id)
+            rerun_runs = list(await uow.agent_runs.list_by_plan(result.plan_id))
+        assert rerun_plan is not None
+        contract_step = next(
+            step for step in rerun_plan.steps if step.step_id == "contract"
+        )
+        assert contract_step.attempt_count == 2
+        latest_contract_run = next(
+            run for run in rerun_runs if run.id == contract_step.latest_run_id
+        )
+        assert latest_contract_run.retry_of_run_id is not None
+        assert len(
+            [run for run in rerun_runs if run.run_role == AgentRunRole.BUTLER_SYNTHESIS]
+        ) == 2
     finally:
         await engine.dispose()

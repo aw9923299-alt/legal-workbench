@@ -13,18 +13,29 @@ from legal_workbench.api.dependencies import (
     get_uow_factory,
 )
 from legal_workbench.api.schemas.agents import (
+    AgentExecutionPlanResponse,
+    AgentPlanStepResponse,
     AgentRunOperationResponse,
     AgentRunResponse,
     AgentRunSourceResponse,
     AgentRunStatusEventResponse,
     ContextSnapshotSummaryResponse,
     FeishuMessageSourceResponse,
+    LegalAgentRequest,
+    LegalAgentRequestAcceptedResponse,
+    LegalAgentStepRerunAcceptedResponse,
     MessageAnalysisRequestedResponse,
     MessageAnalysisResponse,
 )
 from legal_workbench.application.agent_operations import (
     CancelAgentRunCommand,
     CancelAgentRunHandler,
+)
+from legal_workbench.application.legal_agent_requests import (
+    RequestLegalAgentOrchestrationCommand,
+    RequestLegalAgentOrchestrationHandler,
+    RequestLegalAgentStepRerunCommand,
+    RequestLegalAgentStepRerunHandler,
 )
 from legal_workbench.application.message_analysis import (
     RequestFeishuMessageAnalysisCommand,
@@ -36,7 +47,9 @@ from legal_workbench.application.queries import (
     FeishuMessageAnalysisDetails,
     FeishuMessageAnalysisQueryService,
 )
+from legal_workbench.domain.entities import AgentExecutionPlan
 from legal_workbench.domain.enums import AgentRunStatus, FeishuMessageStatus
+from legal_workbench.domain.errors import EntityNotFoundError
 from legal_workbench.infrastructure.unit_of_work import SqlAlchemyUnitOfWorkFactory
 
 router = APIRouter(tags=["agent-runs"])
@@ -102,6 +115,146 @@ def _run_response(details: AgentRunDetails) -> AgentRunResponse:
             AgentRunStatusEventResponse.model_validate(value) for value in details.status_events
         ],
         candidate_id=details.candidate.id if details.candidate else None,
+        matter_id=run.matter_id,
+        work_item_id=run.work_item_id,
+        execution_plan_id=run.execution_plan_id,
+        plan_step_id=run.plan_step_id,
+        parent_run_id=run.parent_run_id,
+        retry_of_run_id=run.retry_of_run_id,
+        run_role=run.run_role,
+    )
+
+
+async def _plan_response(
+    plan: AgentExecutionPlan,
+    uow_factory: SqlAlchemyUnitOfWorkFactory,
+) -> AgentExecutionPlanResponse:
+    execution_plan = plan
+    async with uow_factory() as uow:
+        runs = list(await uow.agent_runs.list_by_plan(execution_plan.id))
+    run_query = AgentRunQueryService(uow_factory)
+    run_responses = [_run_response(await run_query.get(run.id)) for run in runs]
+    return AgentExecutionPlanResponse(
+        id=execution_plan.id,
+        matter_id=execution_plan.matter_id,
+        work_item_id=execution_plan.work_item_id,
+        objective=execution_plan.objective,
+        status=execution_plan.status,
+        task_types=execution_plan.task_types,
+        synthesis_strategy=execution_plan.synthesis_strategy,
+        missing_information=execution_plan.missing_information,
+        requires_user_input=execution_plan.requires_user_input,
+        correlation_id=execution_plan.correlation_id,
+        planning_run_id=execution_plan.planning_run_id,
+        synthesis_run_id=execution_plan.synthesis_run_id,
+        steps=[AgentPlanStepResponse.model_validate(step) for step in execution_plan.steps],
+        agent_runs=run_responses,
+        created_at=execution_plan.created_at,
+        updated_at=execution_plan.updated_at,
+    )
+
+
+@router.post(
+    "/matters/{matter_id}/legal-agent-plans",
+    response_model=LegalAgentRequestAcceptedResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def request_legal_agent_plan(
+    matter_id: UUID,
+    body: LegalAgentRequest,
+    request: Request,
+    response: Response,
+    actor: Annotated[RequestActor, Depends(get_request_actor)],
+    idempotency_key: Annotated[str, Depends(get_idempotency_key)],
+    uow_factory: Annotated[SqlAlchemyUnitOfWorkFactory, Depends(get_uow_factory)],
+) -> LegalAgentRequestAcceptedResponse:
+    result = await RequestLegalAgentOrchestrationHandler(uow_factory).execute(
+        RequestLegalAgentOrchestrationCommand(
+            matter_id=matter_id,
+            work_item_id=body.work_item_id,
+            context_snapshot_id=body.context_snapshot_id,
+            objective=body.objective,
+            special_requirements=body.special_requirements,
+            specialist_only=body.specialist_only,
+            jurisdiction=body.jurisdiction,
+            actor_id=actor.actor_id,
+            correlation_id=get_correlation_id(request),
+            idempotency_key=idempotency_key,
+        )
+    )
+    if result.idempotent_replay:
+        response.status_code = status.HTTP_200_OK
+    return LegalAgentRequestAcceptedResponse(
+        request_id=result.request_id,
+        matter_id=result.matter_id,
+        context_snapshot_id=result.context_snapshot_id,
+        idempotent_replay=result.idempotent_replay,
+    )
+
+
+@router.get(
+    "/matters/{matter_id}/legal-agent-plans",
+    response_model=list[AgentExecutionPlanResponse],
+)
+async def list_legal_agent_plans(
+    matter_id: UUID,
+    _: Annotated[RequestActor, Depends(get_request_actor)],
+    uow_factory: Annotated[SqlAlchemyUnitOfWorkFactory, Depends(get_uow_factory)],
+    limit: Annotated[int, Query(ge=1, le=100)] = 20,
+) -> list[AgentExecutionPlanResponse]:
+    async with uow_factory() as uow:
+        if await uow.matters.get(matter_id) is None:
+            raise EntityNotFoundError("Legal matter was not found.")
+        plans = list(await uow.agent_execution_plans.list_by_matter(matter_id, limit=limit))
+    return [await _plan_response(plan, uow_factory) for plan in plans]
+
+
+@router.get(
+    "/legal-agent-plans/{plan_id}",
+    response_model=AgentExecutionPlanResponse,
+)
+async def get_legal_agent_plan(
+    plan_id: UUID,
+    _: Annotated[RequestActor, Depends(get_request_actor)],
+    uow_factory: Annotated[SqlAlchemyUnitOfWorkFactory, Depends(get_uow_factory)],
+) -> AgentExecutionPlanResponse:
+    async with uow_factory() as uow:
+        plan = await uow.agent_execution_plans.get(plan_id)
+    if plan is None:
+        raise EntityNotFoundError("Agent execution plan was not found.")
+    return await _plan_response(plan, uow_factory)
+
+
+@router.post(
+    "/legal-agent-plans/{plan_id}/steps/{step_id}/rerun",
+    response_model=LegalAgentStepRerunAcceptedResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def request_legal_agent_step_rerun(
+    plan_id: UUID,
+    step_id: str,
+    request: Request,
+    response: Response,
+    actor: Annotated[RequestActor, Depends(get_request_actor)],
+    idempotency_key: Annotated[str, Depends(get_idempotency_key)],
+    uow_factory: Annotated[SqlAlchemyUnitOfWorkFactory, Depends(get_uow_factory)],
+) -> LegalAgentStepRerunAcceptedResponse:
+    result = await RequestLegalAgentStepRerunHandler(uow_factory).execute(
+        RequestLegalAgentStepRerunCommand(
+            plan_id=plan_id,
+            step_id=step_id,
+            actor_id=actor.actor_id,
+            correlation_id=get_correlation_id(request),
+            idempotency_key=idempotency_key,
+        )
+    )
+    if result.idempotent_replay:
+        response.status_code = status.HTTP_200_OK
+    return LegalAgentStepRerunAcceptedResponse(
+        request_id=result.request_id,
+        plan_id=result.plan_id,
+        step_id=result.step_id,
+        idempotent_replay=result.idempotent_replay,
     )
 
 

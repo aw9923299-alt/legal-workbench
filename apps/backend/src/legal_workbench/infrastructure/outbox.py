@@ -83,6 +83,24 @@ async def _handle_codex_setup_check(_: OutboxDispatcher, event: ClaimedOutboxEve
     )
 
 
+async def _handle_legal_butler(_: OutboxDispatcher, event: ClaimedOutboxEvent) -> None:
+    celery_app.send_task(
+        "legal_agents.orchestrate",
+        args=[event.payload, event.correlation_id],
+        headers={"correlation_id": event.correlation_id},
+    )
+
+
+async def _handle_legal_agent_step_rerun(
+    _: OutboxDispatcher, event: ClaimedOutboxEvent
+) -> None:
+    celery_app.send_task(
+        "legal_agents.rerun_step",
+        args=[event.payload, event.correlation_id],
+        headers={"correlation_id": event.correlation_id},
+    )
+
+
 async def _handle_internal_notification(_: OutboxDispatcher, event: ClaimedOutboxEvent) -> None:
     logger.info(
         "outbox_internal_event_acknowledged",
@@ -422,6 +440,8 @@ OUTBOX_HANDLERS: dict[str, OutboxHandler] = {
     "FeishuMessageAttachmentsPending": _handle_internal_notification,
     "DocumentExtractionRequested": _handle_document_extraction,
     "CodexSetupCheckRequested": _handle_codex_setup_check,
+    "LegalButlerRequested": _handle_legal_butler,
+    "LegalAgentStepRerunRequested": _handle_legal_agent_step_rerun,
     "LegalMatterCreated": _handle_internal_notification,
     "MessageCandidateCreated": _handle_internal_notification,
     "MessageCandidateResolved": _handle_internal_notification,

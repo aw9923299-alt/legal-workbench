@@ -46,6 +46,7 @@ class ContextSnapshotRepository(Protocol):
     async def find_by_source_hash(
         self, *, source_type: str, source_id: str, content_hash: str
     ) -> ContextSnapshot | None: ...
+    async def find_latest_for_matter(self, matter_id: UUID) -> ContextSnapshot | None: ...
 
 
 class MessageCandidateRepository(Protocol):

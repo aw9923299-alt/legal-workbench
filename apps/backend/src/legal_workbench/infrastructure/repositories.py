@@ -187,6 +187,32 @@ class SqlAlchemyContextSnapshotRepository:
         model = (await self._session.execute(statement)).scalar_one_or_none()
         return None if model is None else self._to_domain(model)
 
+    async def find_latest_for_matter(self, matter_id: UUID) -> ContextSnapshot | None:
+        linked_statement = (
+            select(ContextSnapshotModel)
+            .join(
+                MessageCandidateModel,
+                MessageCandidateModel.context_snapshot_id == ContextSnapshotModel.id,
+            )
+            .join(
+                CandidateMatterLinkModel,
+                CandidateMatterLinkModel.candidate_id == MessageCandidateModel.id,
+            )
+            .where(CandidateMatterLinkModel.matter_id == matter_id)
+            .order_by(ContextSnapshotModel.created_at.desc())
+            .limit(1)
+        )
+        model = (await self._session.execute(linked_statement)).scalar_one_or_none()
+        if model is None:
+            relevant_statement = (
+                select(ContextSnapshotModel)
+                .where(ContextSnapshotModel.relevant_matter_ids.contains([str(matter_id)]))
+                .order_by(ContextSnapshotModel.created_at.desc())
+                .limit(1)
+            )
+            model = (await self._session.execute(relevant_statement)).scalar_one_or_none()
+        return None if model is None else self._to_domain(model)
+
     @staticmethod
     def _to_domain(model: ContextSnapshotModel) -> ContextSnapshot:
         return ContextSnapshot(
