@@ -8,6 +8,8 @@ import pytest
 
 from legal_workbench.application.analysis_recovery import AnalysisRecoveryService
 from legal_workbench.domain.entities import (
+    AgentExecutionPlan,
+    AgentPlanStep,
     AgentRun,
     AgentRunAttempt,
     AuditEvent,
@@ -16,6 +18,9 @@ from legal_workbench.domain.entities import (
 )
 from legal_workbench.domain.enums import (
     AgentAttemptStatus,
+    AgentExecutionPlanStatus,
+    AgentPlanStepStatus,
+    AgentRunRole,
     AgentRunStatus,
     FeishuMessageStatus,
 )
@@ -97,6 +102,29 @@ class _RunRepo:
     async def save(self, run: AgentRun) -> None:
         return None
 
+    async def get_for_update(self, run_id: UUID):  # type: ignore[no-untyped-def]
+        return next((value for value in self.stale if value.id == run_id), None)
+
+
+class _PlanRepo:
+    def __init__(self, plans: list[AgentExecutionPlan]) -> None:
+        self.plans = {value.id: value for value in plans}
+
+    async def get_for_update(self, plan_id: UUID):  # type: ignore[no-untyped-def]
+        return self.plans.get(plan_id)
+
+    async def get_step_for_update(self, plan_id: UUID, step_id: str):  # type: ignore[no-untyped-def]
+        plan = self.plans.get(plan_id)
+        if plan is None:
+            return None
+        return next((value for value in plan.steps if value.step_id == step_id), None)
+
+    async def save(self, plan: AgentExecutionPlan) -> None:
+        self.plans[plan.id] = plan
+
+    async def save_step(self, step: AgentPlanStep) -> None:
+        return None
+
 
 class _AttemptRepo:
     def __init__(self, attempts: list[AgentRunAttempt]) -> None:
@@ -154,9 +182,11 @@ class _Uow:
         messages: list[FeishuMessage],
         queued: list[FeishuMessage],
         stale: list[AgentRun],
+        plans: list[AgentExecutionPlan] | None = None,
     ) -> None:
         self.feishu = _FeishuRepo(messages, queued)
         self.agent_runs = _RunRepo(stale)
+        self.agent_execution_plans = _PlanRepo(plans or [])
         self.agent_run_attempts = _AttemptRepo(
             [
                 AgentRunAttempt.start(
@@ -168,7 +198,12 @@ class _Uow:
                     now=run.started_at or run.updated_at,
                 )
                 for run in stale
-                if run.status in {AgentRunStatus.PREPARING, AgentRunStatus.RUNNING}
+                if run.status
+                in {
+                    AgentRunStatus.PREPARING,
+                    AgentRunStatus.RUNNING,
+                    AgentRunStatus.VALIDATING,
+                }
             ]
         )
         self.outbox_events = _OutboxRepo()
@@ -252,4 +287,123 @@ async def test_recovery_dead_letters_exhausted_worker_lease() -> None:
     assert result.dead_lettered == 1
     assert run.status == AgentRunStatus.DEAD_LETTER
     assert message.status == FeishuMessageStatus.DEAD_LETTER
+    assert uow.outbox_events.events == []
+
+
+def _legal_fixture(
+    *,
+    run_status: AgentRunStatus,
+    run_role: AgentRunRole,
+    attempt_number: int = 1,
+    max_attempts: int = 2,
+) -> tuple[AgentExecutionPlan, AgentRun]:
+    plan_id = uuid4()
+    completed = AgentPlanStep(
+        id=uuid4(),
+        execution_plan_id=plan_id,
+        step_id="completed-contract",
+        sequence=1,
+        agent_key="contract_review",
+        objective="Completed fixture step.",
+        depends_on=[],
+        context_requirements=[],
+        status=AgentPlanStepStatus.COMPLETED,
+        latest_run_id=uuid4(),
+        latest_valid_run_id=uuid4(),
+        attempt_count=1,
+    )
+    interrupted = AgentPlanStep(
+        id=uuid4(),
+        execution_plan_id=plan_id,
+        step_id="interrupted-ip",
+        sequence=2,
+        agent_key="ip_copyright",
+        objective="Interrupted fixture step.",
+        depends_on=[],
+        context_requirements=[],
+        status=AgentPlanStepStatus.RUNNING,
+        attempt_count=1,
+    )
+    plan = AgentExecutionPlan(
+        id=plan_id,
+        matter_id=uuid4(),
+        work_item_id=None,
+        objective="Recovery fixture plan.",
+        status=AgentExecutionPlanStatus.RUNNING,
+        task_types=["contract", "ip"],
+        synthesis_strategy="Fixture synthesis.",
+        missing_information=[],
+        requires_user_input=False,
+        correlation_id="legal-recovery",
+        idempotency_key=f"legal-recovery:{uuid4().hex}",
+        created_by="test",
+        steps=[completed, interrupted],
+    )
+    run = AgentRun(
+        id=uuid4(),
+        agent_definition_id=uuid4(),
+        context_snapshot_id=uuid4(),
+        status=run_status,
+        objective="Interrupted legal phase.",
+        prompt_snapshot="Non-sensitive fixture prompt.",
+        working_directory="/isolated/legal-recovery",
+        attempt_number=attempt_number,
+        max_attempts=max_attempts,
+        correlation_id=plan.correlation_id,
+        created_by="test",
+        matter_id=plan.matter_id,
+        execution_plan_id=plan.id,
+        plan_step_id=interrupted.id if run_role == AgentRunRole.SPECIALIST else None,
+        run_role=run_role,
+        heartbeat_at=NOW - timedelta(minutes=5),
+        updated_at=NOW - timedelta(minutes=5),
+        lease_expires_at=NOW - timedelta(minutes=4),
+    )
+    if run_role == AgentRunRole.SPECIALIST:
+        interrupted.latest_run_id = run.id
+    elif run_role == AgentRunRole.BUTLER_PLANNING:
+        plan.planning_run_id = run.id
+        plan.status = AgentExecutionPlanStatus.PLANNING
+    else:
+        plan.synthesis_run_id = run.id
+    return plan, run
+
+
+@pytest.mark.asyncio
+async def test_recovery_requeues_only_stale_legal_specialist_and_preserves_completed_step() -> None:
+    plan, run = _legal_fixture(
+        run_status=AgentRunStatus.RUNNING,
+        run_role=AgentRunRole.SPECIALIST,
+    )
+    uow = _Uow(messages=[], queued=[], stale=[run], plans=[plan])
+
+    result = await AnalysisRecoveryService(_Factory(uow), now=lambda: NOW).recover()
+
+    assert result.legal_runs_requeued == 1
+    assert run.status == AgentRunStatus.QUEUED
+    assert run.attempt_number == 2
+    assert plan.steps[0].status == AgentPlanStepStatus.COMPLETED
+    assert plan.steps[1].status == AgentPlanStepStatus.RUNNING
+    assert uow.agent_run_attempts.attempts[0].status == AgentAttemptStatus.EXPIRED
+    assert [value.event_type for value in uow.outbox_events.events] == [
+        "LegalAgentRecoveryRequested"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_recovery_dead_letters_exhausted_synthesis_but_keeps_partial_success() -> None:
+    plan, run = _legal_fixture(
+        run_status=AgentRunStatus.VALIDATING,
+        run_role=AgentRunRole.BUTLER_SYNTHESIS,
+        attempt_number=2,
+        max_attempts=2,
+    )
+    uow = _Uow(messages=[], queued=[], stale=[run], plans=[plan])
+
+    result = await AnalysisRecoveryService(_Factory(uow), now=lambda: NOW).recover()
+
+    assert result.legal_dead_lettered == 1
+    assert run.status == AgentRunStatus.DEAD_LETTER
+    assert plan.status == AgentExecutionPlanStatus.PARTIAL
+    assert plan.steps[0].status == AgentPlanStepStatus.COMPLETED
     assert uow.outbox_events.events == []

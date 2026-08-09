@@ -13,6 +13,7 @@ from legal_workbench.infrastructure.outbox import OUTBOX_HANDLERS, ClaimedOutbox
     [
         ("LegalButlerRequested", "legal_agents.orchestrate"),
         ("LegalAgentStepRerunRequested", "legal_agents.rerun_step"),
+        ("LegalAgentRecoveryRequested", "legal_agents.recover"),
     ],
 )
 async def test_legal_agent_outbox_only_dispatches_registered_celery_task(

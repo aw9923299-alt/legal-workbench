@@ -22,7 +22,7 @@ from legal_workbench.agents.runtime import (
     AgentRuntime,
     AgentRuntimeError,
 )
-from legal_workbench.application.agent_attempts import AgentAttemptService
+from legal_workbench.application.agent_attempts import AgentExecutionLeaseService
 from legal_workbench.application.context_snapshots import ContextSnapshotBuilder
 from legal_workbench.application.message_analysis_eligibility import (
     MessageAnalysisEligibility,
@@ -434,13 +434,10 @@ class AnalyseFeishuMessageHandler:
                     and runs[0].status in {AgentRunStatus.PREPARING, AgentRunStatus.RUNNING}
                 ):
                     interrupted = runs[0]
-                    await AgentAttemptService(
+                    await AgentExecutionLeaseService(
                         uow.agent_run_attempts,
                         lease_seconds=self._lease_seconds,
-                    ).expire_current(
-                        run_id=interrupted.id,
-                        attempt_number=interrupted.attempt_number,
-                    )
+                    ).expire_current(interrupted)
                     interrupted.failure_code = "AGENT_RUNTIME_START_FAILED"
                     interrupted.failure_message = "Worker delivery was interrupted and recovered."
                     interrupted.transition_to(AgentRunStatus.FAILED)
@@ -780,18 +777,11 @@ class AnalyseFeishuMessageHandler:
                     command=command,
                     phase="runtime_start",
                 )
-            run.transition_to(AgentRunStatus.PREPARING)
-            run.transition_to(AgentRunStatus.RUNNING)
-            run.worker_id = command.worker_id or run.worker_id or "analysis-worker"
-            run.lease_expires_at = datetime.now(UTC) + timedelta(seconds=self._lease_seconds)
-            lease = await AgentAttemptService(
+            worker_id = command.worker_id or run.worker_id or "analysis-worker"
+            lease = await AgentExecutionLeaseService(
                 uow.agent_run_attempts,
                 lease_seconds=self._lease_seconds,
-            ).claim(
-                run_id=run.id,
-                attempt_number=run.attempt_number,
-                worker_id=run.worker_id,
-            )
+            ).start(run, worker_id=worker_id)
             message.transition_to(FeishuMessageStatus.ANALYSING)
             await uow.agent_runs.save(run)
             await uow.feishu.save_message(message)
@@ -815,11 +805,10 @@ class AnalyseFeishuMessageHandler:
             run = await uow.agent_runs.get_for_update(run_id)
             if run is None:
                 return
-            run.lease_expires_at = await AgentAttemptService(
+            await AgentExecutionLeaseService(
                 uow.agent_run_attempts,
                 lease_seconds=self._lease_seconds,
-            ).heartbeat(lease)
-            run.heartbeat()
+            ).heartbeat(run, lease)
             await uow.agent_runs.save(run)
             await uow.commit()
 
@@ -849,10 +838,10 @@ class AnalyseFeishuMessageHandler:
             message = await uow.feishu.get_message_for_update(run.feishu_message_id)
             if message is None:
                 raise RuntimeError("FeishuMessage disappeared before result persistence.")
-            await AgentAttemptService(
+            await AgentExecutionLeaseService(
                 uow.agent_run_attempts,
                 lease_seconds=self._lease_seconds,
-            ).complete(lease)
+            ).complete(run, lease)
             run.transition_to(AgentRunStatus.VALIDATING)
             run.output_payload = output_payload
             run.input_payload = input_payload
@@ -865,7 +854,6 @@ class AnalyseFeishuMessageHandler:
             run.validation_errors = validation_errors
             run.repair_attempted = repair_attempted
             run.token_usage = token_usage
-            run.lease_expires_at = None
             run.transition_to(AgentRunStatus.COMPLETED)
             candidate_id: UUID | None = None
             existing = await uow.candidates.get_active_for_message(message.id)
@@ -1094,10 +1082,11 @@ class AnalyseFeishuMessageHandler:
                 "AGENT_RUNTIME_TIMEOUT": AgentAttemptStatus.TIMED_OUT,
                 "AGENT_RUNTIME_CANCELLED": AgentAttemptStatus.CANCELLED,
             }.get(error.code, AgentAttemptStatus.FAILED)
-            await AgentAttemptService(
+            await AgentExecutionLeaseService(
                 uow.agent_run_attempts,
                 lease_seconds=self._lease_seconds,
             ).fail(
+                run,
                 lease,
                 status=attempt_status,
                 failure_code=error.code,
@@ -1111,7 +1100,6 @@ class AnalyseFeishuMessageHandler:
             run.failure_message = str(error)[:4000]
             run.validation_errors = list(error.validation_errors)
             run.repair_attempted = error.repair_attempted
-            run.lease_expires_at = None
             target = {
                 "AGENT_RUNTIME_TIMEOUT": AgentRunStatus.TIMED_OUT,
                 "AGENT_RUNTIME_CANCELLED": AgentRunStatus.CANCELLED,

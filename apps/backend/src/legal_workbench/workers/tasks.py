@@ -164,6 +164,8 @@ def _build_legal_agent_orchestrator() -> LegalAgentOrchestrator:
             )
         ),
         runs_root=settings.codex_runs_root,
+        lease_seconds=settings.agent_run_lease_seconds,
+        worker_id="legal-agent-worker",
     )
 
 
@@ -203,6 +205,33 @@ def rerun_legal_agent_step(
     return asyncio.run(_rerun_legal_agent_step(payload, correlation_id))
 
 
+async def _recover_legal_agents(
+    payload: dict[str, object], correlation_id: str
+) -> dict[str, object]:
+    result = await _build_legal_agent_orchestrator().recover(
+        plan_id=UUID(str(payload["planId"])),
+        correlation_id=correlation_id,
+    )
+    return {
+        "planId": str(result.plan_id),
+        "status": result.status.value,
+        "planningRunId": str(result.planning_run_id) if result.planning_run_id else None,
+        "synthesisRunId": str(result.synthesis_run_id) if result.synthesis_run_id else None,
+        "artifactId": str(result.artifact_id) if result.artifact_id else None,
+        "reviewPackageId": (
+            str(result.review_package_id) if result.review_package_id else None
+        ),
+        "correlationId": correlation_id,
+    }
+
+
+@celery_app.task(name="legal_agents.recover")  # type: ignore[untyped-decorator]
+def recover_legal_agents(
+    payload: dict[str, object], correlation_id: str = ""
+) -> dict[str, object]:
+    return asyncio.run(_recover_legal_agents(payload, correlation_id))
+
+
 @celery_app.task(name="analysis.recover")  # type: ignore[untyped-decorator]
 def recover_analysis() -> dict[str, int]:
     settings = get_settings()
@@ -217,6 +246,8 @@ def recover_analysis() -> dict[str, int]:
         "missingRunsRequeued": result.missing_runs_requeued,
         "staleRunsRequeued": result.stale_runs_requeued,
         "deadLettered": result.dead_lettered,
+        "legalRunsRequeued": result.legal_runs_requeued,
+        "legalDeadLettered": result.legal_dead_lettered,
     }
 
 

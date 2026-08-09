@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -23,6 +23,7 @@ from legal_workbench.agents.runtime import (
     AgentExecutionContext,
     AgentExecutionResult,
 )
+from legal_workbench.application.analysis_recovery import AnalysisRecoveryService
 from legal_workbench.application.legal_agent_orchestrator import (
     LegalAgentOrchestrator,
     LegalAgentTrigger,
@@ -122,9 +123,11 @@ class FakeContextBuilder:
 
 
 class FakeLegalRuntime:
-    def __init__(self) -> None:
+    def __init__(self, *, crash_at: str | None = None) -> None:
         self.calls: list[tuple[str, str]] = []
         self.upstream_by_key: dict[str, list[dict[str, object]]] = {}
+        self.crash_at = crash_at
+        self.crashed = False
 
     async def execute(
         self,
@@ -134,11 +137,17 @@ class FakeLegalRuntime:
     ) -> AgentExecutionResult:
         key = definition.key
         phase = str((context.input_payload or {}).get("phase"))
+        assert context.heartbeat is not None
+        await context.heartbeat()
         self.calls.append((key, phase))
         if phase == "specialist":
             upstream = (context.input_payload or {}).get("upstreamOutputs", {})
             assert isinstance(upstream, dict)
             self.upstream_by_key.setdefault(key, []).append(upstream)
+        marker = f"specialist:{key}" if phase == "specialist" else phase
+        if marker == self.crash_at and not self.crashed:
+            self.crashed = True
+            raise RuntimeError(f"Synthetic worker crash at {marker}.")
         if key == "legal_butler" and phase == "planning":
             output = ButlerPlanningOutput.model_validate(
                 {
@@ -385,6 +394,14 @@ async def test_multi_agent_orchestration_persists_lineage_draft_and_review() -> 
             plan = await uow.agent_execution_plans.get(result.plan_id)
             runs = list(await uow.agent_runs.list_by_plan(result.plan_id))
             children = list(await uow.agent_runs.list_children(result.planning_run_id))
+            attempts_by_run = {
+                run.id: list(await uow.agent_run_attempts.list_by_run(run.id))
+                for run in runs
+            }
+            status_events_by_run = {
+                run.id: list(await uow.agent_runs.list_status_events(run.id))
+                for run in runs
+            }
         assert plan is not None
         assert [step.status.value for step in plan.steps] == [
             "completed",
@@ -392,7 +409,7 @@ async def test_multi_agent_orchestration_persists_lineage_draft_and_review() -> 
             "completed",
         ]
         assert set(runtime.upstream_by_key["legal_consultation"][0]) == {"contract"}
-        assert runtime.upstream_by_key["contract"][0] == {}
+        assert runtime.upstream_by_key["contract_review"][0] == {}
         assert runtime.upstream_by_key["ip_copyright"][0] == {}
         assert [run.run_role for run in runs] == [
             AgentRunRole.BUTLER_PLANNING,
@@ -402,6 +419,17 @@ async def test_multi_agent_orchestration_persists_lineage_draft_and_review() -> 
             AgentRunRole.BUTLER_SYNTHESIS,
         ]
         assert len(children) == 4
+        assert all(
+            [attempt.status.value for attempt in attempts_by_run[run.id]] == [
+                "completed"
+            ]
+            for run in runs
+        )
+        assert all(
+            [event.to_status.value for event in status_events_by_run[run.id]]
+            == ["queued", "preparing", "running", "validating", "completed"]
+            for run in runs
+        )
         async with session_factory() as session:
             artifact = await session.get(DraftArtifactModel, result.artifact_id)
             review = await session.get(ReviewPackageModel, result.review_package_id)
@@ -468,5 +496,124 @@ async def test_multi_agent_orchestration_persists_lineage_draft_and_review() -> 
         assert len(
             [run for run in final_runs if run.run_role == AgentRunRole.BUTLER_SYNTHESIS]
         ) == 3
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "crash_at",
+    ["planning", "specialist:contract_review", "synthesis"],
+)
+async def test_legal_agent_crash_recovery_resumes_only_incomplete_phase(
+    crash_at: str,
+) -> None:
+    if os.getenv("RUN_POSTGRES_INTEGRATION_TESTS") != "1":
+        pytest.skip("PostgreSQL integration tests are disabled")
+
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    from legal_workbench.domain.enums import AgentAttemptStatus
+    from legal_workbench.infrastructure.unit_of_work import SqlAlchemyUnitOfWorkFactory
+
+    engine = create_async_engine(os.environ["LEGAL_WORKBENCH_TEST_DATABASE_URL"])
+    factory = SqlAlchemyUnitOfWorkFactory(
+        async_sessionmaker(engine, expire_on_commit=False)
+    )
+    matter = LegalMatter.create(
+        title=f"Crash recovery fixture: {crash_at}",
+        primary_category=MatterCategory.CONTRACT,
+        secondary_categories=[MatterCategory.INTELLECTUAL_PROPERTY],
+        owner_id="user:fixture",
+        legal_risk=LegalRisk.HIGH,
+        business_impact=BusinessImpact.PROJECT,
+        confidentiality=Confidentiality.INTERNAL,
+        requester_ids=[],
+        summary="Synthetic crash recovery only.",
+        objective="Verify fenced recovery.",
+    )
+    snapshot = ContextSnapshot(
+        id=uuid4(),
+        source_type="crash_recovery_fixture",
+        source_id=uuid4().hex,
+        source_ids=[],
+        message_ids=[],
+        file_ids=[],
+        relevant_matter_ids=[str(matter.id)],
+        participant_ids=[],
+        permission_snapshot={},
+        generated_at=datetime.now(UTC),
+        content_hash=uuid4().hex * 2,
+        content={"fixture": "crash recovery"},
+    )
+    runtime = FakeLegalRuntime(crash_at=crash_at)
+    orchestrator = LegalAgentOrchestrator(
+        factory,
+        runtime,
+        FakeContextBuilder(),
+        runs_root="/isolated/legal-agent-runs",
+        lease_seconds=1,
+        worker_id="crash-fixture-worker",
+    )
+    trigger = LegalAgentTrigger(
+        matter_id=matter.id,
+        context_snapshot_id=snapshot.id,
+        objective="Verify planning, specialist, and synthesis crash recovery.",
+        actor_id="user:fixture",
+        correlation_id=f"crash-{uuid4().hex}",
+        idempotency_key=f"crash-{uuid4().hex}",
+    )
+    try:
+        async with factory() as uow:
+            await uow.matters.add(matter)
+            await uow.context_snapshots.add(snapshot)
+            await uow.commit()
+
+        with pytest.raises((RuntimeError, BaseExceptionGroup)):
+            await orchestrator.execute(trigger)
+
+        async with factory() as uow:
+            plans = list(await uow.agent_execution_plans.list_by_matter(matter.id))
+        assert len(plans) == 1
+        plan = plans[0]
+        completed_before = {
+            step.step_id: step.latest_valid_run_id
+            for step in plan.steps
+            if step.status.value in {"completed", "needs_information"}
+        }
+
+        recovery_result = await AnalysisRecoveryService(
+            factory,
+            stale_after_seconds=1,
+            now=lambda: datetime.now(UTC) + timedelta(minutes=5),
+        ).recover()
+        assert recovery_result.legal_runs_requeued == 1
+
+        recovered = await orchestrator.recover(
+            plan_id=plan.id,
+            correlation_id=f"recovered-{uuid4().hex}",
+        )
+
+        assert recovered.status == AgentExecutionPlanStatus.COMPLETED
+        async with factory() as uow:
+            final_plan = await uow.agent_execution_plans.get(plan.id)
+            final_runs = list(await uow.agent_runs.list_by_plan(plan.id))
+        assert final_plan is not None
+        assert all(step.status.value == "completed" for step in final_plan.steps)
+        assert {
+            step.step_id: step.latest_valid_run_id
+            for step in final_plan.steps
+            if step.step_id in completed_before
+        } == completed_before
+        recovered_run = next(value for value in final_runs if value.attempt_number == 2)
+        async with factory() as uow:
+            attempts = list(
+                await uow.agent_run_attempts.list_by_run(recovered_run.id)
+            )
+        assert [value.status for value in attempts] == [
+            AgentAttemptStatus.EXPIRED,
+            AgentAttemptStatus.COMPLETED,
+        ]
     finally:
         await engine.dispose()

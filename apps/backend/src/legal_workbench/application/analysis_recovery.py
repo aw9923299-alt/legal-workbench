@@ -5,10 +5,19 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
-from legal_workbench.application.agent_attempts import AgentAttemptService
+from legal_workbench.application.agent_attempts import (
+    AgentAttemptService,
+    AgentExecutionLeaseService,
+)
 from legal_workbench.application.ports import UnitOfWork, UnitOfWorkFactory
-from legal_workbench.domain.entities import AuditEvent, OutboxEvent
-from legal_workbench.domain.enums import AgentRunStatus, FeishuMessageStatus
+from legal_workbench.domain.entities import AgentRun, AuditEvent, OutboxEvent
+from legal_workbench.domain.enums import (
+    AgentExecutionPlanStatus,
+    AgentPlanStepStatus,
+    AgentRunRole,
+    AgentRunStatus,
+    FeishuMessageStatus,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -16,6 +25,8 @@ class AnalysisRecoveryResult:
     missing_runs_requeued: int = 0
     stale_runs_requeued: int = 0
     dead_lettered: int = 0
+    legal_runs_requeued: int = 0
+    legal_dead_lettered: int = 0
 
 
 class AnalysisRecoveryService:
@@ -42,6 +53,8 @@ class AnalysisRecoveryService:
         missing_runs_requeued = 0
         stale_runs_requeued = 0
         dead_lettered = 0
+        legal_runs_requeued = 0
+        legal_dead_lettered = 0
         async with self._uow_factory() as uow:
             # The transaction advisory lock prevents a scheduler and manual API
             # recovery from emitting duplicate durable work concurrently.
@@ -73,6 +86,19 @@ class AnalysisRecoveryService:
                     correlation_id=run.correlation_id,
                 ):
                     stale_runs_requeued += 1
+
+            for run in stale_queued:
+                if run.execution_plan_id is None:
+                    continue
+                if await self._ensure_legal_recovery_event(
+                    uow,
+                    plan_id=run.execution_plan_id,
+                    run_id=run.id,
+                    run_role=run.run_role,
+                    reason="stale_queued_agent_run",
+                    correlation_id=run.correlation_id,
+                ):
+                    legal_runs_requeued += 1
 
             stale_leases = await uow.agent_runs.list_stale(
                 statuses=[AgentRunStatus.PREPARING, AgentRunStatus.RUNNING],
@@ -151,12 +177,175 @@ class AnalysisRecoveryService:
                         correlation_id=run.correlation_id,
                     )
                 )
+
+            stale_legal_leases = await uow.agent_runs.list_stale(
+                statuses=[
+                    AgentRunStatus.PREPARING,
+                    AgentRunStatus.RUNNING,
+                    AgentRunStatus.VALIDATING,
+                ],
+                older_than=cutoff,
+                limit=self._batch_size,
+            )
+            for candidate in stale_legal_leases:
+                if candidate.execution_plan_id is None:
+                    continue
+                if (
+                    candidate.lease_expires_at is not None
+                    and candidate.lease_expires_at > now
+                ):
+                    continue
+                recovered_run = await uow.agent_runs.get_for_update(candidate.id)
+                if recovered_run is None or recovered_run.execution_plan_id is None:
+                    continue
+                attempt_expired = await AgentExecutionLeaseService(
+                    uow.agent_run_attempts,
+                    lease_seconds=self._stale_after_seconds,
+                    now=self._now,
+                ).expire_current(recovered_run)
+                recovered_run.failure_code = "AGENT_LEASE_EXPIRED"
+                recovered_run.failure_message = "Agent worker heartbeat lease expired."
+                recovered_run.transition_to(AgentRunStatus.FAILED, now=now)
+                if recovered_run.attempt_number >= recovered_run.max_attempts:
+                    recovered_run.transition_to(AgentRunStatus.DEAD_LETTER, now=now)
+                    await self._mark_legal_phase_terminal(uow, recovered_run, now=now)
+                    legal_dead_lettered += 1
+                    recovery_action = "dead_lettered"
+                else:
+                    recovered_run.attempt_number += 1
+                    recovered_run.transition_to(AgentRunStatus.QUEUED, now=now)
+                    recovered_run.finished_at = None
+                    recovered_run.worker_id = None
+                    recovered_run.failure_code = None
+                    recovered_run.failure_message = None
+                    created = await self._ensure_legal_recovery_event(
+                        uow,
+                        plan_id=recovered_run.execution_plan_id,
+                        run_id=recovered_run.id,
+                        run_role=recovered_run.run_role,
+                        reason="expired_agent_lease",
+                        correlation_id=recovered_run.correlation_id,
+                    )
+                    legal_runs_requeued += int(created)
+                    recovery_action = "requeued" if created else "already_pending"
+                await uow.agent_runs.save(recovered_run)
+                await uow.audit_events.add(
+                    AuditEvent(
+                        id=uuid4(),
+                        aggregate_type="agent_run",
+                        aggregate_id=recovered_run.id,
+                        event_type="legal_agent_run_lease_recovered",
+                        actor_id="analysis-recovery",
+                        actor_source="system",
+                        payload={
+                            "planId": str(recovered_run.execution_plan_id),
+                            "runRole": recovered_run.run_role.value,
+                            "attemptNumber": recovered_run.attempt_number,
+                            "attemptExpired": attempt_expired,
+                            "action": recovery_action,
+                        },
+                        correlation_id=recovered_run.correlation_id,
+                    )
+                )
             await uow.commit()
         return AnalysisRecoveryResult(
             missing_runs_requeued=missing_runs_requeued,
             stale_runs_requeued=stale_runs_requeued,
             dead_lettered=dead_lettered,
+            legal_runs_requeued=legal_runs_requeued,
+            legal_dead_lettered=legal_dead_lettered,
         )
+
+    async def _mark_legal_phase_terminal(
+        self,
+        uow: UnitOfWork,
+        run: AgentRun,
+        *,
+        now: datetime,
+    ) -> None:
+        if run.execution_plan_id is None:
+            return
+        plan = await uow.agent_execution_plans.get_for_update(run.execution_plan_id)
+        if plan is None:
+            return
+        if run.run_role == AgentRunRole.SPECIALIST and run.plan_step_id is not None:
+            matching = next(
+                (value for value in plan.steps if value.id == run.plan_step_id),
+                None,
+            )
+            if matching is not None:
+                step = await uow.agent_execution_plans.get_step_for_update(
+                    plan.id, matching.step_id
+                )
+                if step is not None:
+                    step.status = AgentPlanStepStatus.FAILED
+                    step.failure_code = "AGENT_MAX_ATTEMPTS_EXHAUSTED"
+                    step.failure_message = "Agent lease recovery attempts were exhausted."
+                    step.updated_at = now
+                    step.version += 1
+                    await uow.agent_execution_plans.save_step(step)
+        completed = any(
+            value.status
+            in {
+                AgentPlanStepStatus.COMPLETED,
+                AgentPlanStepStatus.NEEDS_INFORMATION,
+            }
+            for value in plan.steps
+        )
+        plan.status = (
+            AgentExecutionPlanStatus.PARTIAL
+            if completed and run.run_role != AgentRunRole.BUTLER_PLANNING
+            else AgentExecutionPlanStatus.FAILED
+        )
+        plan.updated_at = now
+        plan.version += 1
+        await uow.agent_execution_plans.save(plan)
+
+    async def _ensure_legal_recovery_event(
+        self,
+        uow: UnitOfWork,
+        *,
+        plan_id: UUID,
+        run_id: UUID,
+        run_role: AgentRunRole,
+        reason: str,
+        correlation_id: str,
+    ) -> bool:
+        event_type = "LegalAgentRecoveryRequested"
+        if await uow.outbox_events.exists_pending(
+            event_type=event_type,
+            aggregate_id=plan_id,
+        ):
+            return False
+        payload: dict[str, object] = {
+            "planId": str(plan_id),
+            "runId": str(run_id),
+            "runRole": run_role.value,
+            "recoveryReason": reason,
+        }
+        await uow.outbox_events.add(
+            OutboxEvent(
+                id=uuid4(),
+                event_type=event_type,
+                aggregate_type="agent_execution_plan",
+                aggregate_id=plan_id,
+                payload=payload,
+                correlation_id=correlation_id,
+            )
+        )
+        await uow.audit_events.add(
+            AuditEvent(
+                id=uuid4(),
+                aggregate_type="agent_execution_plan",
+                aggregate_id=plan_id,
+                event_type="legal_agent_recovery_enqueued",
+                actor_id="analysis-recovery",
+                actor_source="system",
+                payload=payload,
+                correlation_id=correlation_id,
+            )
+        )
+        return True
 
     async def _ensure_recovery_event(
         self,
