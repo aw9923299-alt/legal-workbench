@@ -251,7 +251,8 @@ The plan is always reconstructed from PostgreSQL, not an in-memory wave result.
 
 ## 9. Knowledge management API and UI
 
-The existing React/Ant Design system gains a small `/knowledge` route. It is not a system-wide
+The existing React/Ant Design system repurposes the existing `/library` route as the knowledge
+management entry. It is not a system-wide
 redesign. The page supports:
 
 - list/filter documents and source state;
