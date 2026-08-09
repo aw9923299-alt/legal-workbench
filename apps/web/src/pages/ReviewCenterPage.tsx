@@ -3,6 +3,7 @@ import {
   Button,
   Card,
   Checkbox,
+  Descriptions,
   Empty,
   Input,
   List,
@@ -37,6 +38,7 @@ export default function ReviewCenterPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [active, setActive] = useState<ReviewPackage>();
+  const [activeSourceRef, setActiveSourceRef] = useState<string>();
   const [submitting, setSubmitting] = useState(false);
   const [draft, setDraft] = useState<ReviewDraft>({
     decision: 'approved',
@@ -57,6 +59,7 @@ export default function ReviewCenterPage() {
 
   const close = () => {
     setActive(undefined);
+    setActiveSourceRef(undefined);
     if (requestedPackageId) setSearchParams({}, { replace: true });
   };
 
@@ -131,7 +134,7 @@ export default function ReviewCenterPage() {
             dataSource={packages}
             renderItem={(item) => (
               <List.Item>
-                <Card bordered={false} actions={[
+                <Card variant="borderless" actions={[
                   <Button key="review" type="link" onClick={() => {
                     setSearchParams({ packageId: item.id }, { replace: true });
                     open(item);
@@ -168,6 +171,12 @@ export default function ReviewCenterPage() {
             <ReviewSection title="处理理由"><Paragraph>{active.reasoning}</Paragraph></ReviewSection>
             <ReviewSection title="风险"><StructuredList values={active.risks} /></ReviewSection>
             <ReviewSection title="替代方案"><StructuredList values={active.alternatives} /></ReviewSection>
+            <ReviewSection title="逐项证据追溯">
+              <GroundingList
+                payload={active.groundingPayload}
+                onOpenSource={setActiveSourceRef}
+              />
+            </ReviewSection>
             <ReviewSection title="引用依据"><StructuredList values={active.citations} /></ReviewSection>
             <ReviewSection title="拟发送内容">
               <Input.TextArea rows={8} value={draft.finalContent} onChange={(event) => setDraft((current) => ({ ...current, finalContent: event.target.value }))} />
@@ -191,6 +200,17 @@ export default function ReviewCenterPage() {
           </div>
         )}
       </Modal>
+      <Modal
+        open={Boolean(activeSourceRef)}
+        title="原始授权来源"
+        footer={<Button onClick={() => setActiveSourceRef(undefined)}>关闭</Button>}
+        onCancel={() => setActiveSourceRef(undefined)}
+      >
+        {activeSourceRef && <CitationDetails
+          sourceRef={activeSourceRef}
+          citations={active?.citations ?? []}
+        />}
+      </Modal>
     </div>
   );
 }
@@ -202,4 +222,68 @@ function ReviewSection({ title, children }: { title: string; children: ReactNode
 function StructuredList({ values }: { values: Array<Record<string, unknown>> }) {
   if (values.length === 0) return <Text type="secondary">无</Text>;
   return <List size="small" dataSource={values} renderItem={(value) => <List.Item>{Object.entries(value).map(([key, content]) => `${key}: ${displayValue(content)}`).join('；')}</List.Item>} />;
+}
+
+const groundingLabels: Record<string, string> = {
+  coreFacts: '核心事实',
+  keyLegalIssues: '关键法律问题',
+  integratedRisks: '综合风险',
+  recommendedStrategy: '建议策略',
+  nextActions: '下一步行动',
+  conflicts: '冲突',
+};
+
+function GroundingList({
+  payload,
+  onOpenSource,
+}: {
+  payload: Record<string, Array<Record<string, unknown>>>;
+  onOpenSource: (sourceRef: string) => void;
+}) {
+  const sections = Object.entries(groundingLabels)
+    .map(([key, label]) => ({ key, label, values: payload[key] ?? [] }))
+    .filter((section) => section.values.length > 0);
+  if (!sections.length) return <Text type="secondary">此审核包没有逐项 Grounding 数据。</Text>;
+  return <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+    {sections.map((section) => <Card key={section.key} size="small" title={section.label}>
+      <List
+        size="small"
+        dataSource={section.values}
+        renderItem={(value) => {
+          const refs = groundingSourceRefs(value);
+          const content = Object.entries(value)
+            .filter(([key]) => !['sourceRefs', 'supportRefs'].includes(key))
+            .map(([key, item]) => `${key}: ${displayValue(item)}`)
+            .join('；');
+          return <List.Item>
+            <Space direction="vertical" size={6} style={{ width: '100%' }}>
+              <Text>{content}</Text>
+              <Space wrap>{refs.map((sourceRef) => <Button key={sourceRef} size="small" type="link" onClick={() => onOpenSource(sourceRef)}>{sourceRef}</Button>)}</Space>
+            </Space>
+          </List.Item>;
+        }}
+      />
+    </Card>)}
+  </Space>;
+}
+
+function groundingSourceRefs(value: Record<string, unknown>): string[] {
+  const raw = value.sourceRefs ?? value.supportRefs;
+  return Array.isArray(raw) ? raw.filter((item): item is string => typeof item === 'string') : [];
+}
+
+function CitationDetails({
+  sourceRef,
+  citations,
+}: {
+  sourceRef: string;
+  citations: Array<Record<string, unknown>>;
+}) {
+  const citation = citations.find((value) => value.sourceRef === sourceRef);
+  if (!citation) return <Alert type="warning" showIcon message="引用元数据不可用" description={sourceRef} />;
+  return <Descriptions column={1} bordered size="small" items={Object.entries(citation).map(([key, value]) => ({
+    key,
+    label: key,
+    children: displayValue(value),
+  }))} />;
 }
