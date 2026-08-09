@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=75", "wheel"]
+requires = ["setuptools==83.0.0", "wheel==0.47.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -7,7 +7,7 @@ name = "legal-workbench-backend"
 version = "0.3.0"
 description = "Python backend for the local Codex-powered legal workbench."
 readme = "README.md"
-requires-python = ">=3.12,<3.15"
+requires-python = ">=3.12,<3.13"
 dependencies = [
   "alembic>=1.18.5,<2",
   "celery[redis]>=5.6.3,<6",
@@ -26,7 +26,7 @@ dependencies = [
   "uvicorn[standard]>=0.34,<1"
 ]
 
-[project.optional-dependencies]
+[dependency-groups]
 dev = [
   "mypy>=1.15,<2",
   "pytest>=8.3,<9",
@@ -36,6 +36,9 @@ dev = [
   "ruff>=0.11,<1"
 ]
 
+[tool.uv]
+required-version = "==0.12.3"
+
 [tool.setuptools.packages.find]
 where = ["src"]
 
@@ -43,6 +46,7 @@ where = ["src"]
 addopts = "-q --strict-markers"
 asyncio_mode = "auto"
 testpaths = ["tests"]
+pythonpath = ["../.."]
 markers = [
   "integration: requires a migrated PostgreSQL database",
 ]
@@ -63,7 +67,7 @@ python_version = "3.12"
 strict = true
 plugins = []
 packages = ["legal_workbench"]
-mypy_path = "apps/backend/src"
+mypy_path = "src"
 warn_unused_ignores = true
 
 [tool.coverage.run]

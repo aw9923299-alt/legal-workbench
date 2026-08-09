@@ -32,12 +32,11 @@
 ## 检查
 
 ```bash
-npm run typecheck
+make setup
+make lint
+make test
 npm run build
-python -m ruff check apps/backend/src apps/backend/tests
-python -m mypy --config-file apps/backend/pyproject.toml apps/backend/src
-python -m pytest apps/backend/tests
-docker compose config
+docker compose config --quiet
 ```
 
 ## 禁止提交

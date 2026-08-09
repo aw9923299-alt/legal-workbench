@@ -26,7 +26,8 @@ integrations  feishu-connector、file-indexer
 ## 3. 镜像策略
 
 - Python：3.12 slim；
-- Node：22 Alpine，仅用于前端构建；
+- Python依赖：uv 0.12.3读取`apps/backend/uv.lock`，生产环境排除`dev` group并以非editable方式安装；
+- Node：22.23.2 Alpine，仅用于前端构建，使用根`package-lock.json`和`npm ci`；
 - Web运行：Nginx；
 - PostgreSQL：固定`pgvector/pgvector:0.8.5-pg18-bookworm`；
 - Redis：稳定主版本镜像，正式部署应补充digest锁定。
@@ -83,7 +84,7 @@ make ops-stop          # 暂停接入、等待事务、先停 Worker/Scheduler �
 
 运维状态和 5 MiB 滚动日志默认写入 `data/operations`，备份写入 `data/backups`，文件权限为 `0600`；Compose 的全部服务另使用 `json-file` 10 MiB × 3 文件轮转。脚本从 `.env` 读取非敏感运行参数，但失败输出只返回错误类型，不输出异常正文或命令凭证。宿主路径可以用 `LEGAL_WORKBENCH_OPS_STATE_ROOT`、`LEGAL_WORKBENCH_OPS_BACKUP_ROOT`、`LEGAL_WORKBENCH_OPS_CODEX_RUNS_ROOT` 和 `LEGAL_WORKBENCH_OPS_ATTACHMENT_ROOT` 的绝对路径覆盖；同一变量同时驱动主机脚本与 Compose bind source，容器目标仍固定为 `/data/operations`、`/data/backups`、`/data/codex-runs` 和 `/data/feishu-attachments`，避免两侧观察不同目录。
 
-`infra/launchd/com.legal-workbench.supervisor.plist.example` 在登录后及每 300 秒执行唤醒自检；`com.legal-workbench.backup.plist.example` 每日 03:15 备份。一键安全停止会留下持久标记，Supervisor 只记录 `paused`，不会在 5 分钟后擅自拉起；活动事务检查失败或超时也会失败关闭，不继续停止数据库。只有显式 `make ops-start` 才清除标记。自动恢复使用独立 `mac-supervisor / local_supervisor` 审计身份。安装前复制到 `~/Library/LaunchAgents`、把所有占位符替换为当前仓库和虚拟环境绝对路径，并先执行 `plutil -lint`。模板显式提供 Homebrew/系统 Docker CLI 常用 PATH；若本机 Docker 安装在其他位置，必须同步调整。当前仓库不会自动改写用户的 launchd 配置；模板 stdout/stderr 指向 `/dev/null`，结果和失败类型统一进入受控滚动运维日志。
+`infra/launchd/com.legal-workbench.supervisor.plist.example` 在登录后及每 300 秒执行唤醒自检；`com.legal-workbench.backup.plist.example` 每日 03:15 备份。一键安全停止会留下持久标记，Supervisor 只记录 `paused`，不会在 5 分钟后擅自拉起；活动事务检查失败或超时也会失败关闭，不继续停止数据库。只有显式 `make ops-start` 才清除标记。自动恢复使用独立 `mac-supervisor / local_supervisor` 审计身份。安装前复制到 `~/Library/LaunchAgents`、用`command -v uv`确认 uv 0.12.3 的绝对路径，并把模板中的 uv、仓库和项目路径占位符全部替换后执行 `plutil -lint`。模板通过`uv run --locked --project apps/backend`运行，不依赖硬编码的Python解释器路径；若本机 Docker 安装在其他位置，仍须同步调整 PATH。当前仓库不会自动改写用户的 launchd 配置；模板 stdout/stderr 指向 `/dev/null`，结果和失败类型统一进入受控滚动运维日志。
 
 唤醒自检只有在 PostgreSQL、Redis、Worker、Scheduler 和磁盘/附件配额均正常时才触发 PostgreSQL 恢复。备份缺失/过期和 Codex 未认证会保留为 warning，并把本次唤醒标记为 `degraded`；不会伪装成已就绪。首装时它们不会阻止数据库事实恢复，真实 Codex AgentRun 仍受 Worker 运行时健康门禁保护。
 

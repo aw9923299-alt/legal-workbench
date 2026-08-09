@@ -56,24 +56,22 @@
 ## 提交前命令
 
 ```bash
-npm install
-npm run typecheck
+make setup
+make lint
+make test
 npm run build
-
-python -m pip install -e 'apps/backend[dev]'
-python -m ruff check apps/backend/src apps/backend/tests
-python -m mypy --config-file apps/backend/pyproject.toml apps/backend/src
-python -m pytest apps/backend/tests
-
-docker compose config
+docker compose config --quiet
 ```
+
+下列后端专项命令均从仓库根目录执行，并通过`uv run --project apps/backend --locked`消费已提交的lockfile。
 
 Matter 更新建议的真实 PostgreSQL 映射可单独验证：
 
 ```bash
 RUN_POSTGRES_INTEGRATION_TESTS=1 \
 LEGAL_WORKBENCH_TEST_DATABASE_URL='postgresql+psycopg://.../legal_workbench_test' \
-python -m pytest apps/backend/tests/test_postgres_matter_update_proposals.py -q
+uv run --project apps/backend --locked pytest \
+  apps/backend/tests/test_postgres_matter_update_proposals.py -q
 ```
 
 该测试覆盖 Candidate 生成待审 Proposal、人工批准字段、新增 WorkItem、Deadline、审计和版本持久化；不调用真实飞书或真实 Codex。
@@ -81,10 +79,12 @@ python -m pytest apps/backend/tests/test_postgres_matter_update_proposals.py -q
 WorkItem 状态机与 PostgreSQL 事务可单独验证：
 
 ```bash
-python -m pytest apps/backend/tests/test_work_item_lifecycle.py -q
+uv run --project apps/backend --locked pytest \
+  apps/backend/tests/test_work_item_lifecycle.py -q
 RUN_POSTGRES_INTEGRATION_TESTS=1 \
 LEGAL_WORKBENCH_TEST_DATABASE_URL='postgresql+psycopg://.../legal_workbench_test' \
-python -m pytest apps/backend/tests/test_postgres_work_item_lifecycle.py -q
+uv run --project apps/backend --locked pytest \
+  apps/backend/tests/test_postgres_work_item_lifecycle.py -q
 ```
 
 集成测试执行开始、建依赖、等待、解决依赖、恢复和完成，检查 WorkItem/Dependency 版本、审计、Outbox 与幂等回放。
@@ -92,7 +92,7 @@ python -m pytest apps/backend/tests/test_postgres_work_item_lifecycle.py -q
 今日工作台可单独验证：
 
 ```bash
-.venv/bin/python -m pytest \
+uv run --project apps/backend --locked pytest \
   apps/backend/tests/test_dashboard_queue.py \
   apps/backend/tests/test_postgres_dashboard_queue.py -q
 npm run test --workspace @legal-workbench/web -- --run DashboardPage
@@ -112,11 +112,11 @@ npm run test --workspace @legal-workbench/web -- --run \
 消息研判质量评估可单独验证：
 
 ```bash
-.venv/bin/python -m pytest \
+uv run --project apps/backend --locked pytest \
   apps/backend/tests/test_evaluations.py \
   apps/backend/tests/test_postgres_evaluations.py -q
 
-.venv/bin/python scripts/run_message_judgement_evaluation.py \
+uv run --project apps/backend --locked python scripts/run_message_judgement_evaluation.py \
   --database-url postgresql+psycopg://.../legal_workbench_evaluation_test \
   --runtime fake \
   --allow-database-write
@@ -125,7 +125,7 @@ npm run test --workspace @legal-workbench/web -- --run \
 ## Setup 与 Secret 边界
 
 ```bash
-.venv/bin/python -m pytest \
+uv run --project apps/backend --locked pytest \
   apps/backend/tests/test_setup_status.py \
   apps/backend/tests/test_postgres_setup_status.py -q
 
@@ -137,10 +137,11 @@ npm run test --workspace @legal-workbench/web -- --run SetupPage
 ## 飞书群聊授权范围
 
 ```bash
-.venv/bin/python -m pytest apps/backend/tests/test_feishu_scopes.py -q
+uv run --project apps/backend --locked pytest apps/backend/tests/test_feishu_scopes.py -q
 RUN_POSTGRES_INTEGRATION_TESTS=1 \
 LEGAL_WORKBENCH_TEST_DATABASE_URL='postgresql+psycopg://.../legal_workbench_test' \
-.venv/bin/python -m pytest apps/backend/tests/test_postgres_feishu_scopes.py -q
+uv run --project apps/backend --locked pytest \
+  apps/backend/tests/test_postgres_feishu_scopes.py -q
 npm run test --workspace @legal-workbench/web -- --run FeishuScopesPage
 ```
 
@@ -149,7 +150,7 @@ npm run test --workspace @legal-workbench/web -- --run FeishuScopesPage
 ## Mac 运维与后续闭环冒烟
 
 ```bash
-.venv/bin/python -m pytest \
+uv run --project apps/backend --locked pytest \
   apps/backend/tests/test_mac_operations.py \
   apps/backend/tests/test_analysis_recovery.py -q
 npm run test --workspace @legal-workbench/web -- --run SystemStatusPage
@@ -157,7 +158,7 @@ plutil -lint infra/launchd/com.legal-workbench.*.plist.example
 
 LEGAL_WORKBENCH_TEST_DATABASE_URL='postgresql+psycopg://.../legal_workbench_test' \
 LEGAL_WORKBENCH_TEST_REDIS_URL='redis://127.0.0.1:6379/15' \
-.venv/bin/python scripts/smoke_test_downstream_loop.py \
+uv run --project apps/backend --locked python scripts/smoke_test_downstream_loop.py \
   --runtime fake --allow-database-write --allow-redis-flush
 ```
 
@@ -171,6 +172,7 @@ LEGAL_WORKBENCH_TEST_REDIS_URL='redis://127.0.0.1:6379/15' \
 
 ```bash
 docker compose up -d postgres redis
-alembic -c apps/backend/alembic.ini upgrade head
+uv run --project apps/backend --locked alembic \
+  -c apps/backend/alembic.ini upgrade head
 curl http://localhost:8000/api/v1/health/live
 ```

@@ -931,6 +931,7 @@ def test_downstream_smoke_reports_unexecuted_host_operations(
 ) -> None:
     repository = tmp_path / "repository"
     repository.mkdir()
+    commands: list[list[str]] = []
 
     def fake_run(
         args: list[str],
@@ -940,6 +941,7 @@ def test_downstream_smoke_reports_unexecuted_host_operations(
         timeout_seconds: int,
     ) -> subprocess.CompletedProcess[str]:
         del repository_root, environment, timeout_seconds
+        commands.append(args)
         stdout = (
             json.dumps(
                 {
@@ -966,6 +968,8 @@ def test_downstream_smoke_reports_unexecuted_host_operations(
     )
 
     assert report["verificationScope"] == "component_integration"
+    assert commands
+    assert all(command[0] == sys.executable for command in commands)
     assert report["hostOperationalAcceptance"] is False
     operations_report = report["operationalSteps"]
     assert operations_report["wakeCheck"]["state"] == "not_executed"

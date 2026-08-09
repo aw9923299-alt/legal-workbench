@@ -32,6 +32,6 @@
   },
   "description": "React workbench for the local Codex-powered legal operations system.",
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=22 <23"
   }
 }
