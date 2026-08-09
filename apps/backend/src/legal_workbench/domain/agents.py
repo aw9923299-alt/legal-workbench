@@ -181,8 +181,19 @@ class AgentRunAttempt:
             lease_token=self.lease_token,
         )
 
-    def ensure_current(self, lease: AgentAttemptLease) -> None:
-        if self.status != AgentAttemptStatus.RUNNING or lease != self.lease:
+    def ensure_current(
+        self,
+        lease: AgentAttemptLease,
+        *,
+        active_at: datetime | None = None,
+    ) -> None:
+        checked_at = active_at or utc_now()
+        require_aware(checked_at, field_name="Agent attempt lease check time")
+        if (
+            self.status != AgentAttemptStatus.RUNNING
+            or lease != self.lease
+            or self.lease_expires_at <= checked_at
+        ):
             raise StaleAgentAttemptError(
                 "The Agent Attempt lease is stale and cannot update this run.",
                 details={
@@ -192,9 +203,9 @@ class AgentRunAttempt:
             )
 
     def complete(self, lease: AgentAttemptLease, *, now: datetime | None = None) -> None:
-        self.ensure_current(lease)
         finished_at = now or utc_now()
         require_aware(finished_at, field_name="Agent attempt completion time")
+        self.ensure_current(lease, active_at=finished_at)
         self.status = AgentAttemptStatus.COMPLETED
         self.finished_at = finished_at
         self.lease_expires_at = finished_at
@@ -206,9 +217,9 @@ class AgentRunAttempt:
         heartbeat_at: datetime,
         lease_expires_at: datetime,
     ) -> None:
-        self.ensure_current(lease)
         require_aware(heartbeat_at, field_name="Agent attempt heartbeat")
         require_aware(lease_expires_at, field_name="Agent attempt lease expiry")
+        self.ensure_current(lease, active_at=heartbeat_at)
         if lease_expires_at <= heartbeat_at:
             raise DomainValidationError("Agent attempt lease expiry must follow its heartbeat.")
         self.heartbeat_at = heartbeat_at
@@ -223,7 +234,6 @@ class AgentRunAttempt:
         failure_message: str,
         now: datetime | None = None,
     ) -> None:
-        self.ensure_current(lease)
         if status not in {
             AgentAttemptStatus.FAILED,
             AgentAttemptStatus.TIMED_OUT,
@@ -232,6 +242,7 @@ class AgentRunAttempt:
             raise DomainValidationError("Agent attempt failure requires a failure terminal status.")
         finished_at = now or utc_now()
         require_aware(finished_at, field_name="Agent attempt failure time")
+        self.ensure_current(lease, active_at=finished_at)
         self.status = status
         self.finished_at = finished_at
         self.lease_expires_at = finished_at

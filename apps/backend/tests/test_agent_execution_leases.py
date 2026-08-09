@@ -21,9 +21,7 @@ class _AttemptRepository:
         self.values[(attempt.run_id, attempt.attempt_number)] = attempt
 
     def _current(self, lease: AgentAttemptLease) -> AgentRunAttempt:
-        attempt = self.values[(lease.run_id, lease.attempt_number)]
-        attempt.ensure_current(lease)
-        return attempt
+        return self.values[(lease.run_id, lease.attempt_number)]
 
     async def heartbeat(
         self,
@@ -145,3 +143,25 @@ async def test_execution_lease_rejects_late_owner_before_result_can_commit() -> 
     assert repository.values[(run.id, 1)].status == AgentAttemptStatus.EXPIRED
     assert repository.values[(run.id, 2)].status == AgentAttemptStatus.RUNNING
     await service.complete(run, current)
+
+
+@pytest.mark.asyncio
+async def test_execution_lease_cannot_be_revived_after_natural_expiry() -> None:
+    repository = _AttemptRepository()
+    run = _run()
+    current_time = NOW
+    service = AgentExecutionLeaseService(
+        repository,
+        lease_seconds=60,
+        now=lambda: current_time,
+    )
+    lease = await service.start(run, worker_id="worker-expired")
+    current_time = NOW + timedelta(seconds=61)
+
+    with pytest.raises(StaleAgentAttemptError):
+        await service.heartbeat(run, lease)
+    with pytest.raises(StaleAgentAttemptError):
+        await service.complete(run, lease)
+
+    assert repository.values[(run.id, 1)].status == AgentAttemptStatus.RUNNING
+    assert repository.values[(run.id, 1)].lease_expires_at == NOW + timedelta(seconds=60)

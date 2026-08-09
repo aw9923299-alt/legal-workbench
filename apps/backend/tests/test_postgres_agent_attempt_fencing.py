@@ -19,16 +19,17 @@ async def test_postgres_rejects_completion_from_expired_attempt() -> None:
     if os.getenv("RUN_POSTGRES_INTEGRATION_TESTS") != "1":
         pytest.skip("PostgreSQL integration tests are disabled")
 
+    from sqlalchemy import update
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+    from legal_workbench.infrastructure.models import AgentRunAttemptModel
     from legal_workbench.infrastructure.unit_of_work import SqlAlchemyUnitOfWorkFactory
 
     engine = create_async_engine(
         os.environ["LEGAL_WORKBENCH_TEST_DATABASE_URL"], pool_pre_ping=True
     )
-    uow_factory = SqlAlchemyUnitOfWorkFactory(
-        async_sessionmaker(engine, expire_on_commit=False)
-    )
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    uow_factory = SqlAlchemyUnitOfWorkFactory(session_factory)
     now = datetime.now(UTC)
     definition = build_message_judgement_definition()
     snapshot = ContextSnapshot(
@@ -76,6 +77,25 @@ async def test_postgres_rejects_completion_from_expired_attempt() -> None:
                 worker_id="worker-old",
             )
             await uow.commit()
+
+        async with session_factory() as session, session.begin():
+            await session.execute(
+                update(AgentRunAttemptModel)
+                .where(
+                    AgentRunAttemptModel.agent_run_id == run.id,
+                    AgentRunAttemptModel.attempt_number == 1,
+                )
+                .values(lease_expires_at=now - timedelta(seconds=1))
+            )
+
+        async with uow_factory() as uow:
+            attempt_service = AgentAttemptService(
+                uow.agent_run_attempts, lease_seconds=60
+            )
+            with pytest.raises(StaleAgentAttemptError):
+                await attempt_service.heartbeat(first)
+            with pytest.raises(StaleAgentAttemptError):
+                await attempt_service.complete(first)
 
         async with uow_factory() as uow:
             expired = await uow.agent_run_attempts.expire_current(

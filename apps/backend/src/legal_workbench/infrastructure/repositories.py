@@ -1009,7 +1009,7 @@ class SqlAlchemyAgentRunAttemptRepository:
     ) -> None:
         statement = (
             update(AgentRunAttemptModel)
-            .where(*self._active_lease_predicates(lease))
+            .where(*self._active_lease_predicates(lease, active_at=heartbeat_at))
             .values(
                 heartbeat_at=heartbeat_at,
                 lease_expires_at=lease_expires_at,
@@ -1022,7 +1022,7 @@ class SqlAlchemyAgentRunAttemptRepository:
     async def complete(self, lease: AgentAttemptLease, *, finished_at: datetime) -> None:
         statement = (
             update(AgentRunAttemptModel)
-            .where(*self._active_lease_predicates(lease))
+            .where(*self._active_lease_predicates(lease, active_at=finished_at))
             .values(
                 status=AgentAttemptStatus.COMPLETED,
                 finished_at=finished_at,
@@ -1052,7 +1052,7 @@ class SqlAlchemyAgentRunAttemptRepository:
             raise ValueError("Attempt failure status must be terminal.")
         statement = (
             update(AgentRunAttemptModel)
-            .where(*self._active_lease_predicates(lease))
+            .where(*self._active_lease_predicates(lease, active_at=finished_at))
             .values(
                 status=status,
                 finished_at=finished_at,
@@ -1102,12 +1102,16 @@ class SqlAlchemyAgentRunAttemptRepository:
     @staticmethod
     def _active_lease_predicates(
         lease: AgentAttemptLease,
+        *,
+        active_at: datetime,
     ) -> tuple[ColumnElement[bool], ...]:
         return (
             AgentRunAttemptModel.agent_run_id == lease.run_id,
             AgentRunAttemptModel.attempt_number == lease.attempt_number,
             AgentRunAttemptModel.lease_token == lease.lease_token,
             AgentRunAttemptModel.status == AgentAttemptStatus.RUNNING,
+            AgentRunAttemptModel.lease_expires_at > active_at,
+            AgentRunAttemptModel.lease_expires_at > func.now(),
         )
 
     @staticmethod

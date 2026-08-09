@@ -463,7 +463,7 @@ async def test_multi_agent_orchestration_persists_lineage_draft_and_review() -> 
             actor_id="user:fixture",
             correlation_id=f"rerun-{uuid4().hex}",
         )
-        assert rerun.status == AgentExecutionPlanStatus.COMPLETED
+        assert rerun.status == AgentExecutionPlanStatus.PARTIAL
         async with factory() as uow:
             rerun_plan = await uow.agent_execution_plans.get(result.plan_id)
             rerun_runs = list(await uow.agent_runs.list_by_plan(result.plan_id))
@@ -477,6 +477,21 @@ async def test_multi_agent_orchestration_persists_lineage_draft_and_review() -> 
             run for run in rerun_runs if run.id == contract_step.latest_run_id
         )
         assert latest_contract_run.retry_of_run_id is not None
+        stale_summary = next(
+            step for step in rerun_plan.steps if step.step_id == "summary"
+        )
+        assert stale_summary.status.value == "skipped"
+        assert stale_summary.failure_code == "STALE_DEPENDENCY_RUN"
+        latest_synthesis = next(
+            run
+            for run in reversed(rerun_runs)
+            if run.run_role == AgentRunRole.BUTLER_SYNTHESIS
+        )
+        stale_summary_input = latest_synthesis.input_payload["upstreamOutputs"][
+            "summary"
+        ]
+        assert stale_summary_input["status"] == "skipped"
+        assert "executiveSummary" not in stale_summary_input
 
         rerun_summary = await orchestrator.rerun_step(
             plan_id=result.plan_id,
@@ -639,6 +654,14 @@ async def test_legal_agent_crash_recovery_resumes_only_incomplete_phase(
         permission_snapshot={},
         generated_at=datetime.now(UTC),
         content_hash=uuid4().hex * 2,
+        included_segments=[
+            {
+                "attachmentId": str(uuid4()),
+                "fileName": "非敏感恢复测试.txt",
+                "paragraphNumber": 1,
+                "contentHash": "d" * 64,
+            }
+        ],
         content={"fixture": "crash recovery"},
     )
     runtime = FakeLegalRuntime(crash_at=crash_at)
@@ -709,5 +732,9 @@ async def test_legal_agent_crash_recovery_resumes_only_incomplete_phase(
             AgentAttemptStatus.EXPIRED,
             AgentAttemptStatus.COMPLETED,
         ]
+        if crash_at == "synthesis":
+            assert "ctx:segment:" + "d" * 64 in recovered_run.input_payload[
+                "authorizedSourceRefs"
+            ]
     finally:
         await engine.dispose()

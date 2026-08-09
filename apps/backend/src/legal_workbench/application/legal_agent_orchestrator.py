@@ -285,6 +285,12 @@ class LegalAgentOrchestrator:
         }:
             return await self._replay_result(plan)
 
+        await self._invalidate_stale_dependents(plan.id)
+        async with self._uow_factory() as uow:
+            refreshed_plan = await uow.agent_execution_plans.get(plan.id)
+        if refreshed_plan is None:
+            raise EntityNotFoundError("Agent execution plan disappeared during recovery.")
+        plan = refreshed_plan
         persisted_results = await self._list_step_results(plan.id)
         initial_results = tuple(
             value
@@ -428,6 +434,12 @@ class LegalAgentOrchestrator:
             matter = await uow.matters.get(plan.matter_id)
             if snapshot is None or matter is None:
                 raise EntityNotFoundError("Legal Agent rerun context was not found.")
+            plan.status = AgentExecutionPlanStatus.RUNNING
+            plan.synthesis_run_id = None
+            plan.updated_at = utc_now()
+            plan.version += 1
+            await uow.agent_execution_plans.save(plan)
+            await uow.commit()
         trigger = LegalAgentTrigger(
             matter_id=plan.matter_id,
             work_item_id=plan.work_item_id,
@@ -453,6 +465,7 @@ class LegalAgentOrchestrator:
             dependency_context=dependency_context,
             retry_of_run_id=step.latest_run_id,
         )
+        await self._invalidate_stale_dependents(plan.id)
         all_results = await self._list_step_results(plan.id)
         by_step = {value.step_id: value for value in all_results}
         by_step[step_result.step_id] = step_result
@@ -462,6 +475,67 @@ class LegalAgentOrchestrator:
             trigger=trigger,
             step_results=list(by_step.values()),
         )
+
+    async def _invalidate_stale_dependents(self, plan_id: UUID) -> None:
+        async with self._uow_factory() as uow:
+            plan = await uow.agent_execution_plans.get_for_update(plan_id)
+            if plan is None:
+                raise EntityNotFoundError("Agent execution plan was not found.")
+            runs = list(await uow.agent_runs.list_by_plan(plan_id))
+            runs_by_id = {run.id: run for run in runs}
+            steps_by_id = {step.step_id: step for step in plan.steps}
+            for step in sorted(plan.steps, key=lambda value: (value.sequence, value.step_id)):
+                if not self._step_has_stale_dependencies(
+                    step,
+                    steps_by_id=steps_by_id,
+                    runs_by_id=runs_by_id,
+                ):
+                    continue
+                if step.status not in {
+                    AgentPlanStepStatus.COMPLETED,
+                    AgentPlanStepStatus.NEEDS_INFORMATION,
+                }:
+                    continue
+                step.status = AgentPlanStepStatus.SKIPPED
+                step.failure_code = "STALE_DEPENDENCY_RUN"
+                step.failure_message = (
+                    "A direct dependency now points to a newer valid Agent Run; "
+                    "this Step requires an explicit rerun."
+                )
+                step.updated_at = utc_now()
+                step.version += 1
+                await uow.agent_execution_plans.save_step(step)
+            await uow.commit()
+
+    @staticmethod
+    def _step_has_stale_dependencies(
+        step: AgentPlanStep,
+        *,
+        steps_by_id: dict[str, AgentPlanStep],
+        runs_by_id: dict[UUID, AgentRun],
+    ) -> bool:
+        if not step.depends_on:
+            return False
+        expected_run_ids: list[UUID] = []
+        for dependency_id in dict.fromkeys(step.depends_on):
+            dependency = steps_by_id.get(dependency_id)
+            if (
+                dependency is None
+                or dependency.status
+                not in {
+                    AgentPlanStepStatus.COMPLETED,
+                    AgentPlanStepStatus.NEEDS_INFORMATION,
+                }
+                or dependency.latest_valid_run_id is None
+            ):
+                return True
+            expected_run_ids.append(dependency.latest_valid_run_id)
+        selected_run = (
+            runs_by_id.get(step.latest_valid_run_id)
+            if step.latest_valid_run_id is not None
+            else None
+        )
+        return selected_run is None or selected_run.dependency_run_ids != expected_run_ids
 
     async def _prepare_planning(
         self, trigger: LegalAgentTrigger
@@ -1307,6 +1381,83 @@ class LegalAgentOrchestrator:
                 citation_metadata={"sourceRef": f"ctx:snapshot:{snapshot.id}"},
             )
         ]
+        messages = snapshot.content.get("messages", [])
+        message_metadata = {
+            str(item.get("messageId")): item
+            for item in messages
+            if isinstance(item, dict) and item.get("messageId")
+        } if isinstance(messages, list) else {}
+        for message_id in dict.fromkeys(snapshot.message_ids):
+            metadata = message_metadata.get(message_id, {})
+            source_hash = str(metadata.get("contentHash") or snapshot.content_hash)
+            if len(source_hash) != 64:
+                source_hash = snapshot.content_hash
+            values.append(
+                AgentRunSource(
+                    id=uuid4(),
+                    agent_run_id=run_id,
+                    source_type=AgentRunSourceType.FEISHU_MESSAGE,
+                    source_id=message_id,
+                    source_version=(
+                        str(metadata["messageVersion"])
+                        if metadata.get("messageVersion") is not None
+                        else None
+                    ),
+                    source_hash=source_hash,
+                    display_name=f"Authorized Feishu message {message_id}",
+                    citation_metadata={
+                        "sourceRef": f"ctx:message:{message_id}",
+                        "sourceType": "feishu_message",
+                    },
+                )
+            )
+        for segment in snapshot.included_segments:
+            source_hash = str(segment.get("contentHash") or "")
+            if len(source_hash) != 64:
+                continue
+            attachment_id = segment.get("attachmentId")
+            document_id = segment.get("documentId")
+            source_id = str(attachment_id or document_id or source_hash)
+            source_type = (
+                AgentRunSourceType.ATTACHMENT
+                if attachment_id
+                else AgentRunSourceType.KNOWLEDGE_DOCUMENT
+                if document_id
+                else AgentRunSourceType.CONTEXT_SNAPSHOT
+            )
+            locator_parts = [
+                f"page:{segment['pageNumber']}"
+                if segment.get("pageNumber") is not None
+                else None,
+                f"paragraph:{segment['paragraphNumber']}"
+                if segment.get("paragraphNumber") is not None
+                else None,
+            ]
+            values.append(
+                AgentRunSource(
+                    id=uuid4(),
+                    agent_run_id=run_id,
+                    source_type=source_type,
+                    source_id=source_id,
+                    source_version=None,
+                    source_hash=source_hash,
+                    display_name=str(
+                        segment.get("fileName")
+                        or segment.get("title")
+                        or "Authorized document segment"
+                    ),
+                    citation_metadata={
+                        "sourceRef": f"ctx:segment:{source_hash}",
+                        "sourceType": "document_segment",
+                        "locator": ",".join(
+                            value for value in locator_parts if value is not None
+                        )
+                        or None,
+                        "attachmentId": attachment_id,
+                        "documentId": document_id,
+                    },
+                )
+            )
         if context is None:
             return values
         retrieval = context.payload.get("retrievalResults", [])
@@ -1448,11 +1599,20 @@ class LegalAgentOrchestrator:
         if plan is None:
             return []
         by_id = {run.id: run for run in runs}
+        steps_by_id = {step.step_id: step for step in plan.steps}
         values: list[SpecialistStepExecution] = []
         for step in plan.steps:
+            stale_dependency = self._step_has_stale_dependencies(
+                step,
+                steps_by_id=steps_by_id,
+                runs_by_id=by_id,
+            )
+            effective_status = (
+                AgentPlanStepStatus.SKIPPED if stale_dependency else step.status
+            )
             selected_run_id = (
                 step.latest_valid_run_id
-                if step.status
+                if effective_status
                 in {
                     AgentPlanStepStatus.COMPLETED,
                     AgentPlanStepStatus.NEEDS_INFORMATION,
@@ -1469,7 +1629,7 @@ class LegalAgentOrchestrator:
                     AgentRunStatus.COMPLETED,
                     AgentRunStatus.NEEDS_MORE_INFORMATION,
                 }
-                and step.status
+                and effective_status
                 in {
                     AgentPlanStepStatus.COMPLETED,
                     AgentPlanStepStatus.NEEDS_INFORMATION,
@@ -1478,7 +1638,9 @@ class LegalAgentOrchestrator:
                 output = LEGAL_OUTPUT_MODELS[step.agent_key].model_validate(
                     run.output_payload
                 )
-            run_sources = sources_by_run.get(run.id, []) if run else []
+            run_sources = (
+                sources_by_run.get(run.id, []) if run is not None and output is not None else []
+            )
             source_refs = frozenset(
                 str(source.citation_metadata.get("sourceRef"))
                 for source in run_sources
@@ -1512,10 +1674,18 @@ class LegalAgentOrchestrator:
                     step_id=step.step_id,
                     agent_key=step.agent_key,
                     run_id=run.id if run is not None else step.latest_run_id,
-                    status=step.status,
+                    status=effective_status,
                     output=output,
-                    failure_code=step.failure_code,
-                    failure_message=step.failure_message,
+                    failure_code=(
+                        "STALE_DEPENDENCY_RUN"
+                        if stale_dependency
+                        else step.failure_code
+                    ),
+                    failure_message=(
+                        "A direct dependency changed; this Step requires an explicit rerun."
+                        if stale_dependency
+                        else step.failure_message
+                    ),
                     source_refs=source_refs,
                     internal_precedent_refs=internal_precedent_refs,
                     source_authorities=source_authorities,
