@@ -31,12 +31,10 @@
 ## 验证结果
 
 ```text
-npm run typecheck
+make lint
+make test
 npm run build
-python -m ruff check apps/backend/src apps/backend/tests
-python -m mypy --config-file apps/backend/pyproject.toml apps/backend/src
-python -m pytest apps/backend/tests
-docker compose config
+docker compose config --quiet
 ```
 
 ## 界面/API证据
