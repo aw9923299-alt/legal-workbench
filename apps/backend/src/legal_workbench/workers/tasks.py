@@ -208,6 +208,7 @@ async def _analyse_feishu_message(
     actor_source: str,
     correlation_id: str,
     force_new_run: bool,
+    override_recalled: bool,
     recover_interrupted_run: bool,
     worker_id: str | None,
 ) -> dict[str, str | bool | None]:
@@ -250,16 +251,18 @@ async def _analyse_feishu_message(
             actor_source=actor_source,
             correlation_id=correlation_id,
             force_new_run=force_new_run,
+            override_recalled=override_recalled,
             recover_interrupted_run=recover_interrupted_run,
             worker_id=worker_id,
         )
     )
     return {
         "messageId": str(result.message_id),
-        "agentRunId": str(result.agent_run_id),
-        "status": result.status.value,
+        "agentRunId": str(result.agent_run_id) if result.agent_run_id else None,
+        "status": result.status.value if result.status else "no_op",
         "candidateId": str(result.candidate_id) if result.candidate_id else None,
         "idempotentReplay": result.idempotent_replay,
+        "noOpReason": result.no_op_reason,
     }
 
 
@@ -276,6 +279,7 @@ def process_feishu_message(
     correlation_id: str = "",
     *,
     force_new_run: bool = False,
+    override_recalled: bool = False,
     recover_interrupted_run: bool = False,
 ) -> dict[str, str | bool | None]:
     settings = get_settings()
@@ -294,6 +298,7 @@ def process_feishu_message(
                 actor_source=actor_source,
                 correlation_id=correlation,
                 force_new_run=force_new_run,
+                override_recalled=override_recalled,
                 recover_interrupted_run=recover_interrupted,
                 worker_id=str(getattr(task.request, "hostname", "") or "celery-worker"),
             )

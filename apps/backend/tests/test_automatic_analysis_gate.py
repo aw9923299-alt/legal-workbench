@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from types import TracebackType
 from uuid import UUID, uuid4
 
@@ -90,6 +91,25 @@ async def test_store_only_message_cannot_enqueue_automatic_analysis() -> None:
 
     assert decision.requested is False
     assert decision.reason == "message_disposition_store_only"
+    assert uow.outbox_events.events == []
+
+
+@pytest.mark.asyncio
+async def test_recalled_message_cannot_enqueue_automatic_analysis() -> None:
+    message = _message("analyze")
+    message.recalled_at = datetime(2026, 8, 9, 1, 2, tzinfo=UTC)
+    uow = _UnitOfWork(message)
+
+    decision = await AutomaticAnalysisGate().request_if_allowed(
+        uow,  # type: ignore[arg-type]
+        message.id,
+        actor_id="document-extraction-worker",
+        actor_source="integration",
+        correlation_id="attachment-analysis:recalled",
+    )
+
+    assert decision.requested is False
+    assert decision.reason == "message_recalled"
     assert uow.outbox_events.events == []
 
 

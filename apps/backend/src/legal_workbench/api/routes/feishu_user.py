@@ -16,6 +16,7 @@ from legal_workbench.api.dependencies import (
 )
 from legal_workbench.api.schemas.feishu_user import (
     FeishuCapabilityResponse,
+    FeishuPersonalSyncResponse,
     FeishuUserAuthorizationResponse,
     FeishuUserDisconnectResponse,
     FeishuUserOAuthCallbackResponse,
@@ -210,19 +211,14 @@ async def discover_feishu_user_scopes(
     ]
 
 
-@router.post("/scopes/{scope_id}/sync", response_model=dict[str, object])
+@router.post("/scopes/{scope_id}/sync", response_model=FeishuPersonalSyncResponse)
 async def sync_feishu_user_scope(
     scope_id: UUID,
     _idempotency_key: Annotated[str, Depends(get_idempotency_key)],
     runtime: Annotated[PersonalSyncRuntime, Depends(get_feishu_user_runtime)],
-) -> dict[str, object]:
+) -> FeishuPersonalSyncResponse:
     result = await runtime.sync_scope(scope_id)
-    return {
-        "scopeId": str(result.scope_id),
-        "ingestedCount": result.ingested_count,
-        "startedAt": result.started_at,
-        "completedAt": result.completed_at,
-    }
+    return FeishuPersonalSyncResponse.model_validate(result)
 
 
 @router.post("/documents/search", response_model=list[dict[str, object]])

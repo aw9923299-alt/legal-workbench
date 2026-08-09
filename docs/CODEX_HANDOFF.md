@@ -29,7 +29,7 @@ Runtime 前后使用独立短事务，不在数据库事务内等待 Codex。任
 | React 收件箱/消息详情/Agent运行中心/系统状态/Candidate动作 | 已实现，核心闭环数据均连接 FastAPI |
 | 飞书群聊授权范围 | 已实现；未知群默认未批准/禁用，允许/排除/暂停/恢复使用版本锁、幂等和审计；远端补偿延后 |
 | 飞书个人账号同步 | 已实现唯一 Runtime composition root、Workbench OAuth + PKCE、Capability 投影、fenced Token rotation、Manual/Scheduled 同构、P2P/群/Thread、附件 metadata-only 降级和原生文档同步；当前 Mac 已完成 Workbench OAuth、强制 Refresh、User API、Manual 与 Scheduled 真实验收 |
-| 自动消息分析门禁 | `AutomaticAnalysisGate` 是自动 `FeishuMessageAnalysisRequested` 的唯一入口；消息、附件下载、metadata-only、下载失败、提取成功/失败/body-unavailable 和本地 materialize 均以持久化 `analysis_disposition == analyze` 为准，人工入口独立 |
+| 自动消息分析门禁 | `AutomaticAnalysisGate` 是自动请求入口；集中 eligibility policy 在 Gate、Outbox dispatch、Worker prepare/runtime start 与 Agent 成功落库处防御。撤回后禁止新的自动分析/Candidate；已启动 AgentRun 不强杀且保留审计；仅 `actor_source=user` 且持久化的 `override_recalled=true` 显式 override 可执行并留 Audit |
 | 本地飞书补充连接器 | 已实现 Mac Host CLI/Makefile/launchd 示例、SQLite 只读、已知明文 Schema allowlist、统一 Ingestion、本地 P2P 默认未批准和来源优先级；当前 Mac 实测为 `supported_but_no_readable_local_records`，未绕过加密 |
 | SSE + 断线轮询回退 | 已实现，五类运行事件触发 Query 刷新 |
 | Python FastAPI + SQLAlchemy + PostgreSQL | 已实现 |
@@ -48,7 +48,7 @@ Runtime 前后使用独立短事务，不在数据库事务内等待 Codex。任
 | HttpOnly 本地会话与 Actor 来源审计 | 已实现；生产会话签发器尚未实现 |
 | 飞书连接状态、消息版本、附件元数据/受控下载 | 已实现；下载不授权给 Codex |
 | 飞书补偿同步 | 已实现配置群聊时间窗方案；未配置群聊时明确为部分恢复 |
-| Mac 常驻运维 | 安全启停、资源门禁唤醒自检、排他每日备份、保留清理、no-follow 脱敏诊断与系统状态已实现；真实主机脚本已复验，launchd 模板未安装，物理睡眠/唤醒尚未人工验收 |
+| Mac 常驻运维 | 当前 Mac 已安装并加载 Supervisor/Backup launchd，基础服务、Beat heartbeat、Scheduled Personal Sync、custom backup 与隔离 restore 已验收；`pmset` 计划唤醒要求 root，故物理睡眠/唤醒和唤醒后新消息入库仍为人工待验 |
 | 飞书加密 Webhook | 尚未实现；加密载荷明确拒绝 |
 | 知识解析/检索/专业 Agent/外发 | 本轮未实现 |
 
@@ -63,6 +63,9 @@ Runtime 前后使用独立短事务，不在数据库事务内等待 Codex。任
 - `agents/codex_health.py`：真实 CLI 版本、隔离认证和运行目录检查；
 - `infrastructure/outbox.py`：显式事件 Handler 注册。
 - `application/automatic_analysis_gate.py`：所有自动分析事件的持久化策略门禁；
+- `application/message_analysis_eligibility.py`：撤回消息自动分析与显式用户 override 的集中资格策略和 dispatch guard；
+- `domain/{agents,audit,candidates,documents,evaluations,feishu,matters,reviews,setup,work_items}.py`：按领域内聚拆分的实体模块；`domain/entities.py` 仅作兼容 re-export；
+- `application/ports/`：按 Agent、Matter、Review、Feishu、Document、Evaluation、Setup、Infrastructure 拆分的应用端口，package `__init__` 保持旧 import；
 - `infrastructure/feishu_personal_runtime.py`：Manual/Scheduled 共用的唯一 Personal Sync 依赖组装；
 - `application/feishu_capabilities.py`：Identity、消息、群发现、文档、Drive、附件的独立 Scope 投影；
 - `api/routes/messages.py`：收件箱和消息详情查询；
@@ -109,7 +112,7 @@ Runtime 将唯一授权 ContextSnapshot 作为不可信 JSON 直接送入 stdin�
 
 ## 下一步
 
-1. 经用户确认后把 launchd 模板安装到当前 Mac，并执行一次真实睡眠/唤醒和独立库备份恢复演练；
+1. 在取得 `pmset` root 权限或有人现场操作时执行真实睡眠/唤醒，并在唤醒后发送一条新的非敏感飞书消息完成新增入库证据；
 2. 如需本地消息补充，等待飞书客户端出现明确支持的明文消息 Schema；继续保持 fail-closed，不尝试解密；
-3. 由另一账号配合验证未读状态，并按需补齐 Drive Search、Attachment Read 等可选 Scope；这些缺权不得阻断消息同步；
+3. 提供现有 P2P chat、Thread 和可读 docx 的非敏感 fixture 后，补齐 P2P history、Thread replies 和 Document Markdown 实探；未读状态仍需另一账号配合；
 4. 为非本地环境补齐生产会话签发器；本轮真实 Candidate 继续保持 `pending_confirmation`，不得自动创建 Matter 或 WorkItem。

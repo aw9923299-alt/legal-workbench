@@ -24,6 +24,9 @@ from legal_workbench.agents.runtime import (
 )
 from legal_workbench.application.agent_attempts import AgentAttemptService
 from legal_workbench.application.context_snapshots import ContextSnapshotBuilder
+from legal_workbench.application.message_analysis_eligibility import (
+    MessageAnalysisEligibility,
+)
 from legal_workbench.application.ports import UnitOfWork, UnitOfWorkFactory
 from legal_workbench.domain.entities import (
     AgentAttemptLease,
@@ -33,6 +36,7 @@ from legal_workbench.domain.entities import (
     AuditEvent,
     CandidateRevision,
     ContextSnapshot,
+    FeishuMessage,
     IdempotencyRecord,
     MessageCandidate,
     OutboxEvent,
@@ -61,6 +65,7 @@ class AnalyseFeishuMessageCommand:
     actor_source: str
     correlation_id: str
     force_new_run: bool = False
+    override_recalled: bool = False
     recover_interrupted_run: bool = False
     worker_id: str | None = None
 
@@ -68,10 +73,11 @@ class AnalyseFeishuMessageCommand:
 @dataclass(frozen=True, slots=True)
 class AnalyseFeishuMessageResult:
     message_id: UUID
-    agent_run_id: UUID
-    status: AgentRunStatus
+    agent_run_id: UUID | None
+    status: AgentRunStatus | None
     candidate_id: UUID | None
     idempotent_replay: bool
+    no_op_reason: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -106,6 +112,8 @@ class RequestFeishuMessageAnalysisCommand:
     correlation_id: str
     idempotency_key: str
     force_new_run: bool = False
+    override_recalled: bool = False
+    authenticated_identity_source: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,6 +137,7 @@ class RequestFeishuMessageAnalysisHandler:
                 {
                     "messageId": str(command.message_id),
                     "forceNewRun": command.force_new_run,
+                    "overrideRecalled": command.override_recalled,
                 },
                 sort_keys=True,
                 separators=(",", ":"),
@@ -155,6 +164,11 @@ class RequestFeishuMessageAnalysisHandler:
                     "Feishu message was not found.",
                     details={"code": "FEISHU_MESSAGE_NOT_FOUND"},
                 )
+            if command.override_recalled and command.actor_source != "user":
+                raise InvalidStateTransitionError(
+                    "Only an authenticated user can explicitly override recalled-message analysis.",
+                    details={"code": "RECALLED_MESSAGE_OVERRIDE_REQUIRES_USER"},
+                )
             if message.status == FeishuMessageStatus.RECEIVED or (
                 command.force_new_run
                 and message.status
@@ -177,6 +191,8 @@ class RequestFeishuMessageAnalysisHandler:
                 "actorId": command.actor_id,
                 "actorSource": command.actor_source,
                 "forceNewRun": command.force_new_run,
+                "overrideRecalled": command.override_recalled,
+                "authenticatedIdentitySource": command.authenticated_identity_source,
             }
             await uow.audit_events.add(
                 AuditEvent(
@@ -190,6 +206,22 @@ class RequestFeishuMessageAnalysisHandler:
                     correlation_id=command.correlation_id,
                 )
             )
+            if command.override_recalled:
+                await uow.audit_events.add(
+                    AuditEvent(
+                        id=uuid4(),
+                        aggregate_type="feishu_message",
+                        aggregate_id=message.id,
+                        event_type="recalled_message_manual_analysis_override_requested",
+                        actor_id=command.actor_id,
+                        actor_source=command.actor_source,
+                        payload={
+                            "explicitOverride": True,
+                            "recalledAtRequest": message.recalled_at is not None,
+                        },
+                        correlation_id=command.correlation_id,
+                    )
+                )
             await uow.outbox_events.add(
                 OutboxEvent(
                     id=uuid4(),
@@ -260,7 +292,10 @@ class AnalyseFeishuMessageHandler:
             return prepared.idempotent_result
         if prepared.run is None or prepared.definition is None or prepared.snapshot is None:
             raise RuntimeError("Prepared analysis is incomplete.")
-        run, lease = await self._mark_running(prepared.run.id, command)
+        started = await self._mark_running(prepared.run.id, command)
+        if isinstance(started, AnalyseFeishuMessageResult):
+            return started
+        run, lease = started
 
         async def heartbeat() -> None:
             await self._heartbeat(run.id, lease)
@@ -313,6 +348,14 @@ class AnalyseFeishuMessageHandler:
         )
 
     async def prepare(self, command: AnalyseFeishuMessageCommand) -> PreparedAnalysis:
+        preflight = await self._preflight_recall_check(command)
+        if preflight is not None:
+            return PreparedAnalysis(
+                run=None,
+                definition=None,
+                snapshot=None,
+                idempotent_result=preflight,
+            )
         snapshot = await self._snapshot_builder.build_for_feishu_message(command.message_id)
         async with self._uow_factory() as uow:
             await uow.lock_idempotency(
@@ -323,6 +366,25 @@ class AnalyseFeishuMessageHandler:
                 raise EntityNotFoundError(
                     "Feishu message was not found.",
                     details={"code": "FEISHU_MESSAGE_NOT_FOUND"},
+                )
+            eligibility = MessageAnalysisEligibility.evaluate(
+                recalled_at=message.recalled_at,
+                actor_source=command.actor_source,
+                override_recalled=command.override_recalled,
+            )
+            if not eligibility.allowed:
+                result = await self._suppress_before_runtime(
+                    uow,
+                    message=message,
+                    command=command,
+                    phase="analysis_prepare",
+                )
+                await uow.commit()
+                return PreparedAnalysis(
+                    run=None,
+                    definition=None,
+                    snapshot=None,
+                    idempotent_result=result,
                 )
             active_candidate = await uow.candidates.get_active_for_message(message.id)
             runs = list(await uow.agent_runs.list_by_message(message.id))
@@ -559,12 +621,114 @@ class AnalyseFeishuMessageHandler:
                     correlation_id=command.correlation_id,
                 )
             )
+            if eligibility.manual_override:
+                await self._audit_manual_recall_override(
+                    uow,
+                    message_id=message.id,
+                    command=command,
+                    phase="analysis_prepare",
+                )
             await uow.commit()
             return PreparedAnalysis(run=run, definition=definition, snapshot=snapshot)
 
+    async def _preflight_recall_check(
+        self,
+        command: AnalyseFeishuMessageCommand,
+    ) -> AnalyseFeishuMessageResult | None:
+        async with self._uow_factory() as uow:
+            message = await uow.feishu.get_message_for_update(command.message_id)
+            if message is None:
+                raise EntityNotFoundError(
+                    "Feishu message was not found.",
+                    details={"code": "FEISHU_MESSAGE_NOT_FOUND"},
+                )
+            decision = MessageAnalysisEligibility.evaluate(
+                recalled_at=message.recalled_at,
+                actor_source=command.actor_source,
+                override_recalled=command.override_recalled,
+            )
+            if decision.allowed:
+                return None
+            result = await self._suppress_before_runtime(
+                uow,
+                message=message,
+                command=command,
+                phase="worker_preflight",
+            )
+            await uow.commit()
+            return result
+
+    @staticmethod
+    def _mark_message_suppressed(message: FeishuMessage) -> None:
+        if message.status in {
+            FeishuMessageStatus.QUEUED_FOR_ANALYSIS,
+            FeishuMessageStatus.CONTEXT_PREPARED,
+            FeishuMessageStatus.AGENT_QUEUED,
+            FeishuMessageStatus.ANALYSING,
+        }:
+            message.transition_to(
+                FeishuMessageStatus.ANALYSIS_FAILED,
+                failure_code="MESSAGE_RECALLED",
+                failure_message=(
+                    "Automatic analysis was suppressed because the message was recalled."
+                ),
+            )
+
+    async def _suppress_before_runtime(
+        self,
+        uow: UnitOfWork,
+        *,
+        message: FeishuMessage,
+        command: AnalyseFeishuMessageCommand,
+        phase: str,
+    ) -> AnalyseFeishuMessageResult:
+        self._mark_message_suppressed(message)
+        await uow.feishu.save_message(message)
+        await uow.audit_events.add(
+            AuditEvent(
+                id=uuid4(),
+                aggregate_type="feishu_message",
+                aggregate_id=message.id,
+                event_type="recalled_message_automatic_analysis_suppressed",
+                actor_id=command.actor_id,
+                actor_source=command.actor_source,
+                payload={"reason": "message_recalled", "phase": phase},
+                correlation_id=command.correlation_id,
+            )
+        )
+        return AnalyseFeishuMessageResult(
+            message_id=message.id,
+            agent_run_id=None,
+            status=None,
+            candidate_id=None,
+            idempotent_replay=False,
+            no_op_reason="message_recalled",
+        )
+
+    @staticmethod
+    async def _audit_manual_recall_override(
+        uow: UnitOfWork,
+        *,
+        message_id: UUID,
+        command: AnalyseFeishuMessageCommand,
+        phase: str,
+    ) -> None:
+        await uow.audit_events.add(
+            AuditEvent(
+                id=uuid4(),
+                aggregate_type="feishu_message",
+                aggregate_id=message_id,
+                event_type="recalled_message_manual_analysis_override",
+                actor_id=command.actor_id,
+                actor_source=command.actor_source,
+                payload={"reason": "explicit_user_override", "phase": phase},
+                correlation_id=command.correlation_id,
+            )
+        )
+
     async def _mark_running(
         self, run_id: UUID, command: AnalyseFeishuMessageCommand
-    ) -> tuple[AgentRun, AgentAttemptLease]:
+    ) -> tuple[AgentRun, AgentAttemptLease] | AnalyseFeishuMessageResult:
         async with self._uow_factory() as uow:
             run = await uow.agent_runs.get_for_update(run_id)
             if run is None or run.feishu_message_id is None:
@@ -579,6 +743,42 @@ class AnalyseFeishuMessageHandler:
                     "FEISHU_MESSAGE_NOT_FOUND",
                     "Feishu message disappeared before runtime execution.",
                     retryable=False,
+                )
+            eligibility = MessageAnalysisEligibility.evaluate(
+                recalled_at=message.recalled_at,
+                actor_source=command.actor_source,
+                override_recalled=command.override_recalled,
+            )
+            if not eligibility.allowed:
+                run.failure_code = "MESSAGE_RECALLED"
+                run.failure_message = (
+                    "Automatic analysis was suppressed before runtime because the message "
+                    "was recalled."
+                )
+                run.transition_to(AgentRunStatus.CANCELLED)
+                self._mark_message_suppressed(message)
+                await uow.agent_runs.save(run)
+                result = await self._suppress_before_runtime(
+                    uow,
+                    message=message,
+                    command=command,
+                    phase="runtime_start",
+                )
+                await uow.commit()
+                return AnalyseFeishuMessageResult(
+                    message_id=result.message_id,
+                    agent_run_id=run.id,
+                    status=run.status,
+                    candidate_id=None,
+                    idempotent_replay=False,
+                    no_op_reason=result.no_op_reason,
+                )
+            if eligibility.manual_override:
+                await self._audit_manual_recall_override(
+                    uow,
+                    message_id=message.id,
+                    command=command,
+                    phase="runtime_start",
                 )
             run.transition_to(AgentRunStatus.PREPARING)
             run.transition_to(AgentRunStatus.RUNNING)
@@ -669,6 +869,54 @@ class AnalyseFeishuMessageHandler:
             run.transition_to(AgentRunStatus.COMPLETED)
             candidate_id: UUID | None = None
             existing = await uow.candidates.get_active_for_message(message.id)
+            eligibility = MessageAnalysisEligibility.evaluate(
+                recalled_at=message.recalled_at,
+                actor_source=command.actor_source,
+                override_recalled=command.override_recalled,
+            )
+            if not eligibility.allowed:
+                message.transition_to(
+                    FeishuMessageStatus.CANDIDATE_CREATED
+                    if existing is not None
+                    else FeishuMessageStatus.IGNORED
+                )
+                await uow.agent_runs.save(run)
+                await uow.feishu.save_message(message)
+                await uow.audit_events.add(
+                    AuditEvent(
+                        id=uuid4(),
+                        aggregate_type="agent_run",
+                        aggregate_id=run.id,
+                        event_type="recalled_message_candidate_persistence_suppressed",
+                        actor_id=command.actor_id,
+                        actor_source=command.actor_source,
+                        payload={
+                            "messageId": str(message.id),
+                            "reason": eligibility.reason,
+                            "existingCandidateId": (
+                                str(existing.id) if existing is not None else None
+                            ),
+                            "agentRunRetained": True,
+                        },
+                        correlation_id=command.correlation_id,
+                    )
+                )
+                await uow.commit()
+                return AnalyseFeishuMessageResult(
+                    message_id=message.id,
+                    agent_run_id=run.id,
+                    status=run.status,
+                    candidate_id=None,
+                    idempotent_replay=False,
+                    no_op_reason=eligibility.reason,
+                )
+            if eligibility.manual_override:
+                await self._audit_manual_recall_override(
+                    uow,
+                    message_id=message.id,
+                    command=command,
+                    phase="candidate_persistence",
+                )
             if should_create_candidate(output):
                 category_proposals = self._candidate_categories(output)
                 requires_manual_review = (

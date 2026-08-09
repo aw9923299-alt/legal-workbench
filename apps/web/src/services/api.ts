@@ -381,22 +381,32 @@ export const legalApi = {
     return request(`/feishu/messages/${messageId}/analysis`, {}, { authenticated: true });
   },
 
-  retryMessageAnalysis(messageId: string, mutation?: MutationContext): Promise<{
+  retryMessageAnalysis(
+    messageId: string,
+    mutation?: MutationContext,
+    overrideRecalled = false,
+  ): Promise<{
     messageId: string;
     messageStatus: string;
     idempotentReplay: boolean;
   }> {
-    return request(`/feishu/messages/${messageId}/retry-analysis`, {
+    const query = overrideRecalled ? '?override_recalled=true' : '';
+    return request(`/feishu/messages/${messageId}/retry-analysis${query}`, {
       method: 'POST',
     }, { write: true, mutation });
   },
 
-  analyseMessage(messageId: string, mutation?: MutationContext): Promise<{
+  analyseMessage(
+    messageId: string,
+    mutation?: MutationContext,
+    overrideRecalled = false,
+  ): Promise<{
     messageId: string;
     messageStatus: string;
     idempotentReplay: boolean;
   }> {
-    return request(`/feishu/messages/${messageId}/analyse`, {
+    const query = overrideRecalled ? '?override_recalled=true' : '';
+    return request(`/feishu/messages/${messageId}/analyse${query}`, {
       method: 'POST',
     }, { write: true, mutation });
   },
@@ -411,10 +421,19 @@ export const legalApi = {
     return request(`/agent-runs/${runId}`, {}, { authenticated: true });
   },
 
-  retryAgentRun(runId: string, mutation?: MutationContext): Promise<{
+  retryAgentRun(
+    runId: string,
+    mutation?: MutationContext,
+    overrideRecalled = false,
+  ): Promise<{
     messageId: string; messageStatus: string; idempotentReplay: boolean;
   }> {
-    return request(`/agent-runs/${runId}/retry`, { method: 'POST' }, { write: true, mutation });
+    const query = overrideRecalled ? '?override_recalled=true' : '';
+    return request(
+      `/agent-runs/${runId}/retry${query}`,
+      { method: 'POST' },
+      { write: true, mutation },
+    );
   },
 
   cancelAgentRun(runId: string, mutation?: MutationContext): Promise<{
@@ -534,7 +553,14 @@ export const legalApi = {
   syncFeishuUserScope(
     scopeId: string,
     mutation?: MutationContext,
-  ): Promise<{ scopeId: string; ingestedCount: number; startedAt: string; completedAt: string }> {
+  ): Promise<{
+    scopeId: string;
+    ingestedCount: number;
+    claimedAt: string;
+    windowStart: string;
+    windowEnd: string;
+    completedAt: string;
+  }> {
     return request(`/integrations/feishu-user/scopes/${scopeId}/sync`, {
       method: 'POST',
     }, { write: true, mutation });

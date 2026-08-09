@@ -1,0 +1,76 @@
+{
+  "generatedAt": "2026-08-09T05:17:56Z",
+  "launchd": {
+    "status": "passed",
+    "supervisorInstalled": true,
+    "supervisorLoaded": true,
+    "supervisorRuns": 3,
+    "supervisorLastExitCode": 0,
+    "backupInstalled": true,
+    "backupLoaded": true,
+    "plistLint": "passed"
+  },
+  "sleepWake": {
+    "status": "manual_validation_required",
+    "sleepAt": null,
+    "wakeAt": null,
+    "physicalSleepAttempted": false,
+    "blocker": "pmset_schedule_wake_requires_root_and_noninteractive_sudo_is_unavailable",
+    "safetyDecision": "host_not_put_to_sleep_without_a_guaranteed_wake_event"
+  },
+  "serviceBaseline": {
+    "status": "passed",
+    "postgres": "healthy",
+    "redis": "healthy",
+    "api": "healthy",
+    "worker": "running_and_pingable",
+    "scheduler": "running",
+    "web": "running",
+    "apiReadiness": "database_and_redis_ready"
+  },
+  "serviceRecoveryAfterPhysicalWake": {
+    "status": "manual_validation_required",
+    "reason": "physical_sleep_wake_not_executed"
+  },
+  "scheduler": {
+    "status": "passed",
+    "heartbeatAt": "2026-08-09T05:04:12.813640Z",
+    "scheduledSyncAt": "2026-08-09T05:04:12Z",
+    "scheduledSyncState": "completed",
+    "lastPersonalSyncAt": "2026-08-09T05:06:32.929232Z",
+    "lastPersonalSyncSource": "manual_regression_after_scheduled_validation",
+    "eligibleScopeCount": 1,
+    "failedScopeCount": 0,
+    "ingestedCount": 0
+  },
+  "manualSync": {
+    "status": "passed",
+    "claimedAt": "2026-08-09T05:06:32.929232Z",
+    "windowStart": "2026-08-09T05:01:12.341494Z",
+    "windowEnd": "2026-08-09T05:06:32.929232Z",
+    "completedAt": "2026-08-09T05:06:33.287732Z",
+    "ingestedCount": 0
+  },
+  "newMessageAfterWake": {
+    "status": "manual_validation_required",
+    "reason": "no_physical_wake_and_no_new_external_message_during_acceptance_window",
+    "currentPersistedMessageCount": 13
+  },
+  "backupRestore": {
+    "status": "passed",
+    "backupFormat": "postgres_custom",
+    "catalogValidation": "passed",
+    "catalogEntryCount": 322,
+    "backupSizeBytes": 250621,
+    "backupSha256": "aa1472cc60d31d58944d1d2f18b6c227ee3ee53db1070989ddd5e4cf0df0eff5",
+    "isolatedRestoreDatabase": "legal_workbench_restore_20260809",
+    "migrationHead": "20260808_0017",
+    "coreRecordCounts": {
+      "feishuMessages": 13,
+      "agentRuns": 15,
+      "auditEvents": 139
+    },
+    "productionDatabaseOverwritten": false,
+    "isolatedRestoreDatabaseDropped": true
+  }
+}

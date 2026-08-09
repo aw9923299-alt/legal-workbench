@@ -12,6 +12,11 @@ from uuid import UUID
 import httpx
 from pydantic import BaseModel, ConfigDict
 
+from legal_workbench.application.feishu_capabilities import (
+    CAPABILITY_LABELS,
+    FeishuCapability,
+    project_capabilities,
+)
 from legal_workbench.application.feishu_user_auth import FeishuUserTokenProvider
 from legal_workbench.config import get_settings
 from legal_workbench.infrastructure.secrets import LocalSecretProvider
@@ -37,6 +42,26 @@ PERSONAL_CAPABILITY_KEYS = (
 )
 
 
+def _first_document_token(value: object) -> str | None:
+    if not isinstance(value, tuple) or not value:
+        return None
+    documents = value[0]
+    if not isinstance(documents, tuple):
+        return None
+    for document in documents:
+        if not isinstance(document, dict):
+            continue
+        token = str(
+            document.get("doc_token")
+            or document.get("document_token")
+            or document.get("token")
+            or ""
+        ).strip()
+        if token:
+            return token
+    return None
+
+
 class CapabilityResult(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -50,6 +75,9 @@ class CapabilityReport(BaseModel):
 
     generated_at: datetime
     real_feishu: bool
+    identity_source: str
+    cli_token_used: bool
+    operational_readiness: dict[str, str]
     results: tuple[CapabilityResult, ...]
 
 
@@ -57,6 +85,14 @@ def build_unavailable_report(*, reason: str) -> CapabilityReport:
     return CapabilityReport(
         generated_at=datetime.now(UTC),
         real_feishu=False,
+        identity_source="unavailable",
+        cli_token_used=False,
+        operational_readiness={
+            "Identity": "unsupported",
+            "Messages": "unsupported",
+            "Chat discovery": "unsupported",
+            "Documents": "unsupported",
+        },
         results=tuple(
             CapabilityResult(
                 capability=capability,
@@ -258,20 +294,23 @@ async def run_live_report(
                         status="partial",
                         reason="message_visible_but_attachment_key_missing",
                     )
+        discovered_document_token: str | None = None
         if document_query:
-            await record(
+            document_search_value = await record(
                 "document_search",
                 client.search_documents(
                     authorization_id=authorization_id,
                     query=document_query,
                 ),
             )
-        if document_token:
+            discovered_document_token = _first_document_token(document_search_value)
+        markdown_token = document_token or discovered_document_token
+        if markdown_token:
             await record(
                 "document_markdown",
                 client.get_document_markdown(
                     authorization_id=authorization_id,
-                    document_id=document_token,
+                    document_id=markdown_token,
                 ),
             )
         if thread_id:
@@ -314,6 +353,19 @@ async def run_live_report(
     return CapabilityReport(
         generated_at=datetime.now(UTC),
         real_feishu=True,
+        identity_source="workbench_oauth_token_provider",
+        cli_token_used=False,
+        operational_readiness={
+            CAPABILITY_LABELS[capability]: project_capabilities(authorization.scopes)[
+                capability
+            ].status.value
+            for capability in (
+                FeishuCapability.CORE_IDENTITY,
+                FeishuCapability.MESSAGE_HISTORY,
+                FeishuCapability.CHAT_DISCOVERY,
+                FeishuCapability.DOCUMENT_READ,
+            )
+        },
         results=tuple(results[key] for key in PERSONAL_CAPABILITY_KEYS),
     )
 

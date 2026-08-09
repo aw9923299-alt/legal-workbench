@@ -28,6 +28,8 @@ legal_workbench/
 └─ workers/          异步任务入口
 ```
 
+`domain` 内按 agents、audit、candidates、documents、evaluations、feishu、matters、reviews、setup、work_items 聚合；`entities.py` 只保留向后兼容的 public re-export。`application/ports/` 按应用所需接口的领域内聚拆分，并由 package `__init__.py` 兼容旧 import。该拆分不产生独立部署单元或网络边界。
+
 依赖方向：
 
 ```text

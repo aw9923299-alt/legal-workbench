@@ -17,6 +17,8 @@ from legal_workbench.application.context_snapshots import ContextSnapshotBuilder
 from legal_workbench.application.message_analysis import (
     AnalyseFeishuMessageCommand,
     AnalyseFeishuMessageHandler,
+    RequestFeishuMessageAnalysisCommand,
+    RequestFeishuMessageAnalysisHandler,
 )
 from legal_workbench.domain.entities import (
     AgentAttemptLease,
@@ -28,6 +30,7 @@ from legal_workbench.domain.entities import (
     CandidateRevision,
     ContextSnapshot,
     FeishuMessage,
+    IdempotencyRecord,
     MessageCandidate,
     OutboxEvent,
 )
@@ -313,6 +316,17 @@ class AppendRepository:
         self.values.append(value)
 
 
+class IdempotencyRepository:
+    def __init__(self, state: FakeState) -> None:
+        self.state = state
+
+    async def get(self, *, operation: str, key: str) -> IdempotencyRecord | None:
+        return self.state.idempotency_records.get((operation, key))
+
+    async def add(self, record: IdempotencyRecord) -> None:
+        self.state.idempotency_records[(record.operation, record.idempotency_key)] = record
+
+
 class DocumentRepository:
     async def list_latest_segments(self, attachment_ids: Sequence[UUID]) -> Sequence[object]:
         del attachment_ids
@@ -338,6 +352,7 @@ class FakeUnitOfWork:
         self.candidates = CandidateRepository(state)
         self.audit_events = AppendRepository(state.audit_events)
         self.outbox_events = AppendRepository(state.outbox_events)
+        self.idempotency = IdempotencyRepository(state)
 
     async def __aenter__(self) -> FakeUnitOfWork:
         self.state.active_uows += 1
@@ -370,6 +385,7 @@ class FakeState:
         self.candidate_revisions: list[CandidateRevision] = []
         self.audit_events: list[object] = []
         self.outbox_events: list[object] = []
+        self.idempotency_records: dict[tuple[str, str], IdempotencyRecord] = {}
         self.locks: list[tuple[str, str]] = []
         self.commits = 0
         self.active_uows = 0
@@ -417,6 +433,33 @@ def make_handler(state: FakeState, runtime: FakeRuntime) -> AnalyseFeishuMessage
         builder,
         runs_root="/tmp/legal-workbench-test-runs",
         manual_review_threshold=0.75,
+    )
+
+
+@pytest.mark.asyncio
+async def test_explicit_recall_override_intent_is_persisted_and_audited(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    state = FakeState(tmp_path)
+    message = make_message()
+    state.messages[message.id] = message
+
+    await RequestFeishuMessageAnalysisHandler(state.factory).execute(
+        RequestFeishuMessageAnalysisCommand(
+            message_id=message.id,
+            actor_id="legal-reviewer",
+            actor_source="user",
+            correlation_id="corr-explicit-override-request",
+            idempotency_key="idem-explicit-override-request",
+            override_recalled=True,
+        )
+    )
+
+    event = next(value for value in state.outbox_events if isinstance(value, OutboxEvent))
+    assert event.payload["overrideRecalled"] is True
+    assert any(
+        isinstance(value, AuditEvent)
+        and value.event_type == "recalled_message_manual_analysis_override_requested"
+        and value.payload["explicitOverride"] is True
+        for value in state.audit_events
     )
 
 
@@ -494,6 +537,192 @@ async def test_explicit_manual_analysis_can_override_store_only(tmp_path) -> Non
 
     assert result.status == AgentRunStatus.COMPLETED
     assert result.candidate_id is not None
+
+
+@pytest.mark.asyncio
+async def test_recalled_message_worker_delivery_is_audited_noop_before_runtime(
+    tmp_path,
+) -> None:  # type: ignore[no-untyped-def]
+    state = FakeState(tmp_path)
+    message = make_message()
+    message.recalled_at = datetime(2026, 8, 9, 1, 10, tzinfo=UTC)
+    state.messages[message.id] = message
+    runtime = FakeRuntime(state)
+
+    result = await make_handler(state, runtime).execute(
+        AnalyseFeishuMessageCommand(
+            message_id=message.id,
+            actor_id="analysis-worker",
+            actor_source="worker",
+            correlation_id="corr-recalled-before-runtime",
+        )
+    )
+
+    assert result.agent_run_id is None
+    assert result.status is None
+    assert result.candidate_id is None
+    assert result.no_op_reason == "message_recalled"
+    assert runtime.calls == 0
+    assert state.runs == {}
+    assert state.candidates == {}
+    assert any(
+        isinstance(event, AuditEvent)
+        and event.event_type == "recalled_message_automatic_analysis_suppressed"
+        for event in state.audit_events
+    )
+
+
+@pytest.mark.asyncio
+async def test_explicit_user_override_analyses_recalled_message_and_is_audited(
+    tmp_path,
+) -> None:  # type: ignore[no-untyped-def]
+    state = FakeState(tmp_path)
+    message = make_message()
+    message.recalled_at = datetime(2026, 8, 9, 1, 12, tzinfo=UTC)
+    state.messages[message.id] = message
+    runtime = FakeRuntime(state)
+
+    result = await make_handler(state, runtime).execute(
+        AnalyseFeishuMessageCommand(
+            message_id=message.id,
+            actor_id="legal-reviewer",
+            actor_source="user",
+            correlation_id="corr-recalled-manual-override",
+            force_new_run=True,
+            override_recalled=True,
+        )
+    )
+
+    assert result.status == AgentRunStatus.COMPLETED
+    assert result.candidate_id is not None
+    assert runtime.calls == 1
+    assert any(
+        isinstance(event, AuditEvent)
+        and event.event_type == "recalled_message_manual_analysis_override"
+        and event.actor_id == "legal-reviewer"
+        and event.actor_source == "user"
+        for event in state.audit_events
+    )
+
+
+@pytest.mark.asyncio
+async def test_user_source_without_explicit_override_cannot_analyse_recalled_message(
+    tmp_path,
+) -> None:  # type: ignore[no-untyped-def]
+    state = FakeState(tmp_path)
+    message = make_message()
+    message.recalled_at = datetime(2026, 8, 9, 1, 13, tzinfo=UTC)
+    state.messages[message.id] = message
+    runtime = FakeRuntime(state)
+
+    result = await make_handler(state, runtime).execute(
+        AnalyseFeishuMessageCommand(
+            message_id=message.id,
+            actor_id="legal-reviewer",
+            actor_source="user",
+            correlation_id="corr-recalled-user-without-override",
+        )
+    )
+
+    assert result.no_op_reason == "message_recalled"
+    assert result.candidate_id is None
+    assert runtime.calls == 0
+
+
+class RecallDuringRuntime(FakeRuntime):
+    async def execute(self, definition, run, context):  # type: ignore[no-untyped-def]
+        execution = await super().execute(definition, run, context)
+        self.state.messages[run.feishu_message_id].recalled_at = datetime(
+            2026, 8, 9, 1, 15, tzinfo=UTC
+        )
+        return execution
+
+
+@pytest.mark.asyncio
+async def test_automatic_run_that_started_before_recall_keeps_run_but_not_candidate(
+    tmp_path,
+) -> None:  # type: ignore[no-untyped-def]
+    state = FakeState(tmp_path)
+    message = make_message()
+    state.messages[message.id] = message
+    runtime = RecallDuringRuntime(state)
+
+    result = await make_handler(state, runtime).execute(
+        AnalyseFeishuMessageCommand(
+            message_id=message.id,
+            actor_id="analysis-worker",
+            actor_source="worker",
+            correlation_id="corr-recall-during-runtime",
+        )
+    )
+
+    assert result.status == AgentRunStatus.COMPLETED
+    assert result.agent_run_id is not None
+    assert state.runs[result.agent_run_id].output_payload
+    assert result.candidate_id is None
+    assert result.no_op_reason == "message_recalled"
+    assert state.candidates == {}
+    assert state.candidate_revisions == []
+    assert state.messages[message.id].status == FeishuMessageStatus.IGNORED
+    assert any(
+        isinstance(event, AuditEvent)
+        and event.event_type == "recalled_message_candidate_persistence_suppressed"
+        for event in state.audit_events
+    )
+
+
+@pytest.mark.asyncio
+async def test_user_request_without_explicit_override_recalled_during_runtime_is_suppressed(
+    tmp_path,
+) -> None:  # type: ignore[no-untyped-def]
+    state = FakeState(tmp_path)
+    message = make_message()
+    state.messages[message.id] = message
+    runtime = RecallDuringRuntime(state)
+
+    result = await make_handler(state, runtime).execute(
+        AnalyseFeishuMessageCommand(
+            message_id=message.id,
+            actor_id="legal-reviewer",
+            actor_source="user",
+            correlation_id="corr-user-recall-during-runtime",
+        )
+    )
+
+    assert result.status == AgentRunStatus.COMPLETED
+    assert result.no_op_reason == "message_recalled"
+    assert result.candidate_id is None
+    assert state.candidates == {}
+    assert state.candidate_revisions == []
+
+
+@pytest.mark.asyncio
+async def test_explicit_override_recalled_during_runtime_persists_candidate_with_audit(
+    tmp_path,
+) -> None:  # type: ignore[no-untyped-def]
+    state = FakeState(tmp_path)
+    message = make_message()
+    state.messages[message.id] = message
+    runtime = RecallDuringRuntime(state)
+
+    result = await make_handler(state, runtime).execute(
+        AnalyseFeishuMessageCommand(
+            message_id=message.id,
+            actor_id="legal-reviewer",
+            actor_source="user",
+            correlation_id="corr-explicit-override-recall-during-runtime",
+            override_recalled=True,
+        )
+    )
+
+    assert result.status == AgentRunStatus.COMPLETED
+    assert result.candidate_id is not None
+    assert any(
+        isinstance(event, AuditEvent)
+        and event.event_type == "recalled_message_manual_analysis_override"
+        and event.payload["phase"] == "candidate_persistence"
+        for event in state.audit_events
+    )
 
 
 @pytest.mark.asyncio

@@ -744,6 +744,8 @@ def test_compose_host_operation_overrides_drive_bind_sources() -> None:
     assert attachment_volume in api_volumes
     assert attachment_volume in worker_volumes
     assert attachment_volume in connector_volumes
+    assert "./data/local-secrets:/data/local-secrets" in api_volumes
+    assert "./data/local-secrets:/data/local-secrets" in worker_volumes
 
 
 def test_system_status_reads_disk_backup_and_wake_metadata(tmp_path: Path) -> None:
