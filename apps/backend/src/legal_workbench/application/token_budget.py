@@ -28,6 +28,73 @@ class DeterministicTokenEstimator:
 
 
 @dataclass(frozen=True, slots=True)
+class BudgetedTextSlice:
+    start_offset: int
+    end_offset: int
+    text: str
+    estimated_token_count: int
+
+
+def split_text_for_token_budget(
+    text: str,
+    *,
+    max_tokens: int,
+    estimator: DeterministicTokenEstimator,
+) -> tuple[BudgetedTextSlice, ...]:
+    """Split deterministically without changing or reordering the source text."""
+
+    if max_tokens < 1:
+        raise ValueError("Chunk token limit must be positive.")
+    if not text:
+        return ()
+    max_bytes = max_tokens * 4
+    values: list[BudgetedTextSlice] = []
+    start = 0
+    while start < len(text):
+        byte_count = 0
+        hard_end = start
+        while hard_end < len(text):
+            next_bytes = len(text[hard_end].encode("utf-8"))
+            if hard_end > start and byte_count + next_bytes > max_bytes:
+                break
+            byte_count += next_bytes
+            hard_end += 1
+            if byte_count >= max_bytes:
+                break
+        end = _preferred_split_end(text, start=start, hard_end=hard_end)
+        if end <= start:
+            end = hard_end
+        piece = text[start:end]
+        estimate = estimator.estimate(piece).tokens
+        while estimate > max_tokens and end > start + 1:
+            end -= 1
+            piece = text[start:end]
+            estimate = estimator.estimate(piece).tokens
+        if piece.strip():
+            values.append(
+                BudgetedTextSlice(
+                    start_offset=start,
+                    end_offset=end,
+                    text=piece,
+                    estimated_token_count=estimate,
+                )
+            )
+        start = end
+    return tuple(values)
+
+
+def _preferred_split_end(text: str, *, start: int, hard_end: int) -> int:
+    if hard_end >= len(text):
+        return hard_end
+    minimum = start + max((hard_end - start) // 2, 1)
+    for marker in ("\n\n", "\n", "。", "！", "？", "；", ". ", "; "):  # noqa: RUF001
+        position = text.rfind(marker, minimum, hard_end)
+        if position >= minimum:
+            return position + len(marker)
+    return hard_end
+
+
+@dataclass(frozen=True, slots=True)
 class KnowledgeBudget:
     max_chunks: int
     max_tokens: int

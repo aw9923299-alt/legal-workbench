@@ -2,11 +2,14 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from pathlib import Path
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 
-from legal_workbench.application.local_knowledge_import import LocalKnowledgeImportService
+from legal_workbench.application.local_knowledge_import import (
+    LocalKnowledgeImportService,
+    infer_authority_type,
+)
 from legal_workbench.domain.documents import (
     DocumentExtraction,
     DocumentSegment,
@@ -17,8 +20,15 @@ from legal_workbench.domain.documents import (
     LocalDocumentSource,
     LocalKnowledgeScan,
 )
-from legal_workbench.domain.enums import DocumentExtractionStatus, LocalDocumentSourceStatus
+from legal_workbench.domain.enums import (
+    AuthorityStatus,
+    AuthorityType,
+    DocumentExtractionStatus,
+    KnowledgeMetadataStatus,
+    LocalDocumentSourceStatus,
+)
 from legal_workbench.domain.knowledge import KnowledgeChunk, KnowledgeDocument
+from legal_workbench.integrations.local_knowledge_files import scan_local_knowledge_files
 
 
 class _Extractor:
@@ -123,6 +133,16 @@ class _Documents:
 
     async def add_extraction(self, extraction: DocumentExtraction) -> None:
         self.extractions[extraction.id] = extraction
+
+    async def find_latest_extraction(
+        self, document_version_id: UUID
+    ) -> DocumentExtraction | None:
+        values = [
+            value
+            for value in self.extractions.values()
+            if value.document_version_id == document_version_id
+        ]
+        return values[-1] if values else None
 
     async def get_extraction_for_update(self, extraction_id: UUID) -> DocumentExtraction | None:
         return self.extractions.get(extraction_id)
@@ -275,3 +295,183 @@ async def test_parse_failure_isolated_and_source_body_is_not_returned(tmp_path: 
     assert result.status.value == "partial"
     assert "sensitive bad body" not in repr(result)
     assert len(uow.knowledge.documents) == 1
+
+
+@pytest.mark.asyncio
+async def test_failed_and_interrupted_extractions_are_retried_without_new_version(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "materials"
+    source.mkdir()
+    document = source / "retry.txt"
+    document.write_text("retryable content", encoding="utf-8")
+    uow = _UnitOfWorkFactory()
+    failing = LocalKnowledgeImportService(
+        uow, _Extractor(failing_names={"retry.txt"})
+    )
+
+    failed = await failing.execute(
+        source=source,
+        source_root_key="codex_obs_legal",
+        correlation_id="scan-failed",
+    )
+    recovered = await LocalKnowledgeImportService(uow, _Extractor()).execute(
+        source=source,
+        source_root_key="codex_obs_legal",
+        correlation_id="scan-recovered",
+    )
+
+    assert failed.failed_count == 1
+    assert recovered.imported_count == 1
+    assert recovered.unchanged_count == 0
+    assert len(uow.documents.versions) == 1
+    assert len(uow.documents.extractions) == 2
+    assert len(uow.knowledge.documents) == 1
+
+    second = source / "interrupted.txt"
+    second.write_text("interrupted content", encoding="utf-8")
+    candidate = next(
+        value
+        for value in scan_local_knowledge_files(source).files
+        if value.relative_path == "interrupted.txt"
+    )
+    interrupted_scan = LocalKnowledgeScan(
+        id=uuid4(),
+        source_root_key="codex_obs_legal",
+        correlation_id="prepare-only",
+    )
+    async with uow() as unit:
+        await unit.documents.add_local_scan(interrupted_scan)
+    action, _prepared = await LocalKnowledgeImportService(uow, _Extractor())._prepare(
+        interrupted_scan, candidate
+    )
+    assert action == "extract"
+
+    after_crash = await LocalKnowledgeImportService(uow, _Extractor()).execute(
+        source=source,
+        source_root_key="codex_obs_legal",
+        correlation_id="scan-after-crash",
+    )
+
+    assert after_crash.imported_count == 1
+    interrupted_versions = [
+        value
+        for value in uow.documents.versions.values()
+        if value.file_name == "interrupted.txt"
+    ]
+    assert len(interrupted_versions) == 1
+    assert len(
+        [
+            value
+            for value in uow.documents.extractions.values()
+            if value.document_version_id == interrupted_versions[0].id
+        ]
+    ) == 2
+
+
+@pytest.mark.asyncio
+async def test_failed_canonical_content_is_not_treated_as_deduplicated(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "materials"
+    source.mkdir()
+    (source / "a-fails.txt").write_text("shared content", encoding="utf-8")
+    (source / "b-recovers.txt").write_text("shared content", encoding="utf-8")
+    uow = _UnitOfWorkFactory()
+
+    result = await LocalKnowledgeImportService(
+        uow,
+        _Extractor(failing_names={"a-fails.txt"}),
+    ).execute(
+        source=source,
+        source_root_key="codex_obs_legal",
+        correlation_id="scan-dedup-retry",
+    )
+
+    assert result.failed_count == 1
+    assert result.imported_count == 1
+    assert result.deduplicated_count == 0
+    assert len(uow.documents.versions) == 1
+    assert len(uow.knowledge.documents) == 1
+
+
+@pytest.mark.asyncio
+async def test_import_rejects_file_changed_after_scan(tmp_path: Path) -> None:
+    class _MutatingExtractor(_Extractor):
+        def extract(self, path: Path, mime_type: str) -> ExtractedDocument:
+            result = super().extract(path, mime_type)
+            path.write_text("changed during import", encoding="utf-8")
+            return result
+
+    source = tmp_path / "materials"
+    source.mkdir()
+    (source / "race.txt").write_text("original content", encoding="utf-8")
+    uow = _UnitOfWorkFactory()
+
+    result = await LocalKnowledgeImportService(uow, _MutatingExtractor()).execute(
+        source=source,
+        source_root_key="codex_obs_legal",
+        correlation_id="scan-race",
+    )
+
+    assert result.failed_count == 1
+    assert not uow.knowledge.documents
+    assert next(iter(uow.documents.extractions.values())).error_code == (
+        "LOCAL_SOURCE_CHANGED_DURING_IMPORT"
+    )
+
+
+@pytest.mark.asyncio
+async def test_import_splits_oversized_segments_with_traceable_locators(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "materials" / "法律"
+    source.mkdir(parents=True)
+    content = "超长法律段落。" * 100
+    (source / "测试法.txt").write_text(content, encoding="utf-8")
+    uow = _UnitOfWorkFactory()
+
+    result = await LocalKnowledgeImportService(
+        uow,
+        _Extractor(),
+        max_single_chunk_tokens=20,
+    ).execute(
+        source=source.parent,
+        source_root_key="codex_obs_legal",
+        correlation_id="scan-split",
+    )
+
+    assert result.imported_count == 1
+    assert len(uow.knowledge.chunks) > 1
+    assert all(value.estimated_token_count <= 20 for value in uow.knowledge.chunks)
+    assert "".join(value.text for value in uow.knowledge.chunks) == content
+    assert all("chars:" in value.locator for value in uow.knowledge.chunks)
+
+
+def test_authority_inference_uses_unambiguous_directory_segments_only() -> None:
+    assert infer_authority_type(
+        "法律/中华人民共和国劳动合同法.txt"
+    ) == AuthorityType.LAW
+    assert infer_authority_type("公司制度/合同审批制度.md") == AuthorityType.COMPANY_POLICY
+    assert infer_authority_type("法律/合同/冲突资料.txt") == AuthorityType.UNKNOWN
+
+
+@pytest.mark.asyncio
+async def test_inferred_authority_stays_pending_until_effectiveness_is_confirmed(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "materials" / "法律"
+    source.mkdir(parents=True)
+    (source / "测试法.txt").write_text("法律正文", encoding="utf-8")
+    uow = _UnitOfWorkFactory()
+
+    await LocalKnowledgeImportService(uow, _Extractor()).execute(
+        source=source.parent,
+        source_root_key="codex_obs_legal",
+        correlation_id="scan-authority-pending",
+    )
+
+    document = uow.knowledge.documents[0]
+    assert document.authority_type == AuthorityType.LAW
+    assert document.authority_status == AuthorityStatus.UNKNOWN
+    assert document.metadata_status == KnowledgeMetadataStatus.PENDING_METADATA

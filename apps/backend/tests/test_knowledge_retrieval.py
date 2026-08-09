@@ -137,6 +137,38 @@ async def test_registration_reuses_document_segments_without_parsing_again() -> 
 
 
 @pytest.mark.asyncio
+async def test_registration_splits_oversized_segments_before_retrieval() -> None:
+    factory = FakeUowFactory()
+    content = "通用管道超长段落。" * 80
+    segment = DocumentSegment(
+        id=uuid4(),
+        extraction_id=uuid4(),
+        attachment_id=uuid4(),
+        page_number=1,
+        paragraph_number=1,
+        start_offset=0,
+        end_offset=len(content),
+        content=content,
+        content_hash=sha256(content.encode()).hexdigest(),
+        created_at=datetime.now(UTC),
+    )
+
+    await KnowledgeRegistrationService(
+        factory,
+        max_single_chunk_tokens=24,
+    ).register_document_version(
+        document_version_id=uuid4(),
+        segments=[segment],
+        metadata=_metadata(),
+    )
+
+    assert len(factory.knowledge.chunks) > 1
+    assert "".join(value.text for value in factory.knowledge.chunks) == content
+    assert all(value.estimated_token_count <= 24 for value in factory.knowledge.chunks)
+    assert all(value.document_segment_id == segment.id for value in factory.knowledge.chunks)
+
+
+@pytest.mark.asyncio
 async def test_internal_precedent_is_labeled_and_retrieval_is_audited() -> None:
     factory = FakeUowFactory()
     service = KnowledgeRegistrationService(factory)

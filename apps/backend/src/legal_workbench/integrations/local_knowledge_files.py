@@ -63,6 +63,10 @@ class LocalKnowledgeFileScan:
     skipped_symlink_count: int
 
 
+class LocalKnowledgeFileChangedError(Exception):
+    code = "LOCAL_SOURCE_CHANGED_DURING_IMPORT"
+
+
 def scan_local_knowledge_files(source: Path) -> LocalKnowledgeFileScan:
     root = source.resolve(strict=True)
     if not root.is_dir():
@@ -148,3 +152,12 @@ def _sha256_file(path: Path) -> str:
         while chunk := stream.read(1024 * 1024):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def fingerprint_local_knowledge_file(path: Path) -> tuple[str, int, int]:
+    before = path.stat()
+    digest = _sha256_file(path)
+    after = path.stat()
+    if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
+        raise LocalKnowledgeFileChangedError
+    return digest, after.st_size, after.st_mtime_ns

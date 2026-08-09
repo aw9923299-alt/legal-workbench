@@ -1,12 +1,17 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from hashlib import sha256
 from pathlib import Path, PurePosixPath
 from typing import Protocol
 from uuid import UUID, uuid4
 
 from legal_workbench.application.ports import UnitOfWork, UnitOfWorkFactory
-from legal_workbench.application.token_budget import DeterministicTokenEstimator
+from legal_workbench.application.token_budget import (
+    PROVISIONAL_DEFAULT_KNOWLEDGE_BUDGET,
+    DeterministicTokenEstimator,
+    split_text_for_token_budget,
+)
 from legal_workbench.domain.common import utc_now
 from legal_workbench.domain.documents import (
     DocumentExtraction,
@@ -32,6 +37,8 @@ from legal_workbench.domain.knowledge import (
 )
 from legal_workbench.integrations.local_knowledge_files import (
     LocalKnowledgeFile,
+    LocalKnowledgeFileChangedError,
+    fingerprint_local_knowledge_file,
     scan_local_knowledge_files,
 )
 
@@ -49,15 +56,29 @@ class _PreparedLocalExtraction:
     mime_type: str = field(repr=False)
     relative_path: str
     display_name: str
+    expected_sha256: str
+    expected_size: int
+    expected_modified_at_ns: int
 
 
 class LocalKnowledgeImportService:
     """Incrementally persist a read-only local tree through Document and Knowledge."""
 
-    def __init__(self, uow_factory: UnitOfWorkFactory, extractor: LocalDocumentExtractor) -> None:
+    def __init__(
+        self,
+        uow_factory: UnitOfWorkFactory,
+        extractor: LocalDocumentExtractor,
+        *,
+        max_single_chunk_tokens: int = (
+            PROVISIONAL_DEFAULT_KNOWLEDGE_BUDGET.max_single_chunk_tokens
+        ),
+    ) -> None:
         self._uow_factory = uow_factory
         self._extractor = extractor
         self._token_estimator = DeterministicTokenEstimator()
+        if max_single_chunk_tokens < 1:
+            raise ValueError("Knowledge single-Chunk token limit must be positive.")
+        self._max_single_chunk_tokens = max_single_chunk_tokens
 
     async def execute(
         self,
@@ -139,6 +160,7 @@ class LocalKnowledgeImportService:
                 and latest is not None
                 and latest.content_sha256 == candidate.content_sha256
                 and latest.document_version_id is not None
+                and await self._version_is_searchable(uow, latest.document_version_id)
             ):
                 await uow.documents.add_local_observation(
                     self._observation(scan.id, source.id, candidate, latest.document_version_id)
@@ -156,12 +178,52 @@ class LocalKnowledgeImportService:
             canonical = await uow.documents.find_any_local_version_by_sha256(
                 candidate.content_sha256
             )
-            if canonical is not None:
+            if canonical is not None and await self._version_is_searchable(
+                uow, canonical.id
+            ):
                 await uow.documents.add_local_observation(
                     self._observation(scan.id, source.id, candidate, canonical.id)
                 )
                 await uow.commit()
                 return "deduplicated", None
+
+            retry_version = None
+            if (
+                latest is not None
+                and latest.content_sha256 == candidate.content_sha256
+                and latest.document_version_id is not None
+            ):
+                retry_version = await uow.documents.get_version(
+                    latest.document_version_id
+                )
+            if retry_version is None:
+                retry_version = canonical
+
+            if retry_version is not None:
+                if retry_version.local_source_id is None:
+                    raise RuntimeError("Local content hash resolved to a non-local version.")
+                extraction = DocumentExtraction(
+                    id=uuid4(),
+                    document_version_id=retry_version.id,
+                    status=DocumentExtractionStatus.EXTRACTING,
+                    extractor_version="pending",
+                )
+                await uow.documents.add_extraction(extraction)
+                await uow.documents.add_local_observation(
+                    self._observation(
+                        scan.id,
+                        source.id,
+                        candidate,
+                        retry_version.id,
+                    )
+                )
+                await uow.commit()
+                return "extract", self._prepared(
+                    candidate,
+                    extraction_id=extraction.id,
+                    document_version_id=retry_version.id,
+                    local_source_id=retry_version.local_source_id,
+                )
 
             version = DocumentVersion(
                 id=uuid4(),
@@ -190,22 +252,29 @@ class LocalKnowledgeImportService:
             await uow.commit()
         return (
             "extract",
-            _PreparedLocalExtraction(
+            self._prepared(
+                candidate,
                 extraction_id=extraction.id,
                 document_version_id=version.id,
                 local_source_id=source.id,
-                path=candidate.absolute_path,
-                mime_type=candidate.mime_type,
-                relative_path=candidate.relative_path,
-                display_name=candidate.display_name,
             ),
         )
 
     async def _extract_and_register(self, prepared: _PreparedLocalExtraction) -> bool:
+        if not self._source_matches_prepared(prepared):
+            await self._fail_extraction(
+                prepared.extraction_id, "LOCAL_SOURCE_CHANGED_DURING_IMPORT"
+            )
+            return False
         try:
             extracted = self._extractor.extract(prepared.path, prepared.mime_type)
         except Exception as exc:
             await self._fail_extraction(prepared.extraction_id, _safe_error_code(exc))
+            return False
+        if not self._source_matches_prepared(prepared):
+            await self._fail_extraction(
+                prepared.extraction_id, "LOCAL_SOURCE_CHANGED_DURING_IMPORT"
+            )
             return False
         if extracted.status == DocumentExtractionStatus.FAILED:
             await self._fail_extraction(
@@ -289,28 +358,37 @@ class LocalKnowledgeImportService:
             confidentiality="internal",
             authority_type=authority_type,
             authority_role=authority_role,
-            authority_status=AuthorityStatus.EFFECTIVE if known else AuthorityStatus.UNKNOWN,
-            metadata_status=(
-                KnowledgeMetadataStatus.READY
-                if known
-                else KnowledgeMetadataStatus.PENDING_METADATA
-            ),
+            authority_status=AuthorityStatus.UNKNOWN,
+            metadata_status=KnowledgeMetadataStatus.PENDING_METADATA,
         )
-        chunks = [
-            KnowledgeChunk(
-                id=uuid4(),
-                knowledge_document_id=document.id,
-                document_segment_id=segment.id,
-                sequence=index,
-                locator=_segment_locator(segment),
-                text=segment.content,
-                normalized_text=normalize_knowledge_text(segment.content),
-                text_hash=segment.content_hash,
-                estimated_token_count=self._token_estimator.estimate(segment.content).tokens,
-                token_estimator=self._token_estimator.method,
+        chunks: list[KnowledgeChunk] = []
+        for segment in segments:
+            pieces = split_text_for_token_budget(
+                segment.content,
+                max_tokens=self._max_single_chunk_tokens,
+                estimator=self._token_estimator,
             )
-            for index, segment in enumerate(segments, start=1)
-        ]
+            for piece in pieces:
+                locator = _segment_locator(segment)
+                if len(pieces) > 1:
+                    locator = (
+                        f"{locator} chars:{segment.start_offset + piece.start_offset}-"
+                        f"{segment.start_offset + piece.end_offset}"
+                    )
+                chunks.append(
+                    KnowledgeChunk(
+                        id=uuid4(),
+                        knowledge_document_id=document.id,
+                        document_segment_id=segment.id,
+                        sequence=len(chunks) + 1,
+                        locator=locator,
+                        text=piece.text,
+                        normalized_text=normalize_knowledge_text(piece.text),
+                        text_hash=sha256(piece.text.encode("utf-8")).hexdigest(),
+                        estimated_token_count=piece.estimated_token_count,
+                        token_estimator=self._token_estimator.method,
+                    )
+                )
         await uow.knowledge.add_document(document)
         await uow.flush()
         await uow.knowledge.add_chunks(chunks)
@@ -323,6 +401,57 @@ class LocalKnowledgeImportService:
             extraction.fail(error_code)
             await uow.documents.save_extraction(extraction)
             await uow.commit()
+
+    async def _version_is_searchable(
+        self,
+        uow: UnitOfWork,
+        document_version_id: UUID,
+    ) -> bool:
+        segments = await uow.documents.list_segments_for_version(document_version_id)
+        if not segments:
+            return False
+        return (
+            await uow.knowledge.find_document_by_source(
+                source_type="document_version",
+                source_id=str(document_version_id),
+            )
+            is not None
+        )
+
+    @staticmethod
+    def _prepared(
+        candidate: LocalKnowledgeFile,
+        *,
+        extraction_id: UUID,
+        document_version_id: UUID,
+        local_source_id: UUID,
+    ) -> _PreparedLocalExtraction:
+        return _PreparedLocalExtraction(
+            extraction_id=extraction_id,
+            document_version_id=document_version_id,
+            local_source_id=local_source_id,
+            path=candidate.absolute_path,
+            mime_type=candidate.mime_type,
+            relative_path=candidate.relative_path,
+            display_name=candidate.display_name,
+            expected_sha256=candidate.content_sha256,
+            expected_size=candidate.size,
+            expected_modified_at_ns=candidate.modified_at_ns,
+        )
+
+    @staticmethod
+    def _source_matches_prepared(prepared: _PreparedLocalExtraction) -> bool:
+        try:
+            digest, size, modified_at_ns = fingerprint_local_knowledge_file(
+                prepared.path
+            )
+        except (OSError, ValueError, LocalKnowledgeFileChangedError):
+            return False
+        return (
+            digest == prepared.expected_sha256
+            and size == prepared.expected_size
+            and modified_at_ns == prepared.expected_modified_at_ns
+        )
 
     async def _finish_scan(self, scan: LocalKnowledgeScan, seen_paths: set[str]) -> None:
         async with self._uow_factory() as uow:
@@ -359,31 +488,41 @@ class LocalKnowledgeImportService:
         )
 
 
-AUTHORITY_PATH_MARKERS: tuple[tuple[AuthorityType, tuple[str, ...]], ...] = (
-    (AuthorityType.JUDICIAL_INTERPRETATION, ("司法解释",)),
-    (AuthorityType.ADMINISTRATIVE_REGULATION, ("行政法规",)),
-    (AuthorityType.DEPARTMENT_RULE, ("部门规章",)),
-    (AuthorityType.LOCAL_REGULATION, ("地方性法规",)),
-    (AuthorityType.LOCAL_GOVERNMENT_RULE, ("地方政府规章",)),
-    (AuthorityType.NORMATIVE_DOCUMENT, ("规范性文件",)),
-    (AuthorityType.GUIDING_CASE, ("指导案例", "指导性案例")),
-    (AuthorityType.COURT_CASE, ("裁判文书", "法院案例")),
-    (AuthorityType.REGULATORY_GUIDANCE, ("监管指引", "监管指导")),
-    (AuthorityType.CONTRACT, ("合同", "协议")),
-    (AuthorityType.COMPANY_POLICY, ("公司制度", "规章制度")),
-    (AuthorityType.BUSINESS_RULE, ("业务规则", "业务制度")),
-    (AuthorityType.LEGAL_OPINION, ("法律意见", "法务意见")),
-    (AuthorityType.INTERNAL_PRECEDENT, ("内部先例", "历史处理")),
-    (AuthorityType.LAW, ("法律/", "/法律/", "法律\\")),
-)
+AUTHORITY_DIRECTORY_MARKERS: dict[str, AuthorityType] = {
+    "法律": AuthorityType.LAW,
+    "司法解释": AuthorityType.JUDICIAL_INTERPRETATION,
+    "行政法规": AuthorityType.ADMINISTRATIVE_REGULATION,
+    "部门规章": AuthorityType.DEPARTMENT_RULE,
+    "地方性法规": AuthorityType.LOCAL_REGULATION,
+    "地方政府规章": AuthorityType.LOCAL_GOVERNMENT_RULE,
+    "规范性文件": AuthorityType.NORMATIVE_DOCUMENT,
+    "指导案例": AuthorityType.GUIDING_CASE,
+    "指导性案例": AuthorityType.GUIDING_CASE,
+    "裁判文书": AuthorityType.COURT_CASE,
+    "法院案例": AuthorityType.COURT_CASE,
+    "监管指引": AuthorityType.REGULATORY_GUIDANCE,
+    "监管指导": AuthorityType.REGULATORY_GUIDANCE,
+    "合同": AuthorityType.CONTRACT,
+    "协议": AuthorityType.CONTRACT,
+    "公司制度": AuthorityType.COMPANY_POLICY,
+    "规章制度": AuthorityType.COMPANY_POLICY,
+    "业务规则": AuthorityType.BUSINESS_RULE,
+    "业务制度": AuthorityType.BUSINESS_RULE,
+    "法律意见": AuthorityType.LEGAL_OPINION,
+    "法务意见": AuthorityType.LEGAL_OPINION,
+    "内部先例": AuthorityType.INTERNAL_PRECEDENT,
+    "历史处理": AuthorityType.INTERNAL_PRECEDENT,
+}
 
 
 def infer_authority_type(relative_path: str) -> AuthorityType:
-    normalized = f"/{relative_path.replace('\\', '/')}"
-    for authority_type, markers in AUTHORITY_PATH_MARKERS:
-        if any(marker in normalized for marker in markers):
-            return authority_type
-    return AuthorityType.UNKNOWN
+    path = PurePosixPath(relative_path.replace("\\", "/"))
+    matches = {
+        AUTHORITY_DIRECTORY_MARKERS[part.strip()]
+        for part in path.parts[:-1]
+        if part.strip() in AUTHORITY_DIRECTORY_MARKERS
+    }
+    return matches.pop() if len(matches) == 1 else AuthorityType.UNKNOWN
 
 
 def _segment_locator(segment: DocumentSegment) -> str:

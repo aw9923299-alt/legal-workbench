@@ -13,6 +13,7 @@ from legal_workbench.application.token_budget import (
     DeterministicTokenEstimator,
     KnowledgeBudget,
     select_budgeted_knowledge,
+    split_text_for_token_budget,
 )
 from legal_workbench.domain.entities import (
     AuditEvent,
@@ -57,9 +58,16 @@ class KnowledgeRegistrationService:
         self,
         uow_factory: UnitOfWorkFactory,
         estimator: DeterministicTokenEstimator | None = None,
+        *,
+        max_single_chunk_tokens: int = (
+            PROVISIONAL_DEFAULT_KNOWLEDGE_BUDGET.max_single_chunk_tokens
+        ),
     ) -> None:
         self._uow_factory = uow_factory
         self._estimator = estimator or DeterministicTokenEstimator()
+        if max_single_chunk_tokens < 1:
+            raise ValueError("Knowledge single-Chunk token limit must be positive.")
+        self._max_single_chunk_tokens = max_single_chunk_tokens
 
     async def register_document_version(
         self,
@@ -89,21 +97,34 @@ class KnowledgeRegistrationService:
             confidentiality=metadata.confidentiality,
             approved_by=metadata.approved_by,
         )
-        chunks = [
-            KnowledgeChunk(
-                id=uuid4(),
-                knowledge_document_id=document.id,
-                document_segment_id=segment.id,
-                sequence=index,
-                locator=self._segment_locator(segment),
-                text=segment.content,
-                normalized_text=normalize_knowledge_text(segment.content),
-                text_hash=segment.content_hash,
-                estimated_token_count=self._estimator.estimate(segment.content).tokens,
-                token_estimator=self._estimator.method,
+        chunks: list[KnowledgeChunk] = []
+        for segment in segments:
+            pieces = split_text_for_token_budget(
+                segment.content,
+                max_tokens=self._max_single_chunk_tokens,
+                estimator=self._estimator,
             )
-            for index, segment in enumerate(segments, start=1)
-        ]
+            for piece in pieces:
+                locator = self._segment_locator(segment)
+                if len(pieces) > 1:
+                    locator = (
+                        f"{locator} chars:{segment.start_offset + piece.start_offset}-"
+                        f"{segment.start_offset + piece.end_offset}"
+                    )
+                chunks.append(
+                    KnowledgeChunk(
+                        id=uuid4(),
+                        knowledge_document_id=document.id,
+                        document_segment_id=segment.id,
+                        sequence=len(chunks) + 1,
+                        locator=locator,
+                        text=piece.text,
+                        normalized_text=normalize_knowledge_text(piece.text),
+                        text_hash=sha256(piece.text.encode()).hexdigest(),
+                        estimated_token_count=piece.estimated_token_count,
+                        token_estimator=self._estimator.method,
+                    )
+                )
         async with self._uow_factory() as uow:
             existing = await uow.knowledge.find_document_by_source(
                 source_type=document.source_type,
@@ -146,17 +167,29 @@ class KnowledgeRegistrationService:
             approved_by=metadata.approved_by,
         )
         content = approved_summary.strip()
-        chunk = KnowledgeChunk(
-            id=uuid4(),
-            knowledge_document_id=document.id,
-            sequence=1,
-            locator="已审核处理方案摘要",
-            text=content,
-            normalized_text=normalize_knowledge_text(content),
-            text_hash=sha256(content.encode()).hexdigest(),
-            estimated_token_count=self._estimator.estimate(content).tokens,
-            token_estimator=self._estimator.method,
+        pieces = split_text_for_token_budget(
+            content,
+            max_tokens=self._max_single_chunk_tokens,
+            estimator=self._estimator,
         )
+        chunks = [
+            KnowledgeChunk(
+                id=uuid4(),
+                knowledge_document_id=document.id,
+                sequence=index,
+                locator=(
+                    "已审核处理方案摘要"
+                    if len(pieces) == 1
+                    else f"已审核处理方案摘要 chars:{piece.start_offset}-{piece.end_offset}"
+                ),
+                text=piece.text,
+                normalized_text=normalize_knowledge_text(piece.text),
+                text_hash=sha256(piece.text.encode()).hexdigest(),
+                estimated_token_count=piece.estimated_token_count,
+                token_estimator=self._estimator.method,
+            )
+            for index, piece in enumerate(pieces, start=1)
+        ]
         async with self._uow_factory() as uow:
             existing = await uow.knowledge.find_document_by_source(
                 source_type=document.source_type,
@@ -166,7 +199,7 @@ class KnowledgeRegistrationService:
                 return existing
             await uow.knowledge.add_document(document)
             await uow.flush()
-            await uow.knowledge.add_chunks([chunk])
+            await uow.knowledge.add_chunks(chunks)
             await uow.commit()
         return document
 

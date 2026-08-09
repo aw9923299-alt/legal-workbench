@@ -23,7 +23,11 @@ async def _run(args: argparse.Namespace) -> int:
         timeout_seconds=settings.document_extraction_timeout_seconds,
         max_output_bytes=settings.document_extraction_max_output_bytes,
     )
-    service = LocalKnowledgeImportService(SqlAlchemyUnitOfWorkFactory(), extractor)
+    service = LocalKnowledgeImportService(
+        SqlAlchemyUnitOfWorkFactory(),
+        extractor,
+        max_single_chunk_tokens=settings.legal_knowledge_max_single_chunk_tokens,
+    )
     try:
         scan = await service.execute(
             source=source,
