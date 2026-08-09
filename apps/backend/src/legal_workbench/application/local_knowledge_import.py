@@ -6,6 +6,7 @@ from typing import Protocol
 from uuid import UUID, uuid4
 
 from legal_workbench.application.ports import UnitOfWork, UnitOfWorkFactory
+from legal_workbench.application.token_budget import DeterministicTokenEstimator
 from legal_workbench.domain.common import utc_now
 from legal_workbench.domain.documents import (
     DocumentExtraction,
@@ -55,6 +56,7 @@ class LocalKnowledgeImportService:
     def __init__(self, uow_factory: UnitOfWorkFactory, extractor: LocalDocumentExtractor) -> None:
         self._uow_factory = uow_factory
         self._extractor = extractor
+        self._token_estimator = DeterministicTokenEstimator()
 
     async def execute(
         self,
@@ -303,6 +305,8 @@ class LocalKnowledgeImportService:
                 text=segment.content,
                 normalized_text=normalize_knowledge_text(segment.content),
                 text_hash=segment.content_hash,
+                estimated_token_count=self._token_estimator.estimate(segment.content).tokens,
+                token_estimator=self._token_estimator.method,
             )
             for index, segment in enumerate(segments, start=1)
         ]

@@ -27,6 +27,7 @@ from legal_workbench.application.message_analysis import (
     MessageAnalysisError,
 )
 from legal_workbench.application.setup import execute_codex_setup_check
+from legal_workbench.application.token_budget import KnowledgeBudget
 from legal_workbench.config import get_settings
 from legal_workbench.domain.errors import DomainValidationError
 from legal_workbench.infrastructure.celery_app import celery_app
@@ -150,7 +151,18 @@ def _build_legal_agent_orchestrator() -> LegalAgentOrchestrator:
     return LegalAgentOrchestrator(
         uow_factory,
         runtime,
-        LegalContextBuilder(KnowledgeRetrievalService(uow_factory)),
+        LegalContextBuilder(
+            KnowledgeRetrievalService(
+                uow_factory,
+                default_budget=KnowledgeBudget(
+                    max_chunks=settings.legal_knowledge_max_chunks,
+                    max_tokens=settings.legal_knowledge_max_tokens,
+                    max_single_chunk_tokens=(
+                        settings.legal_knowledge_max_single_chunk_tokens
+                    ),
+                ),
+            )
+        ),
         runs_root=settings.codex_runs_root,
     )
 

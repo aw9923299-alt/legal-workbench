@@ -48,6 +48,8 @@ def build_knowledge_search_statement(request: KnowledgeSearchRequest) -> Any:
         )
         .where(
             KnowledgeDocumentModel.status == "active",
+            KnowledgeDocumentModel.enabled.is_(True),
+            KnowledgeDocumentModel.authority_status.in_(["effective", "unknown"]),
             or_(
                 KnowledgeDocumentModel.agent_types.contains([request.agent_type]),
                 KnowledgeDocumentModel.agent_types.contains(["*"]),

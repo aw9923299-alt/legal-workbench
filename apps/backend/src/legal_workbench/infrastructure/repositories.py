@@ -1259,6 +1259,9 @@ class SqlAlchemyKnowledgeRepository:
                     text=chunk.text,
                     normalized_text=chunk.normalized_text,
                     text_hash=chunk.text_hash,
+                    estimated_token_count=chunk.estimated_token_count,
+                    token_estimator=chunk.token_estimator,
+                    token_count_estimated=chunk.token_count_estimated,
                     created_at=chunk.created_at,
                 )
                 for chunk in chunks
@@ -1284,6 +1287,12 @@ class SqlAlchemyKnowledgeRepository:
                 component_scores=log.component_scores,
                 correlation_id=log.correlation_id,
                 agent_run_id=log.agent_run_id,
+                candidate_count=log.candidate_count,
+                selected_chunk_count=log.selected_chunk_count,
+                selected_token_count=log.selected_token_count,
+                excluded_by_token_budget_count=log.excluded_by_token_budget_count,
+                excluded_duplicate_count=log.excluded_duplicate_count,
+                budget=log.budget,
                 created_at=log.created_at,
             )
         )
@@ -1359,6 +1368,9 @@ class SqlAlchemyKnowledgeRepository:
             text=model.text,
             normalized_text=model.normalized_text,
             text_hash=model.text_hash,
+            estimated_token_count=model.estimated_token_count,
+            token_estimator=model.token_estimator,
+            token_count_estimated=model.token_count_estimated,
             created_at=model.created_at,
         )
 

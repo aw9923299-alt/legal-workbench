@@ -73,6 +73,18 @@ class Settings(BaseSettings):
 
     knowledge_root: str = "/data/knowledge"
     knowledge_import_max_file_bytes: int = 100 * 1024 * 1024
+    legal_knowledge_max_chunks: int = Field(
+        default=8,
+        validation_alias="LEGAL_KNOWLEDGE_MAX_CHUNKS",
+    )
+    legal_knowledge_max_tokens: int = Field(
+        default=12_000,
+        validation_alias="LEGAL_KNOWLEDGE_MAX_TOKENS",
+    )
+    legal_knowledge_max_single_chunk_tokens: int = Field(
+        default=3_000,
+        validation_alias="LEGAL_KNOWLEDGE_MAX_SINGLE_CHUNK_TOKENS",
+    )
     codex_runs_root: str = "/data/codex-runs"
     codex_auth_home: str | None = None
     setup_secret_root: str = "/data/local-secrets"
@@ -178,6 +190,14 @@ class Settings(BaseSettings):
             raise ValueError("Minimum disk free bytes cannot be negative.")
         if self.knowledge_import_max_file_bytes < 1:
             raise ValueError("Knowledge import maximum file size must be positive.")
+        if (
+            self.legal_knowledge_max_chunks < 1
+            or self.legal_knowledge_max_tokens < 1
+            or self.legal_knowledge_max_single_chunk_tokens < 1
+            or self.legal_knowledge_max_single_chunk_tokens
+            > self.legal_knowledge_max_tokens
+        ):
+            raise ValueError("Legal knowledge token budget must be positive and consistent.")
         if self.analysis_recovery_stale_seconds < 1:
             raise ValueError("Analysis recovery stale seconds must be positive.")
         return self

@@ -1497,7 +1497,10 @@ class KnowledgeChunkModel(UuidPrimaryKeyMixin, Base):
         Integer, nullable=False, default=0, server_default="0"
     )
     token_estimator: Mapped[str] = mapped_column(
-        String(80), nullable=False, default="utf8-bytes-v1", server_default="utf8-bytes-v1"
+        String(80),
+        nullable=False,
+        default="utf8-bytes-ceil-div-4-v1",
+        server_default="utf8-bytes-ceil-div-4-v1",
     )
     token_count_estimated: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=True, server_default=sql_text("true")
@@ -1536,6 +1539,9 @@ class KnowledgeRetrievalLogModel(UuidPrimaryKeyMixin, Base):
         Integer, nullable=False, default=0, server_default="0"
     )
     excluded_by_token_budget_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    excluded_duplicate_count: Mapped[int] = mapped_column(
         Integer, nullable=False, default=0, server_default="0"
     )
     budget: Mapped[dict[str, Any]] = mapped_column(

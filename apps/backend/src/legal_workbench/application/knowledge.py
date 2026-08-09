@@ -7,6 +7,12 @@ from hashlib import sha256
 from uuid import UUID, uuid4
 
 from legal_workbench.application.ports import UnitOfWorkFactory
+from legal_workbench.application.token_budget import (
+    PROVISIONAL_DEFAULT_KNOWLEDGE_BUDGET,
+    DeterministicTokenEstimator,
+    KnowledgeBudget,
+    select_budgeted_knowledge,
+)
 from legal_workbench.domain.entities import (
     DocumentSegment,
     KnowledgeChunk,
@@ -34,8 +40,13 @@ class KnowledgeRegistrationMetadata:
 
 
 class KnowledgeRegistrationService:
-    def __init__(self, uow_factory: UnitOfWorkFactory) -> None:
+    def __init__(
+        self,
+        uow_factory: UnitOfWorkFactory,
+        estimator: DeterministicTokenEstimator | None = None,
+    ) -> None:
         self._uow_factory = uow_factory
+        self._estimator = estimator or DeterministicTokenEstimator()
 
     async def register_document_version(
         self,
@@ -75,6 +86,8 @@ class KnowledgeRegistrationService:
                 text=segment.content,
                 normalized_text=normalize_knowledge_text(segment.content),
                 text_hash=segment.content_hash,
+                estimated_token_count=self._estimator.estimate(segment.content).tokens,
+                token_estimator=self._estimator.method,
             )
             for index, segment in enumerate(segments, start=1)
         ]
@@ -128,6 +141,8 @@ class KnowledgeRegistrationService:
             text=content,
             normalized_text=normalize_knowledge_text(content),
             text_hash=sha256(content.encode()).hexdigest(),
+            estimated_token_count=self._estimator.estimate(content).tokens,
+            token_estimator=self._estimator.method,
         )
         async with self._uow_factory() as uow:
             existing = await uow.knowledge.find_document_by_source(
@@ -149,12 +164,31 @@ class KnowledgeRegistrationService:
 
 
 class KnowledgeRetrievalService:
-    def __init__(self, uow_factory: UnitOfWorkFactory) -> None:
+    def __init__(
+        self,
+        uow_factory: UnitOfWorkFactory,
+        *,
+        default_budget: KnowledgeBudget = PROVISIONAL_DEFAULT_KNOWLEDGE_BUDGET,
+        estimator: DeterministicTokenEstimator | None = None,
+    ) -> None:
         self._uow_factory = uow_factory
+        self._default_budget = default_budget
+        self._estimator = estimator or DeterministicTokenEstimator()
 
-    async def search(self, request: KnowledgeSearchRequest) -> list[KnowledgeSearchResult]:
+    async def search(
+        self,
+        request: KnowledgeSearchRequest,
+        budget: KnowledgeBudget | None = None,
+    ) -> list[KnowledgeSearchResult]:
         async with self._uow_factory() as uow:
-            results = list(await uow.knowledge.search(request))
+            candidates = list(await uow.knowledge.search(request))
+            effective_budget = budget or self._default_budget
+            selection = select_budgeted_knowledge(
+                candidates,
+                budget=effective_budget,
+                estimator=self._estimator,
+            )
+            results = list(selection.selected)
             await uow.knowledge.add_retrieval_log(
                 KnowledgeRetrievalLog(
                     id=uuid4(),
@@ -169,10 +203,18 @@ class KnowledgeRetrievalService:
                     },
                     selected_chunk_ids=[result.chunk.id for result in results],
                     component_scores={
-                        str(result.chunk.id): result.component_scores for result in results
+                        str(result.chunk.id): result.component_scores for result in candidates
                     },
                     correlation_id=request.correlation_id,
                     agent_run_id=request.agent_run_id,
+                    candidate_count=len(candidates),
+                    selected_chunk_count=len(results),
+                    selected_token_count=selection.selected_token_count,
+                    excluded_by_token_budget_count=(
+                        selection.excluded_by_token_budget_count
+                    ),
+                    excluded_duplicate_count=selection.excluded_duplicate_count,
+                    budget=effective_budget.as_audit_dict(),
                 )
             )
             await uow.commit()

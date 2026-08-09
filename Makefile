@@ -1,4 +1,4 @@
-.PHONY: setup setup-web setup-backend web-dev backend-dev test lint migrate feishu-local-sync knowledge-import compose compose-up compose-down compose-logs ops-start ops-stop ops-wake-check ops-backup ops-diagnostics ops-cleanup
+.PHONY: setup setup-web setup-backend web-dev backend-dev test lint migrate feishu-local-sync knowledge-import knowledge-inventory compose compose-up compose-down compose-logs ops-start ops-stop ops-wake-check ops-backup ops-diagnostics ops-cleanup
 
 BACKEND_DIR := apps/backend
 BACKEND_UV := cd $(BACKEND_DIR) && uv run --locked
@@ -35,6 +35,10 @@ feishu-local-sync:
 knowledge-import:
 	@test -n "$(SOURCE)" || (echo 'SOURCE is required' >&2; exit 2)
 	$(BACKEND_UV) python -m legal_workbench.integrations.local_knowledge_importer --source "$(SOURCE)" --source-root-key "$(or $(SOURCE_ROOT_KEY),codex_obs_legal)"
+
+knowledge-inventory:
+	@test -n "$(SOURCE)" || (echo 'SOURCE is required' >&2; exit 2)
+	$(BACKEND_UV) python -m legal_workbench.integrations.knowledge_inventory --source "$(SOURCE)" --output "$(or $(OUTPUT),../../artifacts/knowledge-ingestion/legal-material-inventory.json)"
 
 compose: compose-up
 

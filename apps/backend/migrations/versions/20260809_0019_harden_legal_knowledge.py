@@ -314,7 +314,7 @@ def upgrade() -> None:
         sa.Column(
             "token_estimator",
             sa.String(length=80),
-            server_default="utf8-bytes-v1",
+            server_default="utf8-bytes-ceil-div-4-v1",
             nullable=False,
         ),
     )
@@ -335,6 +335,7 @@ def upgrade() -> None:
         "selected_chunk_count",
         "selected_token_count",
         "excluded_by_token_budget_count",
+        "excluded_duplicate_count",
     ):
         op.add_column(
             "knowledge_retrieval_logs",
@@ -353,7 +354,8 @@ def upgrade() -> None:
         "knowledge_retrieval_log_counts_nonnegative",
         "knowledge_retrieval_logs",
         "candidate_count >= 0 AND selected_chunk_count >= 0 "
-        "AND selected_token_count >= 0 AND excluded_by_token_budget_count >= 0",
+        "AND selected_token_count >= 0 AND excluded_by_token_budget_count >= 0 "
+        "AND excluded_duplicate_count >= 0",
     )
 
 
@@ -366,6 +368,7 @@ def downgrade() -> None:
     op.drop_column("knowledge_retrieval_logs", "budget")
     for column in (
         "excluded_by_token_budget_count",
+        "excluded_duplicate_count",
         "selected_token_count",
         "selected_chunk_count",
         "candidate_count",

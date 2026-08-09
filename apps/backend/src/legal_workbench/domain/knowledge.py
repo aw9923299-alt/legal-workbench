@@ -115,6 +115,9 @@ class KnowledgeChunk:
     normalized_text: str
     text_hash: str
     document_segment_id: UUID | None = None
+    estimated_token_count: int = 0
+    token_estimator: str = "utf8-bytes-ceil-div-4-v1"
+    token_count_estimated: bool = True
     created_at: datetime = field(default_factory=utc_now)
 
     def __post_init__(self) -> None:
@@ -122,6 +125,8 @@ class KnowledgeChunk:
             raise DomainValidationError("Knowledge chunk sequence, locator and text are required.")
         if len(self.text_hash) != 64:
             raise DomainValidationError("Knowledge chunk content hash is invalid.")
+        if self.estimated_token_count < 0 or not self.token_estimator.strip():
+            raise DomainValidationError("Knowledge chunk token metadata is invalid.")
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,11 +138,26 @@ class KnowledgeRetrievalLog:
     component_scores: dict[str, dict[str, float]]
     correlation_id: str
     agent_run_id: UUID | None = None
+    candidate_count: int = 0
+    selected_chunk_count: int = 0
+    selected_token_count: int = 0
+    excluded_by_token_budget_count: int = 0
+    excluded_duplicate_count: int = 0
+    budget: dict[str, int] = field(default_factory=dict)
     created_at: datetime = field(default_factory=utc_now)
 
     def __post_init__(self) -> None:
         if len(self.query_hash) != 64 or not self.correlation_id.strip():
             raise DomainValidationError("Knowledge retrieval audit metadata is invalid.")
+        counts = (
+            self.candidate_count,
+            self.selected_chunk_count,
+            self.selected_token_count,
+            self.excluded_by_token_budget_count,
+            self.excluded_duplicate_count,
+        )
+        if any(value < 0 for value in counts):
+            raise DomainValidationError("Knowledge retrieval audit counts are invalid.")
 
 
 @dataclass(frozen=True, slots=True)
