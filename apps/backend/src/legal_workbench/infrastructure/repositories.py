@@ -508,6 +508,11 @@ class SqlAlchemyAgentExecutionPlanRepository:
         self._session.add(model)
         self._session.add_all(step_models)
 
+    async def add_steps(self, steps: Sequence[AgentPlanStep]) -> None:
+        step_models = [self._step_model(step) for step in steps]
+        self._tracked_steps.update({model.id: model for model in step_models})
+        self._session.add_all(step_models)
+
     async def get(self, plan_id: UUID) -> AgentExecutionPlan | None:
         model = await self._session.get(AgentExecutionPlanModel, plan_id)
         return await self._with_steps(model)
@@ -566,6 +571,7 @@ class SqlAlchemyAgentExecutionPlanRepository:
             model = await self._session.get(AgentExecutionPlanModel, plan.id)
         if model is None:
             raise RuntimeError(f"AgentExecutionPlan {plan.id} is not tracked")
+        model.objective = plan.objective
         model.status = plan.status
         model.task_types = plan.task_types
         model.synthesis_strategy = plan.synthesis_strategy

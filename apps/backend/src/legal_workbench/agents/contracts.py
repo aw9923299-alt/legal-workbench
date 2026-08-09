@@ -136,7 +136,28 @@ class LegalAgentContractRegistry:
             if phase == "planning":
                 return ButlerPlanningOutput.model_validate(payload)
             if phase == "synthesis":
-                return ButlerSynthesisOutput.model_validate(payload)
+                synthesis_result = ButlerSynthesisOutput.model_validate(payload)
+                unauthorized = sorted(
+                    citation.source_ref
+                    for citation in synthesis_result.citations
+                    if citation.source_ref not in context.authorized_source_refs
+                )
+                if unauthorized:
+                    raise DomainValidationError(
+                        f"Unauthorized Butler synthesis citations: {unauthorized}"
+                    )
+                mislabeled = sorted(
+                    citation.source_ref
+                    for citation in synthesis_result.citations
+                    if citation.internal_precedent
+                    != (citation.source_ref in context.internal_precedent_refs)
+                )
+                if mislabeled:
+                    raise DomainValidationError(
+                        "Butler synthesis precedent labels do not match authorized context: "
+                        f"{mislabeled}"
+                    )
+                return synthesis_result
             raise DomainValidationError("Butler input phase must be planning or synthesis.")
         output_model = LEGAL_OUTPUT_MODELS.get(definition.key)
         if output_model is None:
