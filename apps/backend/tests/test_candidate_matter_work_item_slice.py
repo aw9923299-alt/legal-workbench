@@ -401,8 +401,15 @@ async def test_confirm_candidate_creates_matter_and_work_items_atomically() -> N
         (candidate.id, result.matter_id, CandidateMatterRelation.CREATED, "legal-user-1")
     ]
     assert state.audit_events[0].event_type == "candidate_confirmed_matter_created"
-    assert state.outbox_events[0].event_type == "LegalMatterCreated"
-    assert state.outbox_events[0].correlation_id == "corr-1"
+    assert [event.event_type for event in state.outbox_events] == [
+        "LegalMatterCreated",
+        "LegalButlerRequested",
+    ]
+    butler_event = state.outbox_events[1]
+    assert butler_event.correlation_id == "corr-1"
+    assert butler_event.payload["matterId"] == str(result.matter_id)
+    assert butler_event.payload["contextSnapshotId"] == str(candidate.context_snapshot_id)
+    assert butler_event.payload["workItemId"] == str(result.work_item_ids[0])
 
 
 @pytest.mark.asyncio
@@ -441,6 +448,14 @@ async def test_candidate_can_be_linked_to_existing_matter_idempotently() -> None
     assert state.links == [
         (candidate.id, matter.id, CandidateMatterRelation.LINKED, "legal-user-1")
     ]
+    assert [event.event_type for event in state.outbox_events] == [
+        "MessageCandidateResolved",
+        "LegalButlerRequested",
+    ]
+    assert state.outbox_events[1].payload["matterId"] == str(matter.id)
+    assert state.outbox_events[1].payload["contextSnapshotId"] == str(
+        candidate.context_snapshot_id
+    )
 
 
 @pytest.mark.asyncio

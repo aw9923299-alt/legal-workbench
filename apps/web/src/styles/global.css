@@ -313,6 +313,26 @@ button { cursor: pointer; }
 .agent-name > svg { color: #315f8f; font-size: 18px; }
 .agent-name div { display: grid; }
 .agent-name span { color: #8a94a4; font-size: 11px; }
+.agent-lineage-card { margin-bottom: 14px; }
+.agent-lineage-card .ant-card-body { padding: 12px 18px; }
+.agent-lineage-card .ant-tree-title .ant-btn { height: auto; padding: 2px 0; white-space: normal; text-align: left; }
+.legal-butler-panel .ant-card-head-title > div { display: grid; gap: 2px; }
+.legal-butler-panel .ant-card-head-title h4 { margin: 0 !important; }
+.legal-butler-panel .ant-card-head-title .ant-typography-secondary { font-size: 12px; white-space: normal; }
+.butler-plan-heading { display: flex; width: 100%; align-items: center; justify-content: space-between; gap: 16px; padding-right: 6px; }
+.butler-plan-heading > div { display: grid; min-width: 0; gap: 2px; }
+.butler-plan-heading .ant-typography { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.butler-plan-detail { display: grid; gap: 18px; }
+.butler-plan-detail section { min-width: 0; }
+.butler-plan-detail h5 { margin: 0 0 10px !important; }
+.butler-step { display: grid; gap: 4px; }
+.butler-step .ant-typography { margin-bottom: 0; }
+.butler-step .ant-btn { justify-self: start; height: auto; padding: 2px 0; }
+.butler-synthesis { display: grid; gap: 14px; }
+.butler-draft { padding: 12px 14px; background: #f6f8fa; border-left: 3px solid #7b9bbb; }
+.butler-draft .ant-typography { margin: 6px 0 0; white-space: pre-wrap; }
+.butler-citations { display: grid; gap: 6px; }
+.butler-citations .ant-list { border: 1px solid #e4e8ee; border-radius: 4px; }
 .agent-json { max-height: 320px; overflow: auto; padding: 12px; background: #f6f8fa; font-size: 12px; white-space: pre-wrap; }
 .text-link { padding: 0; color: #315f8f; text-align: left; background: none; border: 0; }
 .text-link:hover { text-decoration: underline; }
@@ -624,6 +644,14 @@ button { cursor: pointer; }
   .detail-header h2 { font-size: 22px; }
   .detail-header > .ant-space { display: grid; grid-template-columns: 1fr auto; }
   .detail-header > .ant-space .ant-btn { min-height: 44px; }
+  .detail-header > .ant-space { grid-template-columns: 1fr 1fr; }
+  .detail-header > .ant-space .ant-btn:first-child { grid-column: 1 / -1; }
+  .legal-butler-panel .ant-card-head { align-items: flex-start; padding: 12px 14px; }
+  .legal-butler-panel .ant-card-extra { padding-top: 2px; }
+  .legal-butler-panel .ant-card-body { padding: 12px; }
+  .butler-plan-heading { align-items: flex-start; flex-direction: column; gap: 6px; }
+  .butler-plan-heading .ant-typography { white-space: normal; }
+  .butler-synthesis .ant-descriptions-item-label { width: 92px; }
   .matter-overview { grid-template-columns: 1fr 1fr; }
   .matter-overview-item { min-height: 70px; padding: 11px 12px; border-top: 1px solid #e4e8ee; }
   .matter-overview-item:nth-child(-n+2) { border-top: 0; }

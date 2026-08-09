@@ -12,6 +12,9 @@ from legal_workbench.domain.common import (
 from legal_workbench.domain.enums import (
     AgentAttemptStatus,
     AgentDefinitionStatus,
+    AgentExecutionPlanStatus,
+    AgentPlanStepStatus,
+    AgentRunRole,
     AgentRunSourceType,
     AgentRunStatus,
     DraftArtifactStatus,
@@ -287,6 +290,11 @@ class AgentRun:
     created_at: datetime = field(default_factory=utc_now)
     updated_at: datetime = field(default_factory=utc_now)
     version: int = 1
+    execution_plan_id: UUID | None = None
+    plan_step_id: UUID | None = None
+    parent_run_id: UUID | None = None
+    retry_of_run_id: UUID | None = None
+    run_role: AgentRunRole = AgentRunRole.STANDALONE
     pending_status_changes: list[AgentRunStatusChange] = field(default_factory=list, repr=False)
 
     _TRANSITIONS: ClassVar[dict[AgentRunStatus, set[AgentRunStatus]]] = {
@@ -385,6 +393,123 @@ class AgentRun:
         self.heartbeat_at = changed_at
         self.updated_at = changed_at
         self.version += 1
+
+
+@dataclass(slots=True)
+class AgentPlanStep:
+    id: UUID
+    execution_plan_id: UUID
+    step_id: str
+    sequence: int
+    agent_key: str
+    objective: str
+    depends_on: list[str]
+    context_requirements: list[str]
+    status: AgentPlanStepStatus = AgentPlanStepStatus.PENDING
+    latest_run_id: UUID | None = None
+    attempt_count: int = 0
+    failure_code: str | None = None
+    failure_message: str | None = None
+    created_at: datetime = field(default_factory=utc_now)
+    updated_at: datetime = field(default_factory=utc_now)
+    version: int = 1
+
+    def __post_init__(self) -> None:
+        if not self.step_id.strip() or not self.agent_key.strip():
+            raise DomainValidationError("Agent plan step ID and Agent key are required.")
+        if not self.objective.strip():
+            raise DomainValidationError("Agent plan step objective is required.")
+        if self.sequence < 0 or self.attempt_count < 0:
+            raise DomainValidationError("Agent plan step counters cannot be negative.")
+
+
+@dataclass(slots=True)
+class AgentExecutionPlan:
+    id: UUID
+    matter_id: UUID
+    work_item_id: UUID | None
+    objective: str
+    status: AgentExecutionPlanStatus
+    task_types: list[str]
+    synthesis_strategy: str
+    missing_information: list[str]
+    requires_user_input: bool
+    correlation_id: str
+    idempotency_key: str
+    created_by: str
+    steps: list[AgentPlanStep] = field(default_factory=list)
+    planning_run_id: UUID | None = None
+    synthesis_run_id: UUID | None = None
+    created_at: datetime = field(default_factory=utc_now)
+    updated_at: datetime = field(default_factory=utc_now)
+    version: int = 1
+
+    def __post_init__(self) -> None:
+        if not self.objective.strip() or not self.synthesis_strategy.strip():
+            raise DomainValidationError(
+                "Execution plan objective and synthesis strategy are required."
+            )
+        if not self.correlation_id.strip() or not self.idempotency_key.strip():
+            raise DomainValidationError(
+                "Execution plan correlation and idempotency keys are required."
+            )
+
+    def validate_steps(self, registered_agent_keys: set[str] | frozenset[str]) -> None:
+        if not 1 <= len(self.steps) <= 4:
+            raise DomainValidationError("An execution plan must contain one to four steps.")
+        if any(step.execution_plan_id != self.id for step in self.steps):
+            raise DomainValidationError("Every Agent step must belong to the execution plan.")
+        step_ids = [step.step_id for step in self.steps]
+        if len(step_ids) != len(set(step_ids)):
+            raise DomainValidationError("Agent execution plan step IDs must be unique.")
+        invalid_agents = sorted(
+            {step.agent_key for step in self.steps if step.agent_key not in registered_agent_keys}
+        )
+        if invalid_agents:
+            raise DomainValidationError(
+                "Execution plan references an unregistered specialist Agent.",
+                details={"agentKeys": invalid_agents},
+            )
+        known = set(step_ids)
+        unknown_dependencies = sorted(
+            {
+                dependency
+                for step in self.steps
+                for dependency in step.depends_on
+                if dependency not in known
+            }
+        )
+        if unknown_dependencies:
+            raise DomainValidationError(
+                "Execution plan references an unknown dependency.",
+                details={"stepIds": unknown_dependencies},
+            )
+        self._topological_waves()
+
+    def ready_waves(self) -> list[list[AgentPlanStep]]:
+        return self._topological_waves()
+
+    def _topological_waves(self) -> list[list[AgentPlanStep]]:
+        by_id = {step.step_id: step for step in self.steps}
+        remaining = set(by_id)
+        completed: set[str] = set()
+        waves: list[list[AgentPlanStep]] = []
+        while remaining:
+            ready = sorted(
+                (
+                    by_id[step_id]
+                    for step_id in remaining
+                    if set(by_id[step_id].depends_on) <= completed
+                ),
+                key=lambda step: (step.sequence, step.step_id),
+            )
+            if not ready:
+                raise DomainValidationError("Agent execution plan cannot contain a cycle.")
+            waves.append(ready)
+            ready_ids = {step.step_id for step in ready}
+            remaining -= ready_ids
+            completed |= ready_ids
+        return waves
 
 
 @dataclass(frozen=True, slots=True)

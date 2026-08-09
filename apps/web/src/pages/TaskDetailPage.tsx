@@ -21,6 +21,7 @@ import dayjs, { type Dayjs } from 'dayjs';
 import { useCallback, useEffect, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import WorkItemActions, { type WorkItemLifecycleAction } from '../components/WorkItemActions';
+import LegalButlerPanel from '../components/LegalButlerPanel';
 import {
   clearMutationContext,
   getOrCreateMutationContext,
@@ -28,7 +29,7 @@ import {
   legalApi,
 } from '../services/api';
 import { categoryLabels, priorityLabels, riskLabels, workStatusLabels } from '../services/apiLabels';
-import type { Deadline, LegalMatter, Priority, WorkItem, WorkItemDependency } from '../types/api';
+import type { AgentExecutionPlanRecord, Deadline, LegalMatter, Priority, WorkItem, WorkItemDependency } from '../types/api';
 
 const { Title, Text, Paragraph } = Typography;
 
@@ -40,11 +41,13 @@ interface DeadlineValues { deadlineType: string; dueAt: Dayjs; isHard: boolean; 
 interface DependencyValues { dependencyType: string; dependsOnWorkItemId?: string; externalPartyId?: string; description?: string }
 interface LifecycleValues { reason?: string; waitingPartyId?: string; blockerOwnerId?: string; ownerId?: string; deadline?: Dayjs; nextAction?: string }
 interface ReviewPackageValues { title: string; background: string; reasoning: string; proposedContent: string; receiveId?: string; replyToMessageId?: string }
+interface ButlerValues { objective?: string; specialRequirements?: string; specialistOnly?: string; workItemId?: string }
 
 export default function TaskDetailPage({ matterId, onBack }: { matterId: string; onBack: () => void }) {
   const queryClient = useQueryClient();
   const [matter, setMatter] = useState<LegalMatter>();
   const [workItems, setWorkItems] = useState<WorkItem[]>([]);
+  const [agentPlans, setAgentPlans] = useState<AgentExecutionPlanRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [dialog, setDialog] = useState<Dialog>();
@@ -56,17 +59,21 @@ export default function TaskDetailPage({ matterId, onBack }: { matterId: string;
   const [reviewOpen, setReviewOpen] = useState(false);
   const [lifecycleDialog, setLifecycleDialog] = useState<LifecycleDialog>();
   const [lifecycleForm] = Form.useForm<LifecycleValues>();
+  const [butlerForm] = Form.useForm<ButlerValues>();
+  const [butlerOpen, setButlerOpen] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
     setError(undefined);
     try {
-      const [matterValue, workItemValues] = await Promise.all([
+      const [matterValue, workItemValues, planValues] = await Promise.all([
         legalApi.getMatter(matterId),
         legalApi.listWorkItems(matterId),
+        legalApi.listLegalAgentPlans(matterId),
       ]);
       setMatter(matterValue);
       setWorkItems(workItemValues);
+      setAgentPlans(planValues);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : '加载事项详情失败');
     } finally {
@@ -127,6 +134,50 @@ export default function TaskDetailPage({ matterId, onBack }: { matterId: string;
       proposedContent: '',
     });
     setReviewOpen(true);
+  };
+
+  const openButler = () => {
+    butlerForm.setFieldsValue({
+      objective: matter?.objective ?? undefined,
+      workItemId: workItems[0]?.id,
+      specialRequirements: undefined,
+      specialistOnly: undefined,
+    });
+    setButlerOpen(true);
+  };
+
+  const requestButler = async () => {
+    if (!matter) return;
+    const values = await butlerForm.validateFields();
+    const key = `legal-butler:${matter.id}`;
+    const context = getOrCreateMutationContext(key, values);
+    setSubmitting(true);
+    try {
+      await legalApi.requestLegalAgentPlan(matter.id, values, context);
+      clearMutationContext(key);
+      message.success('管家任务已进入确定性执行队列，不会自动发送消息');
+      setButlerOpen(false);
+      await load();
+    } catch (reason) {
+      if (isDefinitiveMutationFailure(reason)) clearMutationContext(key);
+      message.error(reason instanceof Error ? reason.message : '管家任务提交失败');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const rerunButlerStep = async (planId: string, stepId: string) => {
+    const key = `legal-agent-rerun:${planId}:${stepId}`;
+    const context = getOrCreateMutationContext(key, { planId, stepId });
+    try {
+      await legalApi.rerunLegalAgentStep(planId, stepId, context);
+      clearMutationContext(key);
+      message.success('Step 已重新进入执行队列');
+      await load();
+    } catch (reason) {
+      if (isDefinitiveMutationFailure(reason)) clearMutationContext(key);
+      message.error(reason instanceof Error ? reason.message : 'Step 重跑失败');
+    }
   };
 
   const createReviewPackage = async () => {
@@ -292,7 +343,7 @@ export default function TaskDetailPage({ matterId, onBack }: { matterId: string;
                   <Tag>{matter.lifecycleStatus}</Tag><Tag>{matter.workStatus}</Tag>
                 </Space>
               </div>
-              <Space><Button icon={<RobotOutlined />} onClick={openReviewPackage}>创建审核包</Button><Button icon={<ReloadOutlined />} onClick={() => void load()}>刷新</Button></Space>
+              <Space><Button type="primary" icon={<RobotOutlined />} onClick={openButler}>让管家处理</Button><Button onClick={openReviewPackage}>创建审核包</Button><Button icon={<ReloadOutlined />} onClick={() => void load()}>刷新</Button></Space>
             </div>
             <div className="detail-grid">
               <main className="detail-main">
@@ -318,6 +369,12 @@ export default function TaskDetailPage({ matterId, onBack }: { matterId: string;
                     />
                   )}
                 </Card>
+                <LegalButlerPanel
+                  plans={agentPlans}
+                  loading={loading}
+                  onRefresh={() => void load()}
+                  onRerun={rerunButlerStep}
+                />
               </main>
               <aside className="detail-sidebar">
                 <Card title="事项字段" bordered={false}>
@@ -338,6 +395,35 @@ export default function TaskDetailPage({ matterId, onBack }: { matterId: string;
           </>
         )}
       </Spin>
+
+      <Modal
+        open={butlerOpen}
+        title="让法务管家处理"
+        width={680}
+        confirmLoading={submitting}
+        onCancel={() => setButlerOpen(false)}
+        onOk={() => void requestButler()}
+        okText="进入执行队列"
+      >
+        <Alert
+          type="info"
+          showIcon
+          message="管家只负责规划、调用注册专业 Agent 并综合；结果进入人工审核，不会自动发送。"
+          style={{ marginBottom: 16 }}
+        />
+        <Form form={butlerForm} layout="vertical">
+          <Form.Item name="objective" label="本次目标"><Input.TextArea rows={3} placeholder="例如：审查第8.2条责任上限及图片授权链" /></Form.Item>
+          <Form.Item name="specialRequirements" label="特别要求"><Input.TextArea rows={3} placeholder="例如：优先给出今日可执行的补件清单" /></Form.Item>
+          <Form.Item name="workItemId" label="关联 WorkItem"><Select allowClear options={workItems.map((item) => ({ value: item.id, label: item.title }))} /></Form.Item>
+          <Form.Item name="specialistOnly" label="只运行某个专业 Agent（可选）"><Select allowClear options={[
+            { value: 'legal_consultation', label: '一般法律咨询' },
+            { value: 'contract_review', label: '合同审查' },
+            { value: 'dispute_complaint', label: '争议与投诉' },
+            { value: 'ip_copyright', label: '知识产权与著作权' },
+            { value: 'labor_employment', label: '劳动用工' },
+          ]} /></Form.Item>
+        </Form>
+      </Modal>
 
       <Modal open={reviewOpen} title="创建外发审核包" width={760} confirmLoading={submitting} onCancel={() => setReviewOpen(false)} onOk={() => void createReviewPackage()}>
         <Alert type="warning" showIcon message="创建后仅进入待审核状态，不会直接发送。审核通过后仍需执行外发入队操作。" style={{ marginBottom: 16 }} />

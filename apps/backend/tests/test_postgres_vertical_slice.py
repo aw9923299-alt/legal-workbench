@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -147,6 +147,46 @@ async def test_candidate_to_matter_to_work_item_http_slice() -> None:
             work_items = await client.get(f"/api/v1/matters/{matter_id}/work-items")
             assert work_items.status_code == 200, work_items.text
             assert [item["title"] for item in work_items.json()] == ["核查合同主体和版本"]
+
+            butler_headers = {
+                **headers,
+                "Idempotency-Key": f"butler-{unique_suffix}",
+            }
+            butler_response = await client.post(
+                f"/api/v1/matters/{matter_id}/legal-agent-plans",
+                json={
+                    "objective": "只审查该非敏感合作合同",
+                    "specialistOnly": "contract_review",
+                    "workItemId": matter_body["workItemIds"][0],
+                },
+                headers=butler_headers,
+            )
+            assert butler_response.status_code == 202, butler_response.text
+            assert butler_response.json()["status"] == "queued"
+            assert UUID(butler_response.json()["contextSnapshotId"])
+
+            butler_replay = await client.post(
+                f"/api/v1/matters/{matter_id}/legal-agent-plans",
+                json={
+                    "objective": "只审查该非敏感合作合同",
+                    "specialistOnly": "contract_review",
+                    "workItemId": matter_body["workItemIds"][0],
+                },
+                headers=butler_headers,
+            )
+            assert butler_replay.status_code == 200, butler_replay.text
+            assert butler_replay.json()["idempotentReplay"] is True
+
+            async with engine.connect() as connection:
+                butler_events = await connection.scalar(
+                    text(
+                        "SELECT count(*) FROM outbox_events "
+                        "WHERE event_type = 'LegalButlerRequested' "
+                        "AND aggregate_id = :matter_id"
+                    ),
+                    {"matter_id": matter_id},
+                )
+            assert butler_events == 2
     finally:
         app.dependency_overrides.pop(get_uow_factory, None)
         await engine.dispose()

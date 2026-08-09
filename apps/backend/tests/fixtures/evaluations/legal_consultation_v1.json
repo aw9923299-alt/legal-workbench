@@ -1,0 +1,12 @@
+{
+  "suiteKey": "legal_consultation_v1",
+  "version": 1,
+  "agentKey": "legal_consultation",
+  "dataClassification": "synthetic_non_sensitive",
+  "cases": [{
+    "caseKey": "general_business_question",
+    "caseVersion": 1,
+    "input": {"objective": "判断虚构促销文案能否上线", "authorizedSourceRefs": ["ctx:snapshot:fixture", "knowledge:chunk:fixture"]},
+    "expected": {"issueTerms": ["合规"], "missingInformation": ["投放渠道"]}
+  }]
+}

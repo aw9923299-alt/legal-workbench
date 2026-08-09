@@ -87,7 +87,7 @@ legal-workbench/
 
 ## 快速启动
 
-开发工具链统一为 Node `22.23.2`（见 `.node-version`）、Python `3.12` 和 uv
+开发工具链统一为 Node `24.15.0`（见 `.node-version`）、Python `3.12` 和 uv
 `0.12.3`。安装 uv 后，所有依赖都从仓库 lockfile 同步：
 
 ```bash

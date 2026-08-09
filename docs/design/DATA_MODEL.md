@@ -356,23 +356,40 @@ interface AgentExecutionPlan {
   id: string;
   matterId: string;
   workItemId?: string;
-  status: 'draft' | 'pending_confirmation' | 'approved' | 'running' | 'paused' | 'completed' | 'failed';
-  planVersion: number;
+  objective: string;
+  status: 'queued' | 'planning' | 'planned' | 'running' | 'partial' | 'completed' | 'failed' | 'needs_information' | 'cancelled';
+  taskTypes: string[];
+  synthesisStrategy: string;
+  missingInformation: string[];
+  requiresUserInput: boolean;
+  correlationId: string;
+  idempotencyKey: string;
+  createdBy: string;
   steps: AgentPlanStep[];
-  generatedByRunId: string;
-  approvedBy?: string;
+  planningRunId?: string;
+  synthesisRunId?: string;
+  version: number;
 }
 
 interface AgentPlanStep {
   id: string;
-  agentId: string;
+  executionPlanId: string;
+  stepId: string;
+  sequence: number;
+  agentKey: 'legal_consultation' | 'contract_review' | 'dispute_complaint' | 'ip_copyright' | 'labor_employment';
   objective: string;
-  dependencyStepIds: string[];
-  condition?: string;
-  executionMode: 'sequential' | 'parallel';
-  expectedArtifactTypes: string[];
+  dependsOn: string[];
+  contextRequirements: string[];
+  status: 'pending' | 'ready' | 'running' | 'completed' | 'failed' | 'skipped' | 'needs_information';
+  latestRunId?: string;
+  attemptCount: number;
+  failureCode?: string;
+  failureMessage?: string;
+  version: number;
 }
 ```
+
+计划内容由 Butler Planning 生成，但只有确定性应用服务可校验和落库：最多四步、仅注册专业 Agent、依赖必须存在且不得成环。无依赖 Step 同一波次并行，有依赖 Step 按拓扑波次执行；模型不能递归生成新的运行。
 
 ## 2.12 AgentRun
 
@@ -381,6 +398,11 @@ interface AgentRun {
   id: string;
   matterId?: string;
   workItemId?: string;
+  executionPlanId?: string;
+  planStepId?: string;
+  parentRunId?: string;
+  retryOfRunId?: string;
+  runRole: 'standalone' | 'butler_planning' | 'specialist' | 'butler_synthesis';
   feishuMessageId?: string;
   agentDefinitionId: string;
   contextSnapshotId: string;

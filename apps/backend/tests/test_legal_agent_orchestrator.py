@@ -1,0 +1,396 @@
+# ruff: noqa: RUF001
+
+from __future__ import annotations
+
+import os
+from datetime import UTC, date, datetime
+from pathlib import Path
+from typing import Any
+from uuid import uuid4
+
+import pytest
+
+from legal_workbench.agents.legal_butler import (
+    ButlerPlanningOutput,
+    ButlerSynthesisOutput,
+)
+from legal_workbench.agents.legal_contracts import (
+    ContractReviewProduct,
+    IpCopyrightProduct,
+)
+from legal_workbench.agents.runtime import (
+    AgentExecutionContext,
+    AgentExecutionResult,
+)
+from legal_workbench.application.legal_agent_orchestrator import (
+    LegalAgentOrchestrator,
+    LegalAgentTrigger,
+)
+from legal_workbench.application.legal_context import AuthorizedLegalContext
+from legal_workbench.domain.entities import ContextSnapshot, LegalMatter
+from legal_workbench.domain.enums import (
+    AgentExecutionPlanStatus,
+    AgentRunRole,
+    BusinessImpact,
+    Confidentiality,
+    LegalRisk,
+    MatterCategory,
+    ReviewPackageStatus,
+)
+
+SOURCE_REF = "knowledge:chunk:fixture-law"
+
+
+def _common_product() -> dict[str, object]:
+    return {
+        "executiveSummary": "建议在补齐授权链并收窄责任条款后推进。",
+        "facts": [
+            {
+                "fact": "虚构合作合同包含图片使用安排。",
+                "sourceRefs": ["ctx:snapshot:fixture"],
+            }
+        ],
+        "issues": ["合同责任与图片授权范围"],
+        "legalBasis": [
+            {
+                "proposition": "应核验合同约定及授权范围。",
+                "sourceRefs": [SOURCE_REF],
+                "jurisdiction": "CN",
+                "effectiveDate": date(2021, 1, 1).isoformat(),
+            }
+        ],
+        "analysis": [
+            {
+                "conclusion": "现有资料显示需要补充授权链。",
+                "supportRefs": ["ctx:snapshot:fixture", SOURCE_REF],
+            }
+        ],
+        "risks": [
+            {
+                "description": "授权范围不完整",
+                "severity": "high",
+                "likelihood": "possible",
+            }
+        ],
+        "recommendedActions": ["补充授权文件"],
+        "missingInformation": [],
+        "assumptions": [],
+        "draftResponse": "请补充授权链，并确认责任上限。",
+        "confidence": 0.82,
+        "citations": [
+            {
+                "sourceRef": SOURCE_REF,
+                "title": "非敏感法律依据 fixture",
+                "sourceType": "knowledge_document",
+                "locator": "第一条",
+                "contentHash": "b" * 64,
+                "internalPrecedent": False,
+            }
+        ],
+    }
+
+
+class FakeContextBuilder:
+    def planning(self, snapshot: ContextSnapshot) -> AuthorizedLegalContext:
+        return AuthorizedLegalContext(
+            payload={"contextSnapshot": snapshot.content},
+            source_refs=frozenset({"ctx:snapshot:fixture"}),
+            internal_precedent_refs=frozenset(),
+        )
+
+    async def specialist(self, **kwargs: object) -> AuthorizedLegalContext:
+        return AuthorizedLegalContext(
+            payload={
+                "contextSnapshot": {"fixture": True},
+                "retrievalResults": [
+                    {
+                        "sourceRef": SOURCE_REF,
+                        "title": "非敏感法律依据 fixture",
+                        "textHash": "b" * 64,
+                        "locator": "第一条",
+                        "internalPrecedent": False,
+                    }
+                ],
+                "upstreamOutputs": kwargs.get("upstream_outputs", {}),
+            },
+            source_refs=frozenset({"ctx:snapshot:fixture", SOURCE_REF}),
+            internal_precedent_refs=frozenset(),
+        )
+
+
+class FakeLegalRuntime:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str]] = []
+
+    async def execute(
+        self,
+        definition: Any,
+        run: Any,
+        context: AgentExecutionContext,
+    ) -> AgentExecutionResult:
+        key = definition.key
+        phase = str((context.input_payload or {}).get("phase"))
+        self.calls.append((key, phase))
+        if key == "legal_butler" and phase == "planning":
+            output = ButlerPlanningOutput.model_validate(
+                {
+                    "phase": "planning",
+                    "objective": run.objective,
+                    "matterId": str(run.matter_id),
+                    "workItemId": None,
+                    "taskTypes": ["contract", "ip"],
+                    "steps": [
+                        {
+                            "stepId": "contract",
+                            "agentKey": "contract_review",
+                            "objective": "定位合同条款风险",
+                            "dependsOn": [],
+                            "contextRequirements": ["contract_segments"],
+                        },
+                        {
+                            "stepId": "ip",
+                            "agentKey": "ip_copyright",
+                            "objective": "核验图片授权链",
+                            "dependsOn": [],
+                            "contextRequirements": ["license_documents"],
+                        },
+                    ],
+                    "missingInformation": [],
+                    "requiresUserInput": False,
+                    "synthesisStrategy": "并行分析后显式处理冲突。",
+                }
+            )
+        elif key == "contract_review":
+            output = ContractReviewProduct.model_validate(
+                _common_product()
+                | {
+                    "contractSummary": "虚构合作合同",
+                    "parties": ["甲方", "乙方"],
+                    "commercialTerms": ["按月结算"],
+                    "clauseRisks": [
+                        {
+                            "clauseLocator": "第8.2条",
+                            "clauseText": "乙方承担全部责任",
+                            "risk": "责任无上限",
+                            "severity": "high",
+                            "sourceRefs": ["ctx:snapshot:fixture"],
+                        }
+                    ],
+                    "missingTerms": ["责任上限"],
+                    "proposedChanges": ["增加责任上限"],
+                    "fallbackPositions": ["排除间接损失"],
+                    "negotiationPoints": ["责任上限"],
+                }
+            )
+        elif key == "ip_copyright":
+            output = IpCopyrightProduct.model_validate(
+                _common_product()
+                | {
+                    "rightsObjects": [
+                        {
+                            "category": "image_portrait",
+                            "description": "合作图片",
+                            "sourceRefs": ["ctx:snapshot:fixture"],
+                        }
+                    ],
+                    "rightsBasis": ["图片作品及肖像权益"],
+                    "authorizationChain": [
+                        {
+                            "grantor": "权利人",
+                            "grantee": "公司",
+                            "scope": "待核实",
+                            "evidenceRefs": ["ctx:snapshot:fixture"],
+                            "gap": "缺少书面授权",
+                        }
+                    ],
+                    "infringementElements": ["受保护客体", "未经许可使用"],
+                    "defenses": ["有效许可"],
+                    "evidence": [
+                        {
+                            "description": "合同图片条款",
+                            "sourceRefs": ["ctx:snapshot:fixture"],
+                            "supports": ["存在图片使用安排"],
+                        }
+                    ],
+                    "evidenceGaps": ["权利人授权文件"],
+                }
+            )
+        else:
+            upstream = (context.input_payload or {}).get("upstreamOutputs", {})
+            output = ButlerSynthesisOutput.model_validate(
+                {
+                    "phase": "synthesis",
+                    "matterAssessment": "合同责任及图片授权均需处理后再推进。",
+                    "coreFacts": ["存在合同及图片使用安排"],
+                    "keyLegalIssues": ["责任上限", "授权链"],
+                    "integratedRisks": [
+                        {
+                            "description": "责任和授权风险",
+                            "severity": "high",
+                            "likelihood": "possible",
+                        }
+                    ],
+                    "recommendedStrategy": ["先补授权，再修改责任条款"],
+                    "nextActions": ["取得授权文件", "发出合同修订意见"],
+                    "missingInformation": [],
+                    "draftResponse": "建议补充授权链，并按意见修改第8.2条。",
+                    "participatingAgents": sorted(
+                        {
+                            value.get("agentKey", step_id)
+                            if isinstance(value, dict)
+                            else step_id
+                            for step_id, value in upstream.items()
+                        }
+                    ),
+                    "citations": [
+                        {
+                            "sourceRef": SOURCE_REF,
+                            "title": "非敏感法律依据 fixture",
+                            "sourceType": "knowledge_document",
+                            "locator": "第一条",
+                            "contentHash": "b" * 64,
+                            "internalPrecedent": False,
+                        }
+                    ],
+                    "conflicts": [],
+                    "confidence": 0.8,
+                }
+            )
+        return AgentExecutionResult(
+            output=output,
+            raw_stdout="fake-runtime",
+            raw_stderr="",
+            output_path=Path("/isolated/fake-output.json"),
+            runtime_version="fake-legal-v1",
+        )
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_multi_agent_orchestration_persists_lineage_draft_and_review() -> None:
+    if os.getenv("RUN_POSTGRES_INTEGRATION_TESTS") != "1":
+        pytest.skip("PostgreSQL integration tests are disabled")
+
+    from sqlalchemy import func, select
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    from legal_workbench.infrastructure.models import (
+        CommunicationModel,
+        DraftArtifactModel,
+        ReviewPackageModel,
+    )
+    from legal_workbench.infrastructure.unit_of_work import SqlAlchemyUnitOfWorkFactory
+
+    engine = create_async_engine(os.environ["LEGAL_WORKBENCH_TEST_DATABASE_URL"])
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    factory = SqlAlchemyUnitOfWorkFactory(session_factory)
+    matter = LegalMatter.create(
+        title="非敏感合作合同与图片授权",
+        primary_category=MatterCategory.CONTRACT,
+        secondary_categories=[MatterCategory.INTELLECTUAL_PROPERTY],
+        owner_id="user:fixture",
+        legal_risk=LegalRisk.HIGH,
+        business_impact=BusinessImpact.PROJECT,
+        confidentiality=Confidentiality.INTERNAL,
+        requester_ids=[],
+        summary="仅用于 E2E fixture。",
+        objective="验证两阶段管家。",
+    )
+    snapshot = ContextSnapshot(
+        id=uuid4(),
+        source_type="matter_fixture",
+        source_id=uuid4().hex,
+        source_ids=[],
+        message_ids=[],
+        file_ids=[],
+        relevant_matter_ids=[str(matter.id)],
+        participant_ids=[],
+        permission_snapshot={},
+        generated_at=datetime.now(UTC),
+        content_hash="a" * 64,
+        content={"fixture": "合同及图片授权"},
+    )
+    runtime = FakeLegalRuntime()
+    trigger = LegalAgentTrigger(
+        matter_id=matter.id,
+        context_snapshot_id=snapshot.id,
+        objective="并行审查合作合同及图片授权风险",
+        actor_id="user:fixture",
+        correlation_id=f"corr-{uuid4().hex}",
+        idempotency_key=f"manual-{uuid4().hex}",
+    )
+    try:
+        async with factory() as uow:
+            await uow.matters.add(matter)
+            await uow.context_snapshots.add(snapshot)
+            await uow.commit()
+        async with session_factory() as session:
+            communications_before = await session.scalar(
+                select(func.count(CommunicationModel.id))
+            )
+
+        orchestrator = LegalAgentOrchestrator(
+            factory,
+            runtime,
+            FakeContextBuilder(),
+            runs_root="/isolated/legal-agent-runs",
+        )
+        result = await orchestrator.execute(trigger)
+
+        assert result.status == AgentExecutionPlanStatus.COMPLETED
+        assert result.artifact_id is not None
+        assert result.review_package_id is not None
+        async with factory() as uow:
+            plan = await uow.agent_execution_plans.get(result.plan_id)
+            runs = list(await uow.agent_runs.list_by_plan(result.plan_id))
+            children = list(await uow.agent_runs.list_children(result.planning_run_id))
+        assert plan is not None
+        assert [step.status.value for step in plan.steps] == ["completed", "completed"]
+        assert [run.run_role for run in runs] == [
+            AgentRunRole.BUTLER_PLANNING,
+            AgentRunRole.SPECIALIST,
+            AgentRunRole.SPECIALIST,
+            AgentRunRole.BUTLER_SYNTHESIS,
+        ]
+        assert len(children) == 3
+        async with session_factory() as session:
+            artifact = await session.get(DraftArtifactModel, result.artifact_id)
+            review = await session.get(ReviewPackageModel, result.review_package_id)
+            communications_after = await session.scalar(
+                select(func.count(CommunicationModel.id))
+            )
+        assert artifact is not None
+        assert artifact.structured_payload["participatingAgents"]
+        assert review is not None
+        assert review.status == ReviewPackageStatus.PENDING_REVIEW
+        assert review.citations[0]["sourceRef"] == SOURCE_REF
+        assert communications_after == communications_before
+
+        replay = await orchestrator.execute(trigger)
+        assert replay.idempotent_replay is True
+        assert replay.plan_id == result.plan_id
+
+        rerun = await orchestrator.rerun_step(
+            plan_id=result.plan_id,
+            step_id="contract",
+            actor_id="user:fixture",
+            correlation_id=f"rerun-{uuid4().hex}",
+        )
+        assert rerun.status == AgentExecutionPlanStatus.COMPLETED
+        async with factory() as uow:
+            rerun_plan = await uow.agent_execution_plans.get(result.plan_id)
+            rerun_runs = list(await uow.agent_runs.list_by_plan(result.plan_id))
+        assert rerun_plan is not None
+        contract_step = next(
+            step for step in rerun_plan.steps if step.step_id == "contract"
+        )
+        assert contract_step.attempt_count == 2
+        latest_contract_run = next(
+            run for run in rerun_runs if run.id == contract_step.latest_run_id
+        )
+        assert latest_contract_run.retry_of_run_id is not None
+        assert len(
+            [run for run in rerun_runs if run.run_role == AgentRunRole.BUTLER_SYNTHESIS]
+        ) == 2
+    finally:
+        await engine.dispose()

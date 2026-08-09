@@ -1,6 +1,8 @@
 from legal_workbench.domain.agents import (
     AgentAttemptLease,
     AgentDefinition,
+    AgentExecutionPlan,
+    AgentPlanStep,
     AgentRun,
     AgentRunAttempt,
     AgentRunSource,
@@ -48,6 +50,13 @@ from legal_workbench.domain.feishu import (
     IntegrationConnection,
     MessageAttachment,
 )
+from legal_workbench.domain.knowledge import (
+    KnowledgeChunk,
+    KnowledgeDocument,
+    KnowledgeRetrievalLog,
+    KnowledgeSearchRequest,
+    KnowledgeSearchResult,
+)
 from legal_workbench.domain.matters import (
     LegalMatter,
     MatterUpdateProposal,
@@ -74,6 +83,8 @@ from legal_workbench.domain.work_items import (
 __all__ = [
     "AgentAttemptLease",
     "AgentDefinition",
+    "AgentExecutionPlan",
+    "AgentPlanStep",
     "AgentRun",
     "AgentRunAttempt",
     "AgentRunSource",
@@ -107,6 +118,11 @@ __all__ = [
     "IntegrationConnection",
     "IntegrationCredential",
     "IntegrationScope",
+    "KnowledgeChunk",
+    "KnowledgeDocument",
+    "KnowledgeRetrievalLog",
+    "KnowledgeSearchRequest",
+    "KnowledgeSearchResult",
     "LegalMatter",
     "MatterUpdateProposal",
     "MessageAttachment",

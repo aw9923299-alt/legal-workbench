@@ -1,5 +1,6 @@
 from legal_workbench.application.ports.agents import (
     AgentDefinitionRepository,
+    AgentExecutionPlanRepository,
     AgentRunAttemptRepository,
     AgentRunRepository,
     AgentRunSourceRepository,
@@ -10,6 +11,7 @@ from legal_workbench.application.ports.agents import (
 from legal_workbench.application.ports.documents import (
     AttachmentStorageQuotaRepository,
     DocumentRepository,
+    KnowledgeRepository,
 )
 from legal_workbench.application.ports.evaluations import (
     EvaluationRepository,
@@ -47,6 +49,7 @@ from legal_workbench.application.ports.setup import (
 
 __all__ = [
     "AgentDefinitionRepository",
+    "AgentExecutionPlanRepository",
     "AgentRunAttemptRepository",
     "AgentRunRepository",
     "AgentRunSourceRepository",
@@ -65,6 +68,7 @@ __all__ = [
     "FeishuRepository",
     "FeishuUserAuthorizationRepository",
     "IdempotencyRepository",
+    "KnowledgeRepository",
     "LegalMatterRepository",
     "MatterUpdateProposalRepository",
     "MessageCandidateRepository",

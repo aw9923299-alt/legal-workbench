@@ -209,6 +209,35 @@ class AgentRunStatus(StrEnum):
     DEAD_LETTER = "dead_letter"
 
 
+class AgentExecutionPlanStatus(StrEnum):
+    QUEUED = "queued"
+    PLANNING = "planning"
+    PLANNED = "planned"
+    RUNNING = "running"
+    PARTIAL = "partial"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    NEEDS_INFORMATION = "needs_information"
+    CANCELLED = "cancelled"
+
+
+class AgentPlanStepStatus(StrEnum):
+    PENDING = "pending"
+    READY = "ready"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    SKIPPED = "skipped"
+    NEEDS_INFORMATION = "needs_information"
+
+
+class AgentRunRole(StrEnum):
+    STANDALONE = "standalone"
+    BUTLER_PLANNING = "butler_planning"
+    SPECIALIST = "specialist"
+    BUTLER_SYNTHESIS = "butler_synthesis"
+
+
 class AgentAttemptStatus(StrEnum):
     RUNNING = "running"
     COMPLETED = "completed"

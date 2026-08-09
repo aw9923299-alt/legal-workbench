@@ -18,6 +18,8 @@ function run(status: AgentRunRecord['status']): AgentRunRecord {
     validationErrors: [], repairAttempted: false, tokenUsage: null, workerId: 'worker-1', leaseExpiresAt: null,
     correlationId: 'corr-run', createdBy: 'system', createdAt: '2026-08-01T10:00:00Z',
     updatedAt: '2026-08-01T10:00:00Z', version: 1, sources: [], statusEvents: [], candidateId: null,
+    matterId: null, workItemId: null, executionPlanId: null, planStepId: null,
+    parentRunId: null, retryOfRunId: null, runRole: 'standalone',
   };
 }
 
@@ -31,5 +33,19 @@ describe('Agent run center', () => {
     expect(await screen.findByText('running')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: /刷新/ }));
     expect(await screen.findByText('completed')).toBeInTheDocument();
+  });
+
+  it('shows Butler planning, specialist and synthesis as one execution tree', async () => {
+    const planning = { ...run('completed'), id: 'planning-run', agentKey: 'legal_butler', runRole: 'butler_planning' as const };
+    const specialist = { ...run('completed'), id: 'specialist-run', agentKey: 'contract_review', runRole: 'specialist' as const, parentRunId: planning.id };
+    const synthesis = { ...run('completed'), id: 'synthesis-run', agentKey: 'legal_butler', runRole: 'butler_synthesis' as const, parentRunId: planning.id };
+    vi.spyOn(legalApi, 'listAgentRuns').mockResolvedValue([planning, specialist, synthesis]);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    render(<MemoryRouter><QueryClientProvider client={client}><AgentCenterPage /></QueryClientProvider></MemoryRouter>);
+
+    expect(await screen.findByText(/Butler Planning · triage/)).toBeInTheDocument();
+    expect(screen.getByText(/Specialist · contract_review/)).toBeInTheDocument();
+    expect(screen.getByText(/Butler Synthesis · legal_butler/)).toBeInTheDocument();
   });
 });

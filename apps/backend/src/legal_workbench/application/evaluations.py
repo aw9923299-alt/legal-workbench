@@ -537,6 +537,15 @@ class RealCodexEvaluationExecutor:
                 failure_code="EVALUATION_RUNTIME_FAILED",
                 runtime_execution_id=run.id,
             )
+        if not isinstance(execution.output, MessageJudgementResult):
+            return EvaluationExecution(
+                output=None,
+                schema_first_pass=False,
+                duration_ms=round((time.monotonic() - started) * 1000),
+                retry_count=int(execution.repair_attempted),
+                failure_code="EVALUATION_OUTPUT_TYPE_INVALID",
+                runtime_execution_id=run.id,
+            )
         return EvaluationExecution(
             output=execution.output,
             schema_first_pass=not execution.repair_attempted,

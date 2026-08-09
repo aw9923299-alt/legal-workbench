@@ -25,6 +25,8 @@ const run = {
   promptVersion: '2.0.0', validationErrors: [], repairAttempted: false, tokenUsage: null, workerId: 'worker-1',
   leaseExpiresAt: null, correlationId: 'corr-detail', createdBy: 'system', createdAt: '2026-08-01T10:00:00Z',
   updatedAt: '2026-08-01T10:00:01Z', version: 1, sources: [], statusEvents: [], candidateId,
+  matterId: null, workItemId: null, executionPlanId: null, planStepId: null,
+  parentRunId: null, retryOfRunId: null, runRole: 'standalone' as const,
 };
 
 describe('Message detail workflow', () => {

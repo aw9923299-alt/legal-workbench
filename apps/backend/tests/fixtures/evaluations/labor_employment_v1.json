@@ -1,0 +1,12 @@
+{
+  "suiteKey": "labor_employment_v1",
+  "version": 1,
+  "agentKey": "labor_employment",
+  "dataClassification": "synthetic_non_sensitive",
+  "cases": [{
+    "caseKey": "discipline_termination_procedure",
+    "caseVersion": 1,
+    "input": {"objective": "分开评估虚构违纪解除的实体和程序风险", "authorizedSourceRefs": ["ctx:snapshot:fixture", "knowledge:chunk:fixture"]},
+    "expected": {"issueTerms": ["解除"], "missingInformation": ["送达记录"]}
+  }]
+}

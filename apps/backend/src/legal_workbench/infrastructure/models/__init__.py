@@ -1,5 +1,7 @@
 from legal_workbench.infrastructure.models.core import (
     AgentDefinitionModel,
+    AgentExecutionPlanModel,
+    AgentPlanStepModel,
     AgentRunAttemptModel,
     AgentRunModel,
     AgentRunSourceModel,
@@ -32,6 +34,9 @@ from legal_workbench.infrastructure.models.core import (
     IntegrationConnectionModel,
     IntegrationCredentialModel,
     IntegrationScopeModel,
+    KnowledgeChunkModel,
+    KnowledgeDocumentModel,
+    KnowledgeRetrievalLogModel,
     LegalMatterModel,
     MatterUpdateProposalModel,
     MessageAttachmentModel,
@@ -49,6 +54,8 @@ from legal_workbench.infrastructure.models.core import (
 
 __all__ = [
     "AgentDefinitionModel",
+    "AgentExecutionPlanModel",
+    "AgentPlanStepModel",
     "AgentRunAttemptModel",
     "AgentRunModel",
     "AgentRunSourceModel",
@@ -81,6 +88,9 @@ __all__ = [
     "IntegrationConnectionModel",
     "IntegrationCredentialModel",
     "IntegrationScopeModel",
+    "KnowledgeChunkModel",
+    "KnowledgeDocumentModel",
+    "KnowledgeRetrievalLogModel",
     "LegalMatterModel",
     "MatterUpdateProposalModel",
     "MessageAttachmentModel",

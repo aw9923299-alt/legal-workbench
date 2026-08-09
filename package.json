@@ -13,7 +13,7 @@
     "preview": "npm run preview --workspace @legal-workbench/web"
   },
   "engines": {
-    "node": ">=22 <23"
+    "node": ">=24 <25"
   },
   "devDependencies": {
     "@playwright/test": "^1.62.1"

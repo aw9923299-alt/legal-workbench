@@ -1,0 +1,12 @@
+{
+  "suiteKey": "contract_review_v1",
+  "version": 1,
+  "agentKey": "contract_review",
+  "dataClassification": "synthetic_non_sensitive",
+  "cases": [{
+    "caseKey": "liability_and_ip_license",
+    "caseVersion": 1,
+    "input": {"objective": "定位第8.2条责任及图片授权风险", "authorizedSourceRefs": ["ctx:snapshot:fixture", "knowledge:chunk:fixture"]},
+    "expected": {"issueTerms": ["责任", "授权"], "clauseLocator": "第8.2条"}
+  }]
+}

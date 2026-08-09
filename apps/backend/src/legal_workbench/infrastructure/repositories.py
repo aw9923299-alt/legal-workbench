@@ -15,6 +15,8 @@ from sqlalchemy.sql.elements import ColumnElement
 from legal_workbench.domain.entities import (
     AgentAttemptLease,
     AgentDefinition,
+    AgentExecutionPlan,
+    AgentPlanStep,
     AgentRun,
     AgentRunAttempt,
     AgentRunSource,
@@ -45,6 +47,11 @@ from legal_workbench.domain.entities import (
     IntegrationConnection,
     IntegrationCredential,
     IntegrationScope,
+    KnowledgeChunk,
+    KnowledgeDocument,
+    KnowledgeRetrievalLog,
+    KnowledgeSearchRequest,
+    KnowledgeSearchResult,
     LegalMatter,
     MatterUpdateProposal,
     MessageCandidate,
@@ -73,8 +80,11 @@ from legal_workbench.domain.enums import (
     ReviewPackageStatus,
 )
 from legal_workbench.domain.errors import StaleAgentAttemptError
+from legal_workbench.infrastructure.knowledge import build_knowledge_search_statement
 from legal_workbench.infrastructure.models import (
     AgentDefinitionModel,
+    AgentExecutionPlanModel,
+    AgentPlanStepModel,
     AgentRunAttemptModel,
     AgentRunModel,
     AgentRunSourceModel,
@@ -107,6 +117,9 @@ from legal_workbench.infrastructure.models import (
     IntegrationConnectionModel,
     IntegrationCredentialModel,
     IntegrationScopeModel,
+    KnowledgeChunkModel,
+    KnowledgeDocumentModel,
+    KnowledgeRetrievalLogModel,
     LegalMatterModel,
     MatterUpdateProposalModel,
     MessageCandidateModel,
@@ -172,6 +185,32 @@ class SqlAlchemyContextSnapshotRepository:
             ContextSnapshotModel.content_hash == content_hash,
         )
         model = (await self._session.execute(statement)).scalar_one_or_none()
+        return None if model is None else self._to_domain(model)
+
+    async def find_latest_for_matter(self, matter_id: UUID) -> ContextSnapshot | None:
+        linked_statement = (
+            select(ContextSnapshotModel)
+            .join(
+                MessageCandidateModel,
+                MessageCandidateModel.context_snapshot_id == ContextSnapshotModel.id,
+            )
+            .join(
+                CandidateMatterLinkModel,
+                CandidateMatterLinkModel.candidate_id == MessageCandidateModel.id,
+            )
+            .where(CandidateMatterLinkModel.matter_id == matter_id)
+            .order_by(ContextSnapshotModel.created_at.desc())
+            .limit(1)
+        )
+        model = (await self._session.execute(linked_statement)).scalar_one_or_none()
+        if model is None:
+            relevant_statement = (
+                select(ContextSnapshotModel)
+                .where(ContextSnapshotModel.relevant_matter_ids.contains([str(matter_id)]))
+                .order_by(ContextSnapshotModel.created_at.desc())
+                .limit(1)
+            )
+            model = (await self._session.execute(relevant_statement)).scalar_one_or_none()
         return None if model is None else self._to_domain(model)
 
     @staticmethod
@@ -463,6 +502,205 @@ class SqlAlchemyAgentDefinitionRepository:
         )
 
 
+class SqlAlchemyAgentExecutionPlanRepository:
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+        self._tracked_plans: dict[UUID, AgentExecutionPlanModel] = {}
+        self._tracked_steps: dict[UUID, AgentPlanStepModel] = {}
+
+    async def add(self, plan: AgentExecutionPlan) -> None:
+        model = AgentExecutionPlanModel(
+            id=plan.id,
+            matter_id=plan.matter_id,
+            work_item_id=plan.work_item_id,
+            objective=plan.objective,
+            status=plan.status,
+            task_types=plan.task_types,
+            synthesis_strategy=plan.synthesis_strategy,
+            missing_information=plan.missing_information,
+            requires_user_input=plan.requires_user_input,
+            planning_run_id=plan.planning_run_id,
+            synthesis_run_id=plan.synthesis_run_id,
+            correlation_id=plan.correlation_id,
+            idempotency_key=plan.idempotency_key,
+            created_by=plan.created_by,
+            created_at=plan.created_at,
+            updated_at=plan.updated_at,
+            version=plan.version,
+        )
+        step_models = [self._step_model(step) for step in plan.steps]
+        self._tracked_plans[plan.id] = model
+        self._tracked_steps.update({model.id: model for model in step_models})
+        self._session.add(model)
+        self._session.add_all(step_models)
+
+    async def add_steps(self, steps: Sequence[AgentPlanStep]) -> None:
+        step_models = [self._step_model(step) for step in steps]
+        self._tracked_steps.update({model.id: model for model in step_models})
+        self._session.add_all(step_models)
+
+    async def get(self, plan_id: UUID) -> AgentExecutionPlan | None:
+        model = await self._session.get(AgentExecutionPlanModel, plan_id)
+        return await self._with_steps(model)
+
+    async def get_for_update(self, plan_id: UUID) -> AgentExecutionPlan | None:
+        statement = (
+            select(AgentExecutionPlanModel)
+            .where(AgentExecutionPlanModel.id == plan_id)
+            .with_for_update()
+        )
+        model = (await self._session.execute(statement)).scalar_one_or_none()
+        return await self._with_steps(model, for_update=True)
+
+    async def get_by_idempotency_key(self, key: str) -> AgentExecutionPlan | None:
+        statement = select(AgentExecutionPlanModel).where(
+            AgentExecutionPlanModel.idempotency_key == key
+        )
+        model = (await self._session.execute(statement)).scalar_one_or_none()
+        return await self._with_steps(model)
+
+    async def list_by_matter(
+        self, matter_id: UUID, *, limit: int = 50
+    ) -> Sequence[AgentExecutionPlan]:
+        statement = (
+            select(AgentExecutionPlanModel)
+            .where(AgentExecutionPlanModel.matter_id == matter_id)
+            .order_by(AgentExecutionPlanModel.created_at.desc())
+            .limit(limit)
+        )
+        models = (await self._session.execute(statement)).scalars().all()
+        values: list[AgentExecutionPlan] = []
+        for model in models:
+            value = await self._with_steps(model)
+            if value is not None:
+                values.append(value)
+        return values
+
+    async def get_step_for_update(self, plan_id: UUID, step_id: str) -> AgentPlanStep | None:
+        statement = (
+            select(AgentPlanStepModel)
+            .where(
+                AgentPlanStepModel.execution_plan_id == plan_id,
+                AgentPlanStepModel.step_id == step_id,
+            )
+            .with_for_update()
+        )
+        model = (await self._session.execute(statement)).scalar_one_or_none()
+        if model is None:
+            return None
+        self._tracked_steps[model.id] = model
+        return self._step_to_domain(model)
+
+    async def save(self, plan: AgentExecutionPlan) -> None:
+        model = self._tracked_plans.get(plan.id)
+        if model is None:
+            model = await self._session.get(AgentExecutionPlanModel, plan.id)
+        if model is None:
+            raise RuntimeError(f"AgentExecutionPlan {plan.id} is not tracked")
+        model.objective = plan.objective
+        model.status = plan.status
+        model.task_types = plan.task_types
+        model.synthesis_strategy = plan.synthesis_strategy
+        model.missing_information = plan.missing_information
+        model.requires_user_input = plan.requires_user_input
+        model.planning_run_id = plan.planning_run_id
+        model.synthesis_run_id = plan.synthesis_run_id
+        model.updated_at = plan.updated_at
+        model.version = plan.version
+
+    async def save_step(self, step: AgentPlanStep) -> None:
+        model = self._tracked_steps.get(step.id)
+        if model is None:
+            model = await self._session.get(AgentPlanStepModel, step.id)
+        if model is None:
+            raise RuntimeError(f"AgentPlanStep {step.id} is not tracked")
+        model.status = step.status
+        model.latest_run_id = step.latest_run_id
+        model.attempt_count = step.attempt_count
+        model.failure_code = step.failure_code
+        model.failure_message = step.failure_message
+        model.updated_at = step.updated_at
+        model.version = step.version
+
+    async def _with_steps(
+        self, model: AgentExecutionPlanModel | None, *, for_update: bool = False
+    ) -> AgentExecutionPlan | None:
+        if model is None:
+            return None
+        statement = (
+            select(AgentPlanStepModel)
+            .where(AgentPlanStepModel.execution_plan_id == model.id)
+            .order_by(AgentPlanStepModel.sequence, AgentPlanStepModel.step_id)
+        )
+        if for_update:
+            statement = statement.with_for_update()
+        step_models = (await self._session.execute(statement)).scalars().all()
+        self._tracked_plans[model.id] = model
+        self._tracked_steps.update({step.id: step for step in step_models})
+        return AgentExecutionPlan(
+            id=model.id,
+            matter_id=model.matter_id,
+            work_item_id=model.work_item_id,
+            objective=model.objective,
+            status=model.status,
+            task_types=model.task_types,
+            synthesis_strategy=model.synthesis_strategy,
+            missing_information=model.missing_information,
+            requires_user_input=model.requires_user_input,
+            planning_run_id=model.planning_run_id,
+            synthesis_run_id=model.synthesis_run_id,
+            correlation_id=model.correlation_id,
+            idempotency_key=model.idempotency_key,
+            created_by=model.created_by,
+            steps=[self._step_to_domain(step) for step in step_models],
+            created_at=model.created_at,
+            updated_at=model.updated_at,
+            version=model.version,
+        )
+
+    @staticmethod
+    def _step_model(step: AgentPlanStep) -> AgentPlanStepModel:
+        return AgentPlanStepModel(
+            id=step.id,
+            execution_plan_id=step.execution_plan_id,
+            step_id=step.step_id,
+            sequence=step.sequence,
+            agent_key=step.agent_key,
+            objective=step.objective,
+            depends_on=step.depends_on,
+            context_requirements=step.context_requirements,
+            status=step.status,
+            latest_run_id=step.latest_run_id,
+            attempt_count=step.attempt_count,
+            failure_code=step.failure_code,
+            failure_message=step.failure_message,
+            created_at=step.created_at,
+            updated_at=step.updated_at,
+            version=step.version,
+        )
+
+    @staticmethod
+    def _step_to_domain(model: AgentPlanStepModel) -> AgentPlanStep:
+        return AgentPlanStep(
+            id=model.id,
+            execution_plan_id=model.execution_plan_id,
+            step_id=model.step_id,
+            sequence=model.sequence,
+            agent_key=model.agent_key,
+            objective=model.objective,
+            depends_on=model.depends_on,
+            context_requirements=model.context_requirements,
+            status=model.status,
+            latest_run_id=model.latest_run_id,
+            attempt_count=model.attempt_count,
+            failure_code=model.failure_code,
+            failure_message=model.failure_message,
+            created_at=model.created_at,
+            updated_at=model.updated_at,
+            version=model.version,
+        )
+
+
 class SqlAlchemyAgentRunRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
@@ -502,6 +740,11 @@ class SqlAlchemyAgentRunRepository:
             token_usage=run.token_usage,
             worker_id=run.worker_id,
             lease_expires_at=run.lease_expires_at,
+            execution_plan_id=run.execution_plan_id,
+            plan_step_id=run.plan_step_id,
+            parent_run_id=run.parent_run_id,
+            retry_of_run_id=run.retry_of_run_id,
+            run_role=run.run_role,
             created_at=run.created_at,
             updated_at=run.updated_at,
             version=run.version,
@@ -565,6 +808,11 @@ class SqlAlchemyAgentRunRepository:
         model.token_usage = run.token_usage
         model.worker_id = run.worker_id
         model.lease_expires_at = run.lease_expires_at
+        model.execution_plan_id = run.execution_plan_id
+        model.plan_step_id = run.plan_step_id
+        model.parent_run_id = run.parent_run_id
+        model.retry_of_run_id = run.retry_of_run_id
+        model.run_role = run.run_role
         model.updated_at = run.updated_at
         model.version = run.version
         self._session.add_all(
@@ -597,6 +845,24 @@ class SqlAlchemyAgentRunRepository:
             select(AgentRunModel)
             .where(AgentRunModel.feishu_message_id == message_id)
             .order_by(AgentRunModel.created_at.desc())
+        )
+        models = (await self._session.execute(statement)).scalars().all()
+        return [self._to_domain(model) for model in models]
+
+    async def list_by_plan(self, plan_id: UUID) -> Sequence[AgentRun]:
+        statement = (
+            select(AgentRunModel)
+            .where(AgentRunModel.execution_plan_id == plan_id)
+            .order_by(AgentRunModel.created_at, AgentRunModel.id)
+        )
+        models = (await self._session.execute(statement)).scalars().all()
+        return [self._to_domain(model) for model in models]
+
+    async def list_children(self, parent_run_id: UUID) -> Sequence[AgentRun]:
+        statement = (
+            select(AgentRunModel)
+            .where(AgentRunModel.parent_run_id == parent_run_id)
+            .order_by(AgentRunModel.created_at, AgentRunModel.id)
         )
         models = (await self._session.execute(statement)).scalars().all()
         return [self._to_domain(model) for model in models]
@@ -690,6 +956,11 @@ class SqlAlchemyAgentRunRepository:
             created_at=model.created_at,
             updated_at=model.updated_at,
             version=model.version,
+            execution_plan_id=model.execution_plan_id,
+            plan_step_id=model.plan_step_id,
+            parent_run_id=model.parent_run_id,
+            retry_of_run_id=model.retry_of_run_id,
+            run_role=model.run_role,
         )
 
 
@@ -916,6 +1187,159 @@ class SqlAlchemyDraftArtifactRepository:
                 created_at=artifact.created_at,
                 updated_at=artifact.updated_at,
             )
+        )
+
+
+class SqlAlchemyKnowledgeRepository:
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def add_document(self, document: KnowledgeDocument) -> None:
+        self._session.add(
+            KnowledgeDocumentModel(
+                id=document.id,
+                source_type=document.source_type,
+                source_id=document.source_id,
+                document_version_id=document.document_version_id,
+                matter_id=document.matter_id,
+                title=document.title,
+                document_type=document.document_type,
+                agent_types=document.agent_types,
+                matter_types=document.matter_types,
+                jurisdiction=document.jurisdiction,
+                effective_from=document.effective_from,
+                effective_to=document.effective_to,
+                status=document.status,
+                source_priority=document.source_priority,
+                internal_precedent=document.internal_precedent,
+                confidentiality=document.confidentiality,
+                approved_by=document.approved_by,
+                created_at=document.created_at,
+                updated_at=document.updated_at,
+                version=document.version,
+            )
+        )
+
+    async def get_document(self, document_id: UUID) -> KnowledgeDocument | None:
+        model = await self._session.get(KnowledgeDocumentModel, document_id)
+        return None if model is None else self._document_to_domain(model)
+
+    async def find_document_by_source(
+        self, *, source_type: str, source_id: str
+    ) -> KnowledgeDocument | None:
+        statement = select(KnowledgeDocumentModel).where(
+            KnowledgeDocumentModel.source_type == source_type,
+            KnowledgeDocumentModel.source_id == source_id,
+        )
+        model = (await self._session.execute(statement)).scalar_one_or_none()
+        return None if model is None else self._document_to_domain(model)
+
+    async def add_chunks(self, chunks: Sequence[KnowledgeChunk]) -> None:
+        self._session.add_all(
+            [
+                KnowledgeChunkModel(
+                    id=chunk.id,
+                    knowledge_document_id=chunk.knowledge_document_id,
+                    document_segment_id=chunk.document_segment_id,
+                    sequence=chunk.sequence,
+                    locator=chunk.locator,
+                    text=chunk.text,
+                    normalized_text=chunk.normalized_text,
+                    text_hash=chunk.text_hash,
+                    created_at=chunk.created_at,
+                )
+                for chunk in chunks
+            ]
+        )
+
+    async def list_chunks(self, document_id: UUID) -> Sequence[KnowledgeChunk]:
+        statement = (
+            select(KnowledgeChunkModel)
+            .where(KnowledgeChunkModel.knowledge_document_id == document_id)
+            .order_by(KnowledgeChunkModel.sequence)
+        )
+        models = (await self._session.execute(statement)).scalars().all()
+        return [self._chunk_to_domain(model) for model in models]
+
+    async def add_retrieval_log(self, log: KnowledgeRetrievalLog) -> None:
+        self._session.add(
+            KnowledgeRetrievalLogModel(
+                id=log.id,
+                query_hash=log.query_hash,
+                filters=log.filters,
+                selected_chunk_ids=[str(value) for value in log.selected_chunk_ids],
+                component_scores=log.component_scores,
+                correlation_id=log.correlation_id,
+                agent_run_id=log.agent_run_id,
+                created_at=log.created_at,
+            )
+        )
+
+    async def search(
+        self, request: KnowledgeSearchRequest
+    ) -> Sequence[KnowledgeSearchResult]:
+        rows = (await self._session.execute(build_knowledge_search_statement(request))).all()
+        return [
+            KnowledgeSearchResult(
+                document=self._document_to_domain(document_model),
+                chunk=self._chunk_to_domain(chunk_model),
+                source_ref=f"knowledge:chunk:{chunk_model.id}",
+                score=float(total_score),
+                component_scores={
+                    "fullText": float(full_text_score),
+                    "trigram": float(trigram_score),
+                    "priority": float(priority_score),
+                    "effective": float(effective_score),
+                },
+            )
+            for (
+                chunk_model,
+                document_model,
+                full_text_score,
+                trigram_score,
+                priority_score,
+                effective_score,
+                total_score,
+            ) in rows
+        ]
+
+    @staticmethod
+    def _document_to_domain(model: KnowledgeDocumentModel) -> KnowledgeDocument:
+        return KnowledgeDocument(
+            id=model.id,
+            source_type=model.source_type,
+            source_id=model.source_id,
+            document_version_id=model.document_version_id,
+            matter_id=model.matter_id,
+            title=model.title,
+            document_type=model.document_type,
+            agent_types=model.agent_types,
+            matter_types=model.matter_types,
+            jurisdiction=model.jurisdiction,
+            effective_from=model.effective_from,
+            effective_to=model.effective_to,
+            status=model.status,
+            source_priority=model.source_priority,
+            internal_precedent=model.internal_precedent,
+            confidentiality=model.confidentiality,
+            approved_by=model.approved_by,
+            created_at=model.created_at,
+            updated_at=model.updated_at,
+            version=model.version,
+        )
+
+    @staticmethod
+    def _chunk_to_domain(model: KnowledgeChunkModel) -> KnowledgeChunk:
+        return KnowledgeChunk(
+            id=model.id,
+            knowledge_document_id=model.knowledge_document_id,
+            document_segment_id=model.document_segment_id,
+            sequence=model.sequence,
+            locator=model.locator,
+            text=model.text,
+            normalized_text=model.normalized_text,
+            text_hash=model.text_hash,
+            created_at=model.created_at,
         )
 
 

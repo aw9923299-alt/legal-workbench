@@ -1,0 +1,12 @@
+{
+  "suiteKey": "ip_copyright_v1",
+  "version": 1,
+  "agentKey": "ip_copyright",
+  "dataClassification": "synthetic_non_sensitive",
+  "cases": [{
+    "caseKey": "image_authorization_chain",
+    "caseVersion": 1,
+    "input": {"objective": "核验虚构宣传图片的著作权与肖像授权链", "authorizedSourceRefs": ["ctx:snapshot:fixture", "knowledge:chunk:fixture"]},
+    "expected": {"issueTerms": ["授权链"], "missingInformation": ["原始授权书"]}
+  }]
+}

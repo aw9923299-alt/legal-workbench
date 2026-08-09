@@ -7,6 +7,7 @@ from uuid import UUID
 
 from legal_workbench.application.ports.agents import (
     AgentDefinitionRepository,
+    AgentExecutionPlanRepository,
     AgentRunAttemptRepository,
     AgentRunRepository,
     AgentRunSourceRepository,
@@ -17,6 +18,7 @@ from legal_workbench.application.ports.agents import (
 from legal_workbench.application.ports.documents import (
     AttachmentStorageQuotaRepository,
     DocumentRepository,
+    KnowledgeRepository,
 )
 from legal_workbench.application.ports.evaluations import (
     EvaluationRepository,
@@ -58,6 +60,7 @@ __all__ = [
     "UnitOfWorkFactory",
 ]
 
+
 class AuditEventRepository(Protocol):
     async def add(self, event: AuditEvent) -> None: ...
 
@@ -76,6 +79,7 @@ class UnitOfWork(Protocol):
     context_snapshots: ContextSnapshotRepository
     candidates: MessageCandidateRepository
     agent_definitions: AgentDefinitionRepository
+    agent_execution_plans: AgentExecutionPlanRepository
     agent_runs: AgentRunRepository
     agent_run_attempts: AgentRunAttemptRepository
     agent_run_sources: AgentRunSourceRepository
@@ -93,6 +97,7 @@ class UnitOfWork(Protocol):
     feishu_user_authorizations: FeishuUserAuthorizationRepository
     feishu_personal_sync: FeishuPersonalSyncRepository
     documents: DocumentRepository
+    knowledge: KnowledgeRepository
     storage_quota: AttachmentStorageQuotaRepository
     evaluations: EvaluationRepository
     setup: SetupRepository
