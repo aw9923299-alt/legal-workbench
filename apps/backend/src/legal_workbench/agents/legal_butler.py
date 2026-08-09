@@ -4,7 +4,12 @@ from typing import Literal
 
 from pydantic import Field, model_validator
 
-from legal_workbench.agents.legal_contracts import LegalCitation, LegalRiskItem, StrictLegalModel
+from legal_workbench.agents.legal_contracts import (
+    LegalCitation,
+    RiskLikelihood,
+    RiskSeverity,
+    StrictLegalModel,
+)
 
 LEGAL_SPECIALIST_KEYS = frozenset(
     {
@@ -73,20 +78,98 @@ class ButlerAgentPosition(StrictLegalModel):
 class ButlerConflict(StrictLegalModel):
     topic: str = Field(min_length=1)
     agent_positions: list[ButlerAgentPosition] = Field(min_length=2)
+    support_refs: list[str] = Field(min_length=1)
     resolution_needed: str = Field(min_length=1)
+
+
+class ButlerGroundedFact(StrictLegalModel):
+    fact: str = Field(min_length=1)
+    source_refs: list[str] = Field(min_length=1)
+
+
+class ButlerGroundedIssue(StrictLegalModel):
+    issue: str = Field(min_length=1)
+    source_refs: list[str] = Field(min_length=1)
+
+
+class ButlerGroundedRisk(StrictLegalModel):
+    description: str = Field(min_length=1)
+    severity: RiskSeverity
+    likelihood: RiskLikelihood
+    support_refs: list[str] = Field(min_length=1)
+
+
+class ButlerGroundedStrategy(StrictLegalModel):
+    action: str = Field(min_length=1)
+    rationale: str = Field(min_length=1)
+    support_refs: list[str] = Field(min_length=1)
+
+
+class ButlerGroundedAction(StrictLegalModel):
+    action: str = Field(min_length=1)
+    support_refs: list[str] = Field(min_length=1)
 
 
 class ButlerSynthesisOutput(StrictLegalModel):
     phase: Literal["synthesis"]
     matter_assessment: str = Field(min_length=1)
-    core_facts: list[str]
-    key_legal_issues: list[str]
-    integrated_risks: list[LegalRiskItem]
-    recommended_strategy: list[str]
-    next_actions: list[str]
+    core_facts: list[ButlerGroundedFact]
+    key_legal_issues: list[ButlerGroundedIssue]
+    integrated_risks: list[ButlerGroundedRisk]
+    recommended_strategy: list[ButlerGroundedStrategy]
+    next_actions: list[ButlerGroundedAction]
     missing_information: list[str]
     draft_response: str
     participating_agents: list[str]
     citations: list[LegalCitation]
     conflicts: list[ButlerConflict]
     confidence: float = Field(ge=0, le=1)
+
+
+def validate_butler_synthesis_sources(
+    output: ButlerSynthesisOutput,
+    *,
+    authorized_source_refs: set[str],
+    internal_precedent_refs: set[str],
+) -> None:
+    support_refs = {
+        source_ref
+        for item in (
+            *output.core_facts,
+            *output.key_legal_issues,
+            *output.integrated_risks,
+            *output.recommended_strategy,
+            *output.next_actions,
+            *output.conflicts,
+        )
+        for source_ref in (
+            getattr(item, "source_refs", None)
+            or getattr(item, "support_refs", None)
+            or []
+        )
+    }
+    unauthorized = sorted(support_refs - authorized_source_refs)
+    if unauthorized:
+        raise ValueError(f"Unauthorized Butler synthesis support references: {unauthorized}")
+    if any(citation.source_type == "upstream_agent" for citation in output.citations):
+        raise ValueError("Butler synthesis citations must identify original sources.")
+    citation_refs = {citation.source_ref for citation in output.citations}
+    unauthorized_citations = sorted(citation_refs - authorized_source_refs)
+    if unauthorized_citations:
+        raise ValueError(f"Unauthorized Butler synthesis citations: {unauthorized_citations}")
+    missing_citations = sorted(support_refs - citation_refs)
+    if missing_citations:
+        raise ValueError(
+            f"Butler synthesis support references are missing final citations: {missing_citations}"
+        )
+    mislabeled = sorted(
+        citation.source_ref
+        for citation in output.citations
+        if citation.internal_precedent
+        != (citation.source_ref in internal_precedent_refs)
+    )
+    if mislabeled:
+        raise ValueError(
+            "Butler synthesis precedent labels do not match authorized context: "
+            f"{mislabeled}"
+        )

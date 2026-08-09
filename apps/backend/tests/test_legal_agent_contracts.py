@@ -30,8 +30,10 @@ def _grounded_envelope() -> dict[str, object]:
             {
                 "proposition": "使用他人作品通常需要核验许可范围。",
                 "sourceRefs": ["knowledge:chunk:k-1"],
+                "authorityRole": "formal_legal_basis",
                 "jurisdiction": "CN",
                 "effectiveDate": date(2021, 6, 1).isoformat(),
+                "historicalAnalysis": False,
             }
         ],
         "analysis": [

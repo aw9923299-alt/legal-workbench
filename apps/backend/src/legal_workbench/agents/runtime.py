@@ -19,6 +19,7 @@ class AgentExecutionContext:
     input_payload: dict[str, object] | None = None
     authorized_source_refs: frozenset[str] = frozenset()
     internal_precedent_refs: frozenset[str] = frozenset()
+    source_authorities: dict[str, dict[str, object]] | None = None
 
 
 @dataclass(frozen=True, slots=True)

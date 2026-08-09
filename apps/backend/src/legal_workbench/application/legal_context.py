@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from uuid import UUID
 
@@ -8,12 +8,25 @@ from legal_workbench.application.knowledge import KnowledgeRetrievalService
 from legal_workbench.domain.entities import ContextSnapshot, KnowledgeSearchRequest
 
 SUPPORTED_KNOWLEDGE_DOCUMENT_TYPES = (
+    "law",
+    "administrative_regulation",
+    "judicial_interpretation",
+    "department_rule",
+    "local_regulation",
+    "local_government_rule",
+    "normative_document",
+    "guiding_case",
+    "court_case",
+    "regulatory_guidance",
+    "contract",
     "company_policy",
     "contract_template",
     "legal_opinion",
     "internal_opinion",
     "regulation",
     "business_rule",
+    "internal_precedent",
+    "unknown",
 )
 
 
@@ -22,6 +35,7 @@ class AuthorizedLegalContext:
     payload: dict[str, object]
     source_refs: frozenset[str]
     internal_precedent_refs: frozenset[str]
+    source_authorities: dict[str, dict[str, object]] = field(default_factory=dict)
 
 
 class LegalContextBuilder:
@@ -66,6 +80,30 @@ class LegalContextBuilder:
         precedents = {
             result.source_ref for result in results if result.internal_precedent
         }
+        source_authorities: dict[str, dict[str, object]] = {
+            result.source_ref: {
+                "authorityType": result.document.authority_type.value,
+                "authorityRole": (
+                    result.document.authority_role.value
+                    if result.document.authority_role is not None
+                    else None
+                ),
+                "authorityStatus": result.document.authority_status.value,
+                "metadataStatus": result.document.metadata_status.value,
+                "jurisdiction": result.document.jurisdiction,
+                "effectiveFrom": (
+                    result.document.effective_from.isoformat()
+                    if result.document.effective_from
+                    else None
+                ),
+                "effectiveTo": (
+                    result.document.effective_to.isoformat()
+                    if result.document.effective_to
+                    else None
+                ),
+            }
+            for result in results
+        }
         return AuthorizedLegalContext(
             payload={
                 "contextSnapshot": self._snapshot_payload(snapshot),
@@ -88,6 +126,7 @@ class LegalContextBuilder:
                         ),
                         "sourcePriority": result.document.source_priority,
                         "internalPrecedent": result.internal_precedent,
+                        **source_authorities[result.source_ref],
                         "locator": result.chunk.locator,
                         "text": result.chunk.text,
                         "textHash": result.chunk.text_hash,
@@ -99,6 +138,7 @@ class LegalContextBuilder:
             },
             source_refs=frozenset(snapshot_refs | knowledge_refs),
             internal_precedent_refs=frozenset(precedents),
+            source_authorities=source_authorities,
         )
 
     @staticmethod

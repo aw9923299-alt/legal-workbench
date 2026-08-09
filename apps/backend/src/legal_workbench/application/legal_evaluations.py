@@ -120,10 +120,10 @@ def score_butler_outputs(
     only_required = routed <= required_specialists
     synthesis_sections = [
         synthesis.matter_assessment,
-        *synthesis.core_facts,
-        *synthesis.key_legal_issues,
-        *synthesis.recommended_strategy,
-        *synthesis.next_actions,
+        *(value.fact for value in synthesis.core_facts),
+        *(value.issue for value in synthesis.key_legal_issues),
+        *(value.action for value in synthesis.recommended_strategy),
+        *(value.action for value in synthesis.next_actions),
         synthesis.draft_response,
     ]
     return ButlerQualityScores(

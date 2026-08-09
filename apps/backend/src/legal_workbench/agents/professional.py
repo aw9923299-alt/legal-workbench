@@ -5,7 +5,7 @@ from __future__ import annotations
 from legal_workbench.agents.legal_butler import LEGAL_SPECIALIST_KEYS
 from legal_workbench.agents.legal_contracts import LEGAL_OUTPUT_MODELS
 
-PROFESSIONAL_AGENT_VERSION = "1.0.0"
+PROFESSIONAL_AGENT_VERSION = "1.1.0"
 
 PROFESSIONAL_AGENT_NAMES: dict[str, str] = {
     "legal_consultation": "一般法律咨询",
@@ -32,6 +32,8 @@ COMMON_LEGAL_PROMPT = """
 事实、推断、法律依据和内部先例必须分开；每项事实、法律依据及分析结论都要引用授权的
 sourceRef。内部意见只能标为 internal_precedent，不得作为正式法律依据。证据不足必须写入
 missingInformation，禁止虚构法规、条款、案例、文件内容或把假设写成事实。
+每项 legalBasis 必须按 authorized context 中的 authorityRole、法域和效力日期原样声明；
+公司制度、业务规则、合同和历史意见不得声明为 formal_legal_basis。
 只输出符合输出 Schema 的单一 JSON 对象，不要输出 Markdown 或 Schema 外字段。
 """.strip()
 

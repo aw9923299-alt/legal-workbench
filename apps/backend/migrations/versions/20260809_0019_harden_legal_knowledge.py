@@ -18,6 +18,15 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
+    op.add_column(
+        "review_packages",
+        sa.Column(
+            "grounding_payload",
+            postgresql.JSONB(),
+            server_default=sa.text("'{}'::jsonb"),
+            nullable=False,
+        ),
+    )
     op.create_table(
         "local_knowledge_scans",
         sa.Column("id", sa.Uuid(), nullable=False),
@@ -458,3 +467,4 @@ def downgrade() -> None:
     op.drop_index("ix_local_knowledge_scans_status_started", table_name="local_knowledge_scans")
     op.drop_index("ix_local_knowledge_scans_root_started", table_name="local_knowledge_scans")
     op.drop_table("local_knowledge_scans")
+    op.drop_column("review_packages", "grounding_payload")

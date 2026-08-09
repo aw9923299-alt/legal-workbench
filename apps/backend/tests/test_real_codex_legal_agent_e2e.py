@@ -26,8 +26,12 @@ from legal_workbench.domain.entities import (
 from legal_workbench.domain.enums import (
     AgentExecutionPlanStatus,
     AgentRunRole,
+    AuthorityRole,
+    AuthorityStatus,
+    AuthorityType,
     BusinessImpact,
     Confidentiality,
+    KnowledgeMetadataStatus,
     LegalRisk,
     MatterCategory,
 )
@@ -110,6 +114,10 @@ async def test_real_codex_single_and_multi_agent_e2e() -> None:
         internal_precedent=False,
         confidentiality="internal",
         approved_by="synthetic-fixture",
+        authority_type=AuthorityType.BUSINESS_RULE,
+        authority_role=AuthorityRole.INTERNAL_BASIS,
+        authority_status=AuthorityStatus.EFFECTIVE,
+        metadata_status=KnowledgeMetadataStatus.READY,
     )
     chunk = KnowledgeChunk(
         id=uuid4(),

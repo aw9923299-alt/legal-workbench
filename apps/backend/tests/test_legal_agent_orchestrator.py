@@ -55,8 +55,10 @@ def _common_product() -> dict[str, object]:
             {
                 "proposition": "应核验合同约定及授权范围。",
                 "sourceRefs": [SOURCE_REF],
+                "authorityRole": "formal_legal_basis",
                 "jurisdiction": "CN",
                 "effectiveDate": date(2021, 1, 1).isoformat(),
+                "historicalAnalysis": False,
             }
         ],
         "analysis": [
@@ -221,17 +223,35 @@ class FakeLegalRuntime:
                 {
                     "phase": "synthesis",
                     "matterAssessment": "合同责任及图片授权均需处理后再推进。",
-                    "coreFacts": ["存在合同及图片使用安排"],
-                    "keyLegalIssues": ["责任上限", "授权链"],
+                    "coreFacts": [
+                        {
+                            "fact": "存在合同及图片使用安排",
+                            "sourceRefs": [SOURCE_REF],
+                        }
+                    ],
+                    "keyLegalIssues": [
+                        {"issue": "责任上限", "sourceRefs": [SOURCE_REF]},
+                        {"issue": "授权链", "sourceRefs": [SOURCE_REF]},
+                    ],
                     "integratedRisks": [
                         {
                             "description": "责任和授权风险",
                             "severity": "high",
                             "likelihood": "possible",
+                            "supportRefs": [SOURCE_REF],
                         }
                     ],
-                    "recommendedStrategy": ["先补授权，再修改责任条款"],
-                    "nextActions": ["取得授权文件", "发出合同修订意见"],
+                    "recommendedStrategy": [
+                        {
+                            "action": "先补授权，再修改责任条款",
+                            "rationale": "控制授权和责任风险",
+                            "supportRefs": [SOURCE_REF],
+                        }
+                    ],
+                    "nextActions": [
+                        {"action": "取得授权文件", "supportRefs": [SOURCE_REF]},
+                        {"action": "发出合同修订意见", "supportRefs": [SOURCE_REF]},
+                    ],
                     "missingInformation": [],
                     "draftResponse": "建议补充授权链，并按意见修改第8.2条。",
                     "participatingAgents": sorted(

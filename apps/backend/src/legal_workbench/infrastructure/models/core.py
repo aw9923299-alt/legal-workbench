@@ -655,6 +655,9 @@ class ReviewPackageModel(UuidPrimaryKeyMixin, TimestampMixin, VersionedMixin, Ba
     citations: Mapped[list[dict[str, Any]]] = mapped_column(
         JSONB, nullable=False, default=list, server_default=JSON_EMPTY_LIST
     )
+    grounding_payload: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=JSON_EMPTY_OBJECT
+    )
     proposed_content: Mapped[str] = mapped_column(Text, nullable=False)
     target: Mapped[dict[str, Any]] = mapped_column(
         JSONB, nullable=False, default=dict, server_default=JSON_EMPTY_OBJECT

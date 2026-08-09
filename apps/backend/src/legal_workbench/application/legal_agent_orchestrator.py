@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -75,6 +75,7 @@ class SpecialistStepExecution:
     failure_message: str | None = None
     source_refs: frozenset[str] = frozenset()
     internal_precedent_refs: frozenset[str] = frozenset()
+    source_authorities: dict[str, dict[str, object]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -474,6 +475,7 @@ class LegalAgentOrchestrator:
                     input_payload=input_payload,
                     authorized_source_refs=context.source_refs,
                     internal_precedent_refs=context.internal_precedent_refs,
+                    source_authorities=context.source_authorities,
                 ),
             )
             if not isinstance(execution.output, LegalWorkProduct):
@@ -497,6 +499,7 @@ class LegalAgentOrchestrator:
                 failure_message=str(failure),
                 source_refs=context.source_refs,
                 internal_precedent_refs=context.internal_precedent_refs,
+                source_authorities=context.source_authorities,
             )
         product = execution.output
         needs_information = bool(product.missing_information)
@@ -535,6 +538,7 @@ class LegalAgentOrchestrator:
             output=product,
             source_refs=context.source_refs,
             internal_precedent_refs=context.internal_precedent_refs,
+            source_authorities=context.source_authorities,
         )
 
     async def _start_step_run(
@@ -590,6 +594,11 @@ class LegalAgentOrchestrator:
             for result in step_results
             for value in result.internal_precedent_refs
         )
+        source_authorities = {
+            source_ref: metadata
+            for result in step_results
+            for source_ref, metadata in result.source_authorities.items()
+        }
         context = AuthorizedLegalContext(
             payload={
                 "contextSnapshot": self._context_builder.planning(snapshot).payload,
@@ -608,6 +617,7 @@ class LegalAgentOrchestrator:
             source_refs=source_refs
             | self._context_builder.planning(snapshot).source_refs,
             internal_precedent_refs=precedents,
+            source_authorities=source_authorities,
         )
         upstream: dict[str, object] = {
             result.step_id: (
@@ -642,6 +652,7 @@ class LegalAgentOrchestrator:
                     input_payload=input_payload,
                     authorized_source_refs=context.source_refs,
                     internal_precedent_refs=context.internal_precedent_refs,
+                    source_authorities=context.source_authorities,
                 ),
             )
             if not isinstance(execution.output, ButlerSynthesisOutput):
@@ -701,11 +712,16 @@ class LegalAgentOrchestrator:
             package_type=ReviewPackageType.LEGAL_ANALYSIS,
             title=artifact.title,
             background=output.matter_assessment,
-            confirmed_facts=[{"fact": value} for value in output.core_facts],
+            confirmed_facts=[
+                value.model_dump(by_alias=True, mode="json") for value in output.core_facts
+            ],
             unconfirmed_facts=[
                 {"missingInformation": value} for value in output.missing_information
             ],
-            reasoning="\n".join(output.recommended_strategy)
+            reasoning="\n".join(
+                f"{value.action}: {value.rationale}"
+                for value in output.recommended_strategy
+            )
             or "Butler synthesis is available in the structured payload.",
             risks=[
                 value.model_dump(by_alias=True, mode="json")
@@ -719,6 +735,32 @@ class LegalAgentOrchestrator:
             proposed_content=output.draft_response,
             target={"channel": "internal", "matterId": str(plan.matter_id)},
             created_by=trigger.actor_id,
+            grounding_payload={
+                "coreFacts": [
+                    value.model_dump(by_alias=True, mode="json")
+                    for value in output.core_facts
+                ],
+                "keyLegalIssues": [
+                    value.model_dump(by_alias=True, mode="json")
+                    for value in output.key_legal_issues
+                ],
+                "integratedRisks": [
+                    value.model_dump(by_alias=True, mode="json")
+                    for value in output.integrated_risks
+                ],
+                "recommendedStrategy": [
+                    value.model_dump(by_alias=True, mode="json")
+                    for value in output.recommended_strategy
+                ],
+                "nextActions": [
+                    value.model_dump(by_alias=True, mode="json")
+                    for value in output.next_actions
+                ],
+                "conflicts": [
+                    value.model_dump(by_alias=True, mode="json")
+                    for value in output.conflicts
+                ],
+            },
         )
         review.submit(expected_version=review.version)
         async with self._uow_factory() as uow:
@@ -955,6 +997,13 @@ class LegalAgentOrchestrator:
                         "sourceRef": source_ref,
                         "locator": item.get("locator"),
                         "internalPrecedent": item.get("internalPrecedent", False),
+                        "authorityType": item.get("authorityType"),
+                        "authorityRole": item.get("authorityRole"),
+                        "authorityStatus": item.get("authorityStatus"),
+                        "metadataStatus": item.get("metadataStatus"),
+                        "jurisdiction": item.get("jurisdiction"),
+                        "effectiveFrom": item.get("effectiveFrom"),
+                        "effectiveTo": item.get("effectiveTo"),
                     },
                 )
             )
@@ -1080,6 +1129,23 @@ class LegalAgentOrchestrator:
                 if source.citation_metadata.get("sourceRef")
                 and source.citation_metadata.get("internalPrecedent") is True
             )
+            source_authorities = {
+                str(source.citation_metadata["sourceRef"]): {
+                    key: source.citation_metadata.get(key)
+                    for key in (
+                        "authorityType",
+                        "authorityRole",
+                        "authorityStatus",
+                        "metadataStatus",
+                        "jurisdiction",
+                        "effectiveFrom",
+                        "effectiveTo",
+                    )
+                }
+                for source in run_sources
+                if source.citation_metadata.get("sourceRef")
+                and source.citation_metadata.get("authorityType")
+            }
             values.append(
                 SpecialistStepExecution(
                     step_id=step.step_id,
@@ -1091,6 +1157,7 @@ class LegalAgentOrchestrator:
                     failure_message=step.failure_message,
                     source_refs=source_refs,
                     internal_precedent_refs=internal_precedent_refs,
+                    source_authorities=source_authorities,
                 )
             )
         return values

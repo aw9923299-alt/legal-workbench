@@ -25,8 +25,10 @@ def _contract_output() -> dict[str, object]:
             {
                 "proposition": "合同责任应结合约定与适用法律判断。",
                 "sourceRefs": ["knowledge:chunk:k-1"],
+                "authorityRole": "formal_legal_basis",
                 "jurisdiction": "CN",
                 "effectiveDate": date(2021, 1, 1).isoformat(),
+                "historicalAnalysis": False,
             }
         ],
         "analysis": [
@@ -131,6 +133,17 @@ async def test_runtime_validates_contract_review_with_registered_schema(tmp_path
             },
         },
         authorized_source_refs=frozenset({"ctx:segment:s-1", "knowledge:chunk:k-1"}),
+        source_authorities={
+            "knowledge:chunk:k-1": {
+                "authorityType": "law",
+                "authorityRole": "formal_legal_basis",
+                "authorityStatus": "effective",
+                "metadataStatus": "ready",
+                "jurisdiction": "CN",
+                "effectiveFrom": "2021-01-01",
+                "effectiveTo": None,
+            }
+        },
     )
     runtime = CodexCliRuntime(
         runs_root=tmp_path / "runs",

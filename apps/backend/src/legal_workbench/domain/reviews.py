@@ -39,6 +39,7 @@ class ReviewPackage:
     target: dict[str, object]
     created_by: str
     work_item_id: UUID | None = None
+    grounding_payload: dict[str, object] = field(default_factory=dict)
     status: ReviewPackageStatus = ReviewPackageStatus.DRAFT
     submitted_at: datetime | None = None
     approved_content_hash: str | None = None
@@ -62,6 +63,7 @@ class ReviewPackage:
         proposed_content: str,
         target: dict[str, object],
         created_by: str,
+        grounding_payload: dict[str, object] | None = None,
     ) -> ReviewPackage:
         if not title.strip() or not background.strip() or not reasoning.strip():
             raise DomainValidationError(
@@ -94,6 +96,7 @@ class ReviewPackage:
             proposed_content=proposed_content.strip(),
             target=target,
             created_by=created_by,
+            grounding_payload=grounding_payload or {},
         )
 
     def submit(self, *, expected_version: int) -> None:

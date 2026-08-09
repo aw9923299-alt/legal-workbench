@@ -1,11 +1,18 @@
 from __future__ import annotations
 
 import datetime as dt
+from collections.abc import Mapping
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from legal_workbench.agents.message_judgement import _to_camel
+from legal_workbench.domain.enums import (
+    AuthorityRole,
+    AuthorityStatus,
+    AuthorityType,
+    KnowledgeMetadataStatus,
+)
 
 
 class StrictLegalModel(BaseModel):
@@ -36,8 +43,20 @@ class GroundedFact(StrictLegalModel):
 class LegalBasisItem(StrictLegalModel):
     proposition: str = Field(min_length=1)
     source_refs: list[str] = Field(min_length=1)
+    authority_role: AuthorityRole
     jurisdiction: str = Field(min_length=1)
     effective_date: dt.date
+    historical_analysis: bool
+
+
+class SourceAuthorityMetadata(StrictLegalModel):
+    authority_type: AuthorityType
+    authority_role: AuthorityRole | None
+    authority_status: AuthorityStatus
+    metadata_status: KnowledgeMetadataStatus
+    jurisdiction: str = Field(min_length=1)
+    effective_from: dt.date | None
+    effective_to: dt.date | None
 
 
 class AnalysisItem(StrictLegalModel):
@@ -204,6 +223,10 @@ def validate_legal_work_product_sources(
     *,
     authorized_source_refs: set[str],
     internal_precedent_refs: set[str] | None = None,
+    source_authorities: Mapping[
+        str, SourceAuthorityMetadata | Mapping[str, object]
+    ]
+    | None = None,
 ) -> None:
     """Fail closed when a specialist cites anything outside its authorized context."""
 
@@ -241,3 +264,58 @@ def validate_legal_work_product_sources(
     )
     if mislabeled:
         raise ValueError(f"Internal precedent citation labels do not match context: {mislabeled}")
+    if source_authorities is None:
+        return
+    authorities = {
+        source_ref: (
+            value
+            if isinstance(value, SourceAuthorityMetadata)
+            else SourceAuthorityMetadata.model_validate(value)
+        )
+        for source_ref, value in source_authorities.items()
+    }
+    unknown_status_used = False
+    for item in product.legal_basis:
+        for source_ref in item.source_refs:
+            authority = authorities.get(source_ref)
+            if authority is None:
+                raise ValueError(
+                    f"Authority metadata is required for legal basis source: {source_ref}"
+                )
+            if authority.authority_role != item.authority_role:
+                raise ValueError(
+                    "Declared legal basis authority role does not match source metadata: "
+                    f"{source_ref}"
+                )
+            if authority.jurisdiction not in {item.jurisdiction, "ANY"}:
+                raise ValueError(f"Legal basis jurisdiction does not match source: {source_ref}")
+            if authority.authority_status == AuthorityStatus.UNKNOWN:
+                unknown_status_used = True
+                continue
+            if authority.authority_status in {
+                AuthorityStatus.REPEALED,
+                AuthorityStatus.SUPERSEDED,
+            } and not item.historical_analysis:
+                raise ValueError(f"Legal basis source is not effective: {source_ref}")
+            if (
+                authority.effective_from is not None
+                and item.effective_date < authority.effective_from
+            ) or (
+                authority.effective_to is not None
+                and item.effective_date > authority.effective_to
+            ):
+                raise ValueError(
+                    f"Legal basis effective date is outside source validity: {source_ref}"
+                )
+            if (
+                item.authority_role == AuthorityRole.FORMAL_LEGAL_BASIS
+                and authority.authority_status != AuthorityStatus.EFFECTIVE
+                and not item.historical_analysis
+            ):
+                raise ValueError(f"Formal legal basis source is not effective: {source_ref}")
+    if unknown_status_used and (
+        product.confidence > 0.6 or not product.missing_information
+    ):
+        raise ValueError(
+            "Unknown authority status requires confidence at most 0.6 and missing information."
+        )

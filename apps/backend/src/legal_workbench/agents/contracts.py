@@ -12,6 +12,7 @@ from legal_workbench.agents.definitions import (
 from legal_workbench.agents.legal_butler import (
     ButlerPlanningOutput,
     ButlerSynthesisOutput,
+    validate_butler_synthesis_sources,
 )
 from legal_workbench.agents.legal_contracts import (
     LEGAL_OUTPUT_MODELS,
@@ -163,26 +164,11 @@ class LegalAgentContractRegistry:
                 return ButlerPlanningOutput.model_validate(payload)
             if phase == "synthesis":
                 synthesis_result = ButlerSynthesisOutput.model_validate(payload)
-                unauthorized = sorted(
-                    citation.source_ref
-                    for citation in synthesis_result.citations
-                    if citation.source_ref not in context.authorized_source_refs
+                validate_butler_synthesis_sources(
+                    synthesis_result,
+                    authorized_source_refs=set(context.authorized_source_refs),
+                    internal_precedent_refs=set(context.internal_precedent_refs),
                 )
-                if unauthorized:
-                    raise DomainValidationError(
-                        f"Unauthorized Butler synthesis citations: {unauthorized}"
-                    )
-                mislabeled = sorted(
-                    citation.source_ref
-                    for citation in synthesis_result.citations
-                    if citation.internal_precedent
-                    != (citation.source_ref in context.internal_precedent_refs)
-                )
-                if mislabeled:
-                    raise DomainValidationError(
-                        "Butler synthesis precedent labels do not match authorized context: "
-                        f"{mislabeled}"
-                    )
                 return synthesis_result
             raise DomainValidationError("Butler input phase must be planning or synthesis.")
         output_model = LEGAL_OUTPUT_MODELS.get(definition.key)
@@ -193,5 +179,6 @@ class LegalAgentContractRegistry:
             specialist_result,
             authorized_source_refs=set(context.authorized_source_refs),
             internal_precedent_refs=set(context.internal_precedent_refs),
+            source_authorities=context.source_authorities,
         )
         return specialist_result
