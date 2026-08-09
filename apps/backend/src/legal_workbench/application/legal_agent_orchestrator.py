@@ -193,16 +193,6 @@ class LegalAgentOrchestrator:
         if accepted_plan is None:
             return self._failed_result(plan, planning_run.id)
         plan = accepted_plan
-        if plan.requires_user_input:
-            return LegalAgentOrchestrationResult(
-                plan_id=plan.id,
-                status=AgentExecutionPlanStatus.NEEDS_INFORMATION,
-                planning_run_id=plan.planning_run_id,
-                synthesis_run_id=None,
-                artifact_id=None,
-                review_package_id=None,
-                step_results=(),
-            )
 
         async def runner(
             step: AgentPlanStep,
@@ -289,8 +279,6 @@ class LegalAgentOrchestrator:
             if accepted is None:
                 return self._failed_result(plan, planning_run.id)
             plan = accepted
-            if plan.requires_user_input:
-                return await self._replay_result(plan)
         elif planning_run.status not in {
             AgentRunStatus.COMPLETED,
             AgentRunStatus.NEEDS_MORE_INFORMATION,
@@ -565,11 +553,7 @@ class LegalAgentOrchestrator:
                 matter_id=plan.matter_id,
                 work_item_id=plan.work_item_id,
                 objective=output.objective,
-                status=(
-                    AgentExecutionPlanStatus.NEEDS_INFORMATION
-                    if output.requires_user_input
-                    else AgentExecutionPlanStatus.PLANNED
-                ),
+                status=AgentExecutionPlanStatus.PLANNED,
                 task_types=output.task_types,
                 synthesis_strategy=output.synthesis_strategy,
                 missing_information=output.missing_information,
@@ -898,7 +882,11 @@ class LegalAgentOrchestrator:
             result.status in {AgentPlanStepStatus.FAILED, AgentPlanStepStatus.SKIPPED}
             for result in step_results
         )
-        needs_information = bool(output.missing_information) or any(
+        planning_missing_information = list(dict.fromkeys(plan.missing_information))
+        all_missing_information = list(
+            dict.fromkeys([*planning_missing_information, *output.missing_information])
+        )
+        needs_information = plan.requires_user_input or bool(all_missing_information) or any(
             result.status == AgentPlanStepStatus.NEEDS_INFORMATION
             for result in step_results
         )
@@ -917,7 +905,8 @@ class LegalAgentOrchestrator:
             artifact_type="legal_butler_synthesis",
             title=f"法务管家综合意见: {plan.objective}",
             content=output.draft_response,
-            structured_payload=output.model_dump(by_alias=True, mode="json"),
+            structured_payload=output.model_dump(by_alias=True, mode="json")
+            | {"planningMissingInformation": planning_missing_information},
         )
         review = ReviewPackage.create(
             matter_id=plan.matter_id,
@@ -929,7 +918,7 @@ class LegalAgentOrchestrator:
                 value.model_dump(by_alias=True, mode="json") for value in output.core_facts
             ],
             unconfirmed_facts=[
-                {"missingInformation": value} for value in output.missing_information
+                {"missingInformation": value} for value in all_missing_information
             ],
             reasoning="\n".join(
                 f"{value.action}: {value.rationale}"
@@ -1430,6 +1419,8 @@ class LegalAgentOrchestrator:
             "id": str(plan.id),
             "objective": plan.objective,
             "taskTypes": plan.task_types,
+            "requiresUserInput": plan.requires_user_input,
+            "missingInformation": plan.missing_information,
             "steps": [
                 {
                     "stepId": step.step_id,

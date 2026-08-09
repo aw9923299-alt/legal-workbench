@@ -123,11 +123,17 @@ class FakeContextBuilder:
 
 
 class FakeLegalRuntime:
-    def __init__(self, *, crash_at: str | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        crash_at: str | None = None,
+        planning_requires_user_input: bool = False,
+    ) -> None:
         self.calls: list[tuple[str, str]] = []
         self.upstream_by_key: dict[str, list[dict[str, object]]] = {}
         self.crash_at = crash_at
         self.crashed = False
+        self.planning_requires_user_input = planning_requires_user_input
 
     async def execute(
         self,
@@ -179,8 +185,12 @@ class FakeLegalRuntime:
                             "contextRequirements": ["contract_result"],
                         },
                     ],
-                    "missingInformation": [],
-                    "requiresUserInput": False,
+                    "missingInformation": (
+                        ["请补充不影响现有材料分析的登记信息"]
+                        if self.planning_requires_user_input
+                        else []
+                    ),
+                    "requiresUserInput": self.planning_requires_user_input,
                     "synthesisStrategy": "并行分析后显式处理冲突。",
                 }
             )
@@ -496,6 +506,90 @@ async def test_multi_agent_orchestration_persists_lineage_draft_and_review() -> 
         assert len(
             [run for run in final_runs if run.run_role == AgentRunRole.BUTLER_SYNTHESIS]
         ) == 3
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_planning_information_gap_still_produces_grounded_review_package() -> None:
+    if os.getenv("RUN_POSTGRES_INTEGRATION_TESTS") != "1":
+        pytest.skip("PostgreSQL integration tests are disabled")
+
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    from legal_workbench.infrastructure.unit_of_work import SqlAlchemyUnitOfWorkFactory
+
+    engine = create_async_engine(os.environ["LEGAL_WORKBENCH_TEST_DATABASE_URL"])
+    factory = SqlAlchemyUnitOfWorkFactory(
+        async_sessionmaker(engine, expire_on_commit=False)
+    )
+    matter = LegalMatter.create(
+        title="Planning information gap fixture",
+        primary_category=MatterCategory.CONTRACT,
+        secondary_categories=[MatterCategory.INTELLECTUAL_PROPERTY],
+        owner_id="user:fixture",
+        legal_risk=LegalRisk.MEDIUM,
+        business_impact=BusinessImpact.PROJECT,
+        confidentiality=Confidentiality.INTERNAL,
+        requester_ids=[],
+        summary="Synthetic partial analysis fixture.",
+        objective="Use available evidence while retaining planning information gaps.",
+    )
+    snapshot = ContextSnapshot(
+        id=uuid4(),
+        source_type="planning_information_gap_fixture",
+        source_id=uuid4().hex,
+        source_ids=[],
+        message_ids=[],
+        file_ids=[],
+        relevant_matter_ids=[str(matter.id)],
+        participant_ids=[],
+        permission_snapshot={},
+        generated_at=datetime.now(UTC),
+        content_hash=uuid4().hex * 2,
+        content={"fixture": "planning information gap"},
+    )
+    runtime = FakeLegalRuntime(planning_requires_user_input=True)
+    orchestrator = LegalAgentOrchestrator(
+        factory,
+        runtime,
+        FakeContextBuilder(),
+        runs_root="/isolated/legal-agent-runs",
+    )
+    try:
+        async with factory() as uow:
+            await uow.matters.add(matter)
+            await uow.context_snapshots.add(snapshot)
+            await uow.commit()
+
+        result = await orchestrator.execute(
+            LegalAgentTrigger(
+                matter_id=matter.id,
+                context_snapshot_id=snapshot.id,
+                objective=matter.objective,
+                actor_id="user:fixture",
+                correlation_id=f"planning-gap-{uuid4().hex}",
+                idempotency_key=f"planning-gap-{uuid4().hex}",
+            )
+        )
+
+        assert result.status == AgentExecutionPlanStatus.NEEDS_INFORMATION
+        assert result.artifact_id is not None
+        assert result.review_package_id is not None
+        assert [phase for _, phase in runtime.calls] == [
+            "planning",
+            "specialist",
+            "specialist",
+            "specialist",
+            "synthesis",
+        ]
+        async with factory() as uow:
+            review = await uow.review_packages.get(result.review_package_id)
+        assert review is not None
+        assert review.unconfirmed_facts == [
+            {"missingInformation": "请补充不影响现有材料分析的登记信息"}
+        ]
     finally:
         await engine.dispose()
 
