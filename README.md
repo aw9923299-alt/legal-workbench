@@ -170,6 +170,7 @@ npm run build
 - Outbox Handler 显式注册，未知事件会失败、重试并最终死信；
 - 飞书原始事件及消息按事件ID、消息ID幂等落库；
 - 飞书官方 SDK 长连接和 Webhook 共用同一 Application Service；连接状态、编辑/撤回历史、附件下载状态和补偿结果均持久化在 PostgreSQL；
+- 撤回消息资格由集中策略控制，并在 Gate、Outbox dispatch、Worker prepare/runtime start 和 Agent 成功落库时重复校验；运行中撤回保留 AgentRun 审计但不新建或更新有效 Candidate，只有用户明确提交 `override_recalled=true` 才允许 override 并独立留痕；
 - 乐观锁、行锁、事务级幂等锁、审计和事务Outbox；
 - HttpOnly 本地会话认证边界；只有显式 `local/development` 环境可签发本地 Session，开发 Actor Header 需显式开关；Compose 端口默认只绑定 `127.0.0.1`；
 - 收件箱与 Agent 详情页展示来源、状态、版本、置信度、理由、事实/推断、期限和缺失信息。
@@ -180,17 +181,19 @@ npm run build
 - `/settings/feishu-scopes` 使用 PostgreSQL 真实范围数据；未知群默认 `unapproved/disabled`，允许、排除、暂停、恢复和延后补偿都使用 Actor、版本锁、幂等键与审计；
 - `scripts/legal_workbench_ops.py` 提供安全启动/停止、睡眠唤醒自检、PostgreSQL 每日自定义格式备份、Codex 运行目录保留、脱敏诊断包和滚动运维日志；系统状态页展示磁盘、附件配额、最近备份、最近唤醒和 PostgreSQL 待恢复任务；
 - Agent stdout/stderr 常见凭证格式脱敏，运行目录只返回受控逻辑路径；所有新增写操作继续要求后端 Actor、Idempotency-Key、Correlation ID 和审计。
+- `domain/entities.py` 与 `application/ports` 已按 bounded context 拆分，旧 public import 由兼容 facade/package re-export；仍是同一 modular monolith，没有新增网络服务边界；
+- Personal Sync 结果明确区分 `claimedAt`、`windowStart`、`windowEnd`、`completedAt`；前端 CI 使用 `npm ci` 并依次执行 typecheck、Vitest 和 build。
 
 部分实现：
 
-- 飞书开关关闭时真实入口 fail closed；长连接缺少 App ID/Secret、Webhook 缺少 Verification Token 时拒绝启动。当前 Mac 已通过现有官方用户身份实测 P2P/群/Thread/文档读取并将一条非敏感测试消息写入 PostgreSQL；工作台自身 App Secret/redirect 尚未配置，因此 OAuth/Refresh 闭环仍不得写成通过。Webhook 加密载荷仍明确拒绝；
+- 飞书开关关闭时真实入口 fail closed；长连接缺少 App ID/Secret、Webhook 缺少 Verification Token 时拒绝启动。当前 Mac 已使用 Workbench OAuth Token 实测 OAuth refresh、群历史、群发现和文档搜索；Identity/Messages/Chat discovery/Documents Scope 投影均为 ready。当前库没有可复用 P2P、Thread 或文档 Markdown fixture，相关结果保持 `partial/unsupported`，未伪造通过。Webhook 加密载荷仍明确拒绝；
 - 容器 Worker 以专用 UID、最小环境变量和无知识目录挂载运行 Codex；主机模式仍依赖 Codex 自身只读沙箱，不声称是完整 OS 级隔离。
 - `CODEX_CLI_VERSION` 是唯一部署版本来源；当前宿主 CLI 与新构建 Worker 镜像均为 `0.146.0`。隔离 Worker 仍未配置 Codex 认证，因此真实 Codex 推理未执行，11 类消息仅通过 Fake Runtime + 真实 PostgreSQL 验证。
-- `infra/launchd` 已提供登录后/每 5 分钟自检和每日 03:15 备份模板；模板尚未写入当前用户的 `~/Library/LaunchAgents`，安装前必须替换绝对路径并确认 `.env` 已含 `CODEX_CLI_VERSION=0.146.0`。
+- `infra/launchd` 模板已在当前 Mac 实际安装为 Supervisor 与每日备份 Agent；Supervisor 运行退出码为 0，真实 Scheduled Personal Sync、PostgreSQL custom backup 和隔离恢复均已通过。物理睡眠因 `pmset` 计划唤醒要求 root 且无非交互 sudo 而未执行，详见 `artifacts/mac-operations/final-acceptance-20260809.json`。
 - 当前 Registry 最新 `react-router-dom@7.18.2` 仍命中 RSC Action CSRF 公告 `GHSA-qwww-vcr4-c8h2`；本项目不启用 RSC/Server Actions，但在上游发布可安装修复版本前，`npm audit` 仍会报告 2 个 high，详见 `QA_REPORT.md`。
 
 ## 当前开发顺序
 
-1. 经用户确认后安装 launchd 模板，并执行一次真实 Mac 睡眠/唤醒与备份恢复演练；
+1. 在具备 `pmset` root 权限或有人现场唤醒时补做真实 Mac 睡眠/唤醒，并发送一条新的非敏感飞书消息验证唤醒后新增入库；
 2. 在专用 Runner 认证可用时执行真实 Codex 安全冒烟与真实评估；
 3. 真实飞书测试消息和官方长连接验收按用户要求后置，恢复时单独执行且人工确认个人未读状态。

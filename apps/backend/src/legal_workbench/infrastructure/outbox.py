@@ -10,6 +10,9 @@ import structlog
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from legal_workbench.application.message_analysis_eligibility import (
+    MessageAnalysisDispatchGuard,
+)
 from legal_workbench.config import Settings, get_settings
 from legal_workbench.domain.entities import Communication
 from legal_workbench.domain.enums import CommunicationStatus
@@ -22,6 +25,7 @@ from legal_workbench.infrastructure.models import (
     OutboxDeadLetterModel,
     OutboxEventModel,
 )
+from legal_workbench.infrastructure.unit_of_work import SqlAlchemyUnitOfWorkFactory
 from legal_workbench.integrations.feishu_client import FeishuApiClient
 
 logger = structlog.get_logger(__name__)
@@ -57,18 +61,10 @@ async def _handle_communication_send(
     await dispatcher._send_communication(event.aggregate_id)
 
 
-async def _handle_feishu_message(_: OutboxDispatcher, event: ClaimedOutboxEvent) -> None:
-    actor_id = str(event.payload.get("actorId") or "feishu-connector")
-    actor_source = str(event.payload.get("actorSource") or "integration")
-    celery_app.send_task(
-        "feishu.process_message",
-        args=[str(event.aggregate_id), actor_id, actor_source, event.correlation_id],
-        kwargs={
-            "force_new_run": bool(event.payload.get("forceNewRun", False)),
-            "recover_interrupted_run": bool(event.payload.get("recoverInterruptedRun", False)),
-        },
-        headers={"correlation_id": event.correlation_id},
-    )
+async def _handle_feishu_message(
+    dispatcher: OutboxDispatcher, event: ClaimedOutboxEvent
+) -> None:
+    await dispatcher._dispatch_feishu_message_analysis(event)
 
 
 async def _handle_document_extraction(_: OutboxDispatcher, event: ClaimedOutboxEvent) -> None:
@@ -102,10 +98,14 @@ class OutboxDispatcher:
         session_factory: async_sessionmaker[AsyncSession] | None = None,
         settings: Settings | None = None,
         feishu_client: FeishuApiClient | None = None,
+        analysis_dispatch_guard: MessageAnalysisDispatchGuard | None = None,
     ) -> None:
         self._session_factory = session_factory or get_session_factory()
         self._settings = settings or get_settings()
         self._feishu_client = feishu_client or FeishuApiClient(self._settings)
+        self._analysis_dispatch_guard = analysis_dispatch_guard or MessageAnalysisDispatchGuard(
+            SqlAlchemyUnitOfWorkFactory(self._session_factory)
+        )
 
     async def publish_batch(self) -> int:
         events = await self._claim_batch()
@@ -247,6 +247,32 @@ class OutboxDispatcher:
         if handler is None:
             raise UnsupportedOutboxEventError(event.event_type)
         await handler(self, event)
+
+    async def _dispatch_feishu_message_analysis(self, event: ClaimedOutboxEvent) -> None:
+        actor_id = str(event.payload.get("actorId") or "feishu-connector")
+        actor_source = str(event.payload.get("actorSource") or "integration")
+        override_recalled = bool(event.payload.get("overrideRecalled", False))
+        decision = await self._analysis_dispatch_guard.evaluate_and_audit(
+            message_id=event.aggregate_id,
+            actor_id=actor_id,
+            actor_source=actor_source,
+            override_recalled=override_recalled,
+            correlation_id=event.correlation_id,
+        )
+        if not decision.allowed:
+            return
+        celery_app.send_task(
+            "feishu.process_message",
+            args=[str(event.aggregate_id), actor_id, actor_source, event.correlation_id],
+            kwargs={
+                "force_new_run": bool(event.payload.get("forceNewRun", False)),
+                "recover_interrupted_run": bool(
+                    event.payload.get("recoverInterruptedRun", False)
+                ),
+                "override_recalled": override_recalled,
+            },
+            headers={"correlation_id": event.correlation_id},
+        )
 
     async def _send_communication(self, communication_id: UUID) -> None:
         communication = await self._mark_communication_sending(communication_id)

@@ -73,7 +73,9 @@ class PersonalMessageClient(Protocol):
 class PersonalSyncResult:
     scope_id: UUID
     ingested_count: int
-    started_at: datetime
+    claimed_at: datetime
+    window_start: datetime
+    window_end: datetime
     completed_at: datetime
 
 
@@ -81,8 +83,9 @@ class PersonalSyncResult:
 class _SyncLease:
     owner: str
     fence: int
-    start_time: datetime
-    sync_until: datetime
+    claimed_at: datetime
+    window_start: datetime
+    window_end: datetime
 
 
 def _message_timestamp(raw_message: dict[str, object]) -> str:
@@ -302,8 +305,8 @@ class PersonalMessageSyncService:
                 page = await self._user_client.list_messages(
                     authorization_id=scope.authorization_id,
                     chat_id=scope.external_scope_id,
-                    start_time=lease.start_time,
-                    end_time=lease.sync_until,
+                    start_time=lease.window_start,
+                    end_time=lease.window_end,
                     page_token=page_token,
                 )
                 for raw_message in page.items:
@@ -357,7 +360,9 @@ class PersonalMessageSyncService:
         return PersonalSyncResult(
             scope_id=scope.id,
             ingested_count=ingested_count,
-            started_at=lease.sync_until,
+            claimed_at=lease.claimed_at,
+            window_start=lease.window_start,
+            window_end=lease.window_end,
             completed_at=self._clock_now(),
         )
 
@@ -394,7 +399,7 @@ class PersonalMessageSyncService:
                 expires_at=now + self._lease_duration,
                 now=now,
             )
-            start_time = (
+            window_start = (
                 checkpoint.watermark - self._overlap
                 if checkpoint.watermark is not None
                 else now - timedelta(days=scope.backfill_days)
@@ -407,8 +412,9 @@ class PersonalMessageSyncService:
         return _SyncLease(
             owner=owner,
             fence=fence,
-            start_time=start_time,
-            sync_until=now,
+            claimed_at=now,
+            window_start=window_start,
+            window_end=now,
         )
 
     async def _renew_lease(
@@ -454,7 +460,7 @@ class PersonalMessageSyncService:
             checkpoint.succeed(
                 owner=lease.owner,
                 fence=lease.fence,
-                watermark=lease.sync_until,
+                watermark=lease.window_end,
                 now=now,
             )
             await uow.feishu_personal_sync.save_checkpoint(checkpoint)

@@ -196,6 +196,7 @@ async def retry_agent_run(
     actor: Annotated[RequestActor, Depends(get_request_actor)],
     idempotency_key: Annotated[str, Depends(get_idempotency_key)],
     uow_factory: Annotated[SqlAlchemyUnitOfWorkFactory, Depends(get_uow_factory)],
+    override_recalled: bool = False,
 ) -> MessageAnalysisRequestedResponse:
     details = await AgentRunQueryService(uow_factory).get(run_id)
     if details.run.feishu_message_id is None:
@@ -205,6 +206,7 @@ async def retry_agent_run(
     return await _request_analysis(
         message_id=details.run.feishu_message_id,
         force_new_run=True,
+        override_recalled=override_recalled,
         request=request,
         response=response,
         actor=actor,
@@ -250,6 +252,7 @@ async def _request_analysis(
     *,
     message_id: UUID,
     force_new_run: bool,
+    override_recalled: bool,
     request: Request,
     response: Response,
     actor: RequestActor,
@@ -260,10 +263,12 @@ async def _request_analysis(
         RequestFeishuMessageAnalysisCommand(
             message_id=message_id,
             actor_id=actor.actor_id,
-            actor_source=actor.identity_source,
+            actor_source="user",
             correlation_id=get_correlation_id(request),
             idempotency_key=idempotency_key,
             force_new_run=force_new_run,
+            override_recalled=override_recalled,
+            authenticated_identity_source=actor.identity_source,
         )
     )
     if result.idempotent_replay:
@@ -287,10 +292,12 @@ async def analyse_feishu_message(
     actor: Annotated[RequestActor, Depends(get_request_actor)],
     idempotency_key: Annotated[str, Depends(get_idempotency_key)],
     uow_factory: Annotated[SqlAlchemyUnitOfWorkFactory, Depends(get_uow_factory)],
+    override_recalled: bool = False,
 ) -> MessageAnalysisRequestedResponse:
     return await _request_analysis(
         message_id=message_id,
         force_new_run=False,
+        override_recalled=override_recalled,
         request=request,
         response=response,
         actor=actor,
@@ -311,10 +318,12 @@ async def retry_feishu_message_analysis(
     actor: Annotated[RequestActor, Depends(get_request_actor)],
     idempotency_key: Annotated[str, Depends(get_idempotency_key)],
     uow_factory: Annotated[SqlAlchemyUnitOfWorkFactory, Depends(get_uow_factory)],
+    override_recalled: bool = False,
 ) -> MessageAnalysisRequestedResponse:
     return await _request_analysis(
         message_id=message_id,
         force_new_run=True,
+        override_recalled=override_recalled,
         request=request,
         response=response,
         actor=actor,

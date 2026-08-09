@@ -75,9 +75,16 @@ Runtime 使用 `codex exec --ephemeral --ignore-user-config --ignore-rules --str
 
 Runtime 读取 `output.json` 后依次执行 JSON、Pydantic 和业务规则校验。首次失败可把脱敏校验摘要交回同一 Runtime，且必须复用同一 ContextSnapshot、不得增加业务资料、必须返回完整 JSON；第二次失败进入正式失败/死信流程，不做正则或手工 JSON 修补。
 
+### 3.2 撤回消息语义
+
+- 消息撤回后保留已落库消息版本、附件、AgentRun 和 Audit，不删除历史；
+- 自动分析资格由集中 policy 决定，并在自动 Gate、Outbox dispatch、Worker prepare/runtime start 与成功结果持久化时重新校验；
+- Runtime 尚未开始时 no-op；已经真正开始时不强杀进程，但输出不得新建或更新有效 Candidate；
+- 只有 `actor_source=user` 且请求明确携带并持久化 `override_recalled=true` 时可以 override；普通用户请求不等于 override，request、dispatch/prepare、runtime start 和 success persistence 均写入或复核可追溯 Audit。
+
 **边界说明**：Codex CLI 只读 sandbox 不等于一个经证明的主机文件读取白名单，主机模式仍受父进程 OS 权限影响。为调用 Codex 模型，进程仍需到 Codex/OpenAI 服务的传输网络；“禁用网络”在当前实现中指禁用 Agent 可控的 Web/浏览器/MCP 工具，并不等于容器零出网。生产部署仍应增加目的地址 allowlist/代理或独立容器网络策略。高敏感数据的真实执行应优先使用专用容器/用户，不得将当前实现宣称为完全隔离。
 
-### 3.2 工具权限
+### 3.3 工具权限
 
 AgentDefinition 声明可用工具，例如：
 
@@ -99,7 +106,7 @@ AgentDefinition 声明可用工具，例如：
 
 确需 Shell 的内部开发 Agent 与业务法务 Agent 必须分开运行环境。
 
-### 3.3 提示注入防护
+### 3.4 提示注入防护
 
 - 消息、合同、网页和附件全部标记为不可信内容；
 - 系统提示明确禁止执行文档中的指令；

@@ -156,7 +156,9 @@ class _MessageSync:
         return PersonalSyncResult(
             scope_id=scope.id,
             ingested_count=1,
-            started_at=now,
+            claimed_at=now,
+            window_start=now,
+            window_end=now,
             completed_at=now,
         )
 

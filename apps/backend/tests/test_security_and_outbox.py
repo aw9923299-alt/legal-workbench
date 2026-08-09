@@ -234,6 +234,15 @@ def test_message_analysis_api_contracts_are_registered() -> None:
     assert "/api/v1/feishu/messages/{message_id}" in paths
     assert "/api/v1/agent-runs/{run_id}/retry" in paths
     assert "/api/v1/agent-runs/{run_id}/cancel" in paths
+    analyse_parameters = paths["/api/v1/feishu/messages/{message_id}/analyse"]["post"][
+        "parameters"
+    ]
+    assert any(
+        parameter["name"] == "override_recalled"
+        and parameter["in"] == "query"
+        and parameter["schema"]["default"] is False
+        for parameter in analyse_parameters
+    )
 
 
 def test_agent_runtime_output_masks_common_secret_formats() -> None:

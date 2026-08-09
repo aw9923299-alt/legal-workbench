@@ -19,9 +19,11 @@ jobs:
           node-version: 22
           registry-url: https://registry.npmjs.org
       - name: Install frontend dependencies
-        run: npm install --no-audit --no-fund
+        run: npm ci --no-audit --no-fund
       - name: Type check
         run: npm run typecheck
+      - name: Test
+        run: npm run test
       - name: Build
         run: npm run build
 

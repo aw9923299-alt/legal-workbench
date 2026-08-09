@@ -228,6 +228,46 @@ async def test_checkpoint_uses_overlap_and_advances_only_after_all_pages() -> No
 
 
 @pytest.mark.asyncio
+async def test_sync_result_exposes_distinct_claim_window_and_completion_times() -> None:
+    claimed_at = datetime(2026, 8, 8, 8, 0, tzinfo=UTC)
+    renewed_at = datetime(2026, 8, 8, 8, 1, tzinfo=UTC)
+    succeeded_at = datetime(2026, 8, 8, 8, 2, tzinfo=UTC)
+    completed_at = datetime(2026, 8, 8, 8, 3, tzinfo=UTC)
+    clock_values = iter((claimed_at, renewed_at, succeeded_at, completed_at))
+    repository = CheckpointRepository()
+    repository.value = FeishuSyncCheckpoint(
+        id=UUID("00000000-0000-0000-0000-000000000203"),
+        authorization_id=AUTHORIZATION_ID,
+        scope_id=SCOPE_ID,
+        watermark=datetime(2026, 8, 8, 7, 0, tzinfo=UTC),
+    )
+    client = UserClient([UserMessagePage(items=(), next_page_token=None)])
+    service = PersonalMessageSyncService(
+        lambda: UnitOfWork(repository),
+        user_client=client,
+        ingestion_adapter=UserMessageIngestionAdapter(CapturingHandler()),
+        overlap=timedelta(minutes=5),
+        clock=lambda: next(clock_values),
+    )
+
+    result = await service.sync_scope(scope=allowed_scope(), tenant_key="tenant-personal")
+
+    assert result.claimed_at == claimed_at
+    assert result.window_start == datetime(2026, 8, 8, 6, 55, tzinfo=UTC)
+    assert result.window_end == claimed_at
+    assert result.completed_at == completed_at
+    assert client.calls == [
+        {
+            "authorization_id": AUTHORIZATION_ID,
+            "chat_id": "oc_group",
+            "start_time": result.window_start,
+            "end_time": result.window_end,
+            "page_token": None,
+        }
+    ]
+
+
+@pytest.mark.asyncio
 async def test_message_document_link_is_imported_through_native_document_pipeline() -> None:
     now = datetime(2026, 8, 8, 8, 0, tzinfo=UTC)
     repository = CheckpointRepository()

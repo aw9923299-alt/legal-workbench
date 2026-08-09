@@ -58,6 +58,15 @@ class FeishuUserDisconnectResponse(ApiModel):
     status: FeishuUserAuthorizationStatus
 
 
+class FeishuPersonalSyncResponse(ApiModel):
+    scope_id: UUID
+    ingested_count: int
+    claimed_at: datetime
+    window_start: datetime
+    window_end: datetime
+    completed_at: datetime
+
+
 class SearchFeishuDocumentsRequest(ApiModel):
     authorization_id: UUID
     query: str = Field(min_length=1, max_length=500)
