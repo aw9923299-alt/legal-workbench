@@ -396,6 +396,17 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    # Pre-0019 cannot represent local-source versions or segments. Remove the new
+    # aggregate roots first; cascades clear their chunks, extractions, and segments,
+    # while observations retain audit linkage until their new table is dropped below.
+    op.execute(
+        "DELETE FROM knowledge_documents AS knowledge_document "
+        "USING document_versions AS document_version "
+        "WHERE knowledge_document.document_version_id = document_version.id "
+        "AND document_version.local_source_id IS NOT NULL"
+    )
+    op.execute("DELETE FROM document_versions WHERE local_source_id IS NOT NULL")
+
     op.drop_constraint(
         "knowledge_retrieval_log_counts_nonnegative",
         "knowledge_retrieval_logs",
