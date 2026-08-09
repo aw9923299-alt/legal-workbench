@@ -6,7 +6,12 @@
   <string>com.legal-workbench.feishu-local-sync</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/ABSOLUTE/PATH/legal-workbench/.venv/bin/python</string>
+    <string>/ABSOLUTE/PATH/TO/uv</string>
+    <string>run</string>
+    <string>--locked</string>
+    <string>--project</string>
+    <string>/ABSOLUTE/PATH/TO/legal-workbench/apps/backend</string>
+    <string>python</string>
     <string>-m</string>
     <string>legal_workbench.integrations.feishu_local_connector</string>
     <string>--sync</string>
@@ -16,12 +21,7 @@
     <string>CONFIRMED_LOCAL_ACCOUNT_ID_SHA256</string>
   </array>
   <key>WorkingDirectory</key>
-  <string>/ABSOLUTE/PATH/legal-workbench</string>
-  <key>EnvironmentVariables</key>
-  <dict>
-    <key>PYTHONPATH</key>
-    <string>/ABSOLUTE/PATH/legal-workbench/apps/backend/src</string>
-  </dict>
+  <string>/ABSOLUTE/PATH/TO/legal-workbench</string>
   <key>StartInterval</key>
   <integer>300</integer>
   <key>RunAtLoad</key>

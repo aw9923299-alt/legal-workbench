@@ -83,7 +83,7 @@ def run(args: argparse.Namespace) -> dict[str, object]:
             "LEGAL_WORKBENCH_TEST_REDIS_URL": redis_url,
         }
     )
-    python = str(repository_root / ".venv/bin/python")
+    python = sys.executable
     steps: list[dict[str, object]] = []
     _run(
         [

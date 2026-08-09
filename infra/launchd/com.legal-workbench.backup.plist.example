@@ -6,7 +6,12 @@
   <string>com.legal-workbench.backup</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/ABSOLUTE/PATH/TO/legal-workbench/.venv/bin/python</string>
+    <string>/ABSOLUTE/PATH/TO/uv</string>
+    <string>run</string>
+    <string>--locked</string>
+    <string>--project</string>
+    <string>/ABSOLUTE/PATH/TO/legal-workbench/apps/backend</string>
+    <string>python</string>
     <string>/ABSOLUTE/PATH/TO/legal-workbench/scripts/legal_workbench_ops.py</string>
     <string>backup</string>
     <string>--repository-root</string>

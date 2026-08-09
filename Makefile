@@ -1,33 +1,38 @@
-.PHONY: setup-web setup-backend web-dev backend-dev test lint compose-up compose-down compose-logs migrate feishu-local-sync ops-start ops-stop ops-wake-check ops-backup ops-diagnostics ops-cleanup
+.PHONY: setup setup-web setup-backend web-dev backend-dev test lint migrate feishu-local-sync compose compose-up compose-down compose-logs ops-start ops-stop ops-wake-check ops-backup ops-diagnostics ops-cleanup
 
-PYTHON := .venv/bin/python
+BACKEND_DIR := apps/backend
+BACKEND_UV := cd $(BACKEND_DIR) && uv run --locked
+
+setup: setup-web setup-backend
 
 setup-web:
-	npm install
+	npm ci --no-audit --no-fund
 
 setup-backend:
-	python3 -m venv .venv
-	$(PYTHON) -m pip install -e 'apps/backend[dev]'
+	cd $(BACKEND_DIR) && uv sync --locked
 
 web-dev:
 	npm run dev
 
 backend-dev:
-	$(PYTHON) -m uvicorn legal_workbench.main:app --app-dir apps/backend/src --reload --port 8000
+	$(BACKEND_UV) uvicorn legal_workbench.main:app --reload --host 127.0.0.1 --port 8000
 
 test:
-	$(PYTHON) -m pytest apps/backend/tests
+	$(BACKEND_UV) pytest
+	npm run test
 
 lint:
-	$(PYTHON) -m ruff check apps/backend/src apps/backend/tests
-	$(PYTHON) -m mypy --config-file apps/backend/pyproject.toml apps/backend/src
+	$(BACKEND_UV) ruff check src tests
+	$(BACKEND_UV) mypy --config-file pyproject.toml src
 	npm run typecheck
 
 migrate:
-	$(PYTHON) -m alembic -c apps/backend/alembic.ini upgrade head
+	$(BACKEND_UV) alembic -c alembic.ini upgrade head
 
 feishu-local-sync:
-	PYTHONPATH=apps/backend/src $(PYTHON) -m legal_workbench.integrations.feishu_local_connector --sync --authorization-id "$(AUTHORIZATION_ID)" --account-id-hash "$(ACCOUNT_ID_HASH)"
+	$(BACKEND_UV) python -m legal_workbench.integrations.feishu_local_connector --sync --authorization-id "$(AUTHORIZATION_ID)" --account-id-hash "$(ACCOUNT_ID_HASH)"
+
+compose: compose-up
 
 compose-up:
 	docker compose up -d --build
@@ -39,19 +44,19 @@ compose-logs:
 	docker compose logs -f
 
 ops-start:
-	$(PYTHON) scripts/legal_workbench_ops.py start
+	$(BACKEND_UV) python ../../scripts/legal_workbench_ops.py start
 
 ops-stop:
-	$(PYTHON) scripts/legal_workbench_ops.py stop
+	$(BACKEND_UV) python ../../scripts/legal_workbench_ops.py stop
 
 ops-wake-check:
-	$(PYTHON) scripts/legal_workbench_ops.py wake-check
+	$(BACKEND_UV) python ../../scripts/legal_workbench_ops.py wake-check
 
 ops-backup:
-	$(PYTHON) scripts/legal_workbench_ops.py backup
+	$(BACKEND_UV) python ../../scripts/legal_workbench_ops.py backup
 
 ops-diagnostics:
-	$(PYTHON) scripts/legal_workbench_ops.py diagnostics
+	$(BACKEND_UV) python ../../scripts/legal_workbench_ops.py diagnostics
 
 ops-cleanup:
-	$(PYTHON) scripts/legal_workbench_ops.py cleanup
+	$(BACKEND_UV) python ../../scripts/legal_workbench_ops.py cleanup

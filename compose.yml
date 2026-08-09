@@ -116,6 +116,7 @@ services:
       - ${LEGAL_WORKBENCH_OPS_CODEX_RUNS_ROOT:-./data/codex-runs}:/data/codex-runs
       - ${LEGAL_WORKBENCH_OPS_ATTACHMENT_ROOT:-./data/feishu-attachments}:/data/feishu-attachments
       - ./data/document-extractions:/data/document-extractions
+      - ./data/local-secrets:/data/local-secrets
     depends_on:
       api:
         condition: service_healthy
