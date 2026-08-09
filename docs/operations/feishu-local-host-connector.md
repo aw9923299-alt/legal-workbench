@@ -13,8 +13,8 @@ columns, and partial schemas are refused.
 Run a discovery-only report:
 
 ```bash
-PYTHONPATH=apps/backend/src .venv/bin/python \
-  -m legal_workbench.integrations.feishu_local_connector
+cd apps/backend
+uv run --locked python -m legal_workbench.integrations.feishu_local_connector
 ```
 
 Run unified ingestion for an existing Workbench OAuth authorization:
@@ -45,5 +45,5 @@ do not attempt to bypass client encryption.
 
 An optional launchd template is available at
 `deploy/launchd/com.legal-workbench.feishu-local-sync.plist.example`. Replace the
-repository path, authorization UUID, and confirmed local account hash before
-loading it.
+uv path (from `command -v uv`), repository path, authorization UUID, and
+confirmed local account hash before loading it.

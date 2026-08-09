@@ -87,6 +87,13 @@ legal-workbench/
 
 ## 快速启动
 
+开发工具链统一为 Node `22.23.2`（见 `.node-version`）、Python `3.12` 和 uv
+`0.12.3`。安装 uv 后，所有依赖都从仓库 lockfile 同步：
+
+```bash
+make setup
+```
+
 复制配置：
 
 ```bash
@@ -109,28 +116,24 @@ docker compose up -d --build
 仅运行前端：
 
 ```bash
-npm install
-npm run dev
+make web-dev
 ```
 
 仅运行后端开发环境：
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-.venv/bin/python -m pip install -e 'apps/backend[dev]'
-alembic -c apps/backend/alembic.ini upgrade head
-npm run backend:dev
+make setup-backend
+make migrate
+make backend-dev
 ```
 
 ## 检查
 
 ```bash
-npm run typecheck
+make lint
+make test
 npm run build
-.venv/bin/python -m ruff check apps/backend/src apps/backend/tests
-.venv/bin/python -m mypy --config-file apps/backend/pyproject.toml apps/backend/src
-.venv/bin/python -m pytest apps/backend/tests
+docker compose config --quiet
 ```
 
 ## 设计文档

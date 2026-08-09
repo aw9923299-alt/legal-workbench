@@ -82,10 +82,8 @@
 完成后至少运行并报告真实结果：
 
 ```bash
-.venv/bin/python -m ruff check apps/backend/src apps/backend/tests
-.venv/bin/python -m mypy --config-file apps/backend/pyproject.toml apps/backend/src
-.venv/bin/python -m pytest apps/backend/tests
-npm run typecheck
+make lint
+make test
 npm run build
 ```
 

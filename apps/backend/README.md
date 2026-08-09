@@ -52,26 +52,27 @@ Idempotency-Key: <调用方生成的唯一键>
 ## 本地运行
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -e 'apps/backend[dev]'
-alembic -c apps/backend/alembic.ini upgrade head
-uvicorn legal_workbench.main:app --app-dir apps/backend/src --reload
+cd apps/backend
+uv sync --locked
+uv run --locked alembic -c alembic.ini upgrade head
+uv run --locked uvicorn legal_workbench.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
 后台 Worker：
 
 ```bash
-celery -A legal_workbench.infrastructure.celery_app:celery_app worker --loglevel=INFO
+cd apps/backend
+uv run --locked celery -A legal_workbench.infrastructure.celery_app:celery_app worker --loglevel=INFO
 ```
 
 ## 验证
 
 ```bash
-python -m ruff check apps/backend/src apps/backend/tests
-python -m mypy --config-file apps/backend/pyproject.toml apps/backend/src
-python -m pytest apps/backend/tests
-PYTHONPATH=apps/backend/src alembic -c apps/backend/alembic.ini upgrade head --sql
+cd apps/backend
+uv run --locked ruff check src tests
+uv run --locked mypy --config-file pyproject.toml src
+uv run --locked pytest
+uv run --locked alembic -c alembic.ini upgrade head --sql
 ```
 
 正式业务对象和接口以 `docs/design/` 为准。飞书、Codex Runtime、审核包和真实外发尚未接入。

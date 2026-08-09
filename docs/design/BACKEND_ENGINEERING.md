@@ -124,4 +124,4 @@ API统一返回：
 
 ## 10. 依赖和锁定
 
-当前`pyproject.toml`定义兼容版本区间。首次具备正常网络后应生成并提交Python锁文件和npm锁文件，CI随后改用锁定安装。任何大版本升级必须通过单独PR、迁移演练和回归测试。
+`apps/backend/pyproject.toml`声明运行依赖和`dev` dependency group，`apps/backend/uv.lock`是唯一Python锁文件。开发与CI使用`uv sync --locked`，运行命令使用`uv run --locked`；生产镜像使用`uv sync --locked --no-dev --no-editable`，不得在构建期间改写锁文件。uv固定为`0.12.3`，Python仅支持`3.12.*`。任何依赖或工具链升级必须同步更新锁文件，并通过单独PR、迁移演练和回归测试。
