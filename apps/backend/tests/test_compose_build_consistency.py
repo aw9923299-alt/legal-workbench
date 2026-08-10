@@ -18,7 +18,16 @@ def test_all_python_services_share_one_backend_image() -> None:
     environment = os.environ.copy()
     environment.setdefault("CODEX_CLI_VERSION", "0.146.0")
     rendered = subprocess.run(
-        ["docker", "compose", "--profile", "integrations", "config", "--format", "json"],
+        [
+            "docker",
+            "compose",
+            "--profile",
+            "integrations",
+            "config",
+            "--no-env-resolution",
+            "--format",
+            "json",
+        ],
         cwd=repository_root,
         env=environment,
         check=True,
