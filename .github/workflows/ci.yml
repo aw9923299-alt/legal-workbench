@@ -104,4 +104,5 @@ jobs:
       - name: Smoke production image runtimes
         run: |
           docker compose run --rm --no-deps api sh -c 'python --version && codex --version'
+          docker compose run --rm --no-deps worker python -c 'from legal_workbench.infrastructure.outbox import OUTBOX_HANDLERS; required = {"LegalButlerRequested", "LegalAgentStepRerunRequested", "LegalAgentRecoveryRequested"}; missing = required - set(OUTBOX_HANDLERS); assert not missing, missing'
           docker compose run --rm --no-deps web nginx -t

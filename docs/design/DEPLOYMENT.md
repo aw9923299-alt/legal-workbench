@@ -25,6 +25,7 @@ integrations  feishu-connector、file-indexer
 
 ## 3. 镜像策略
 
+- API、Worker、Scheduler、飞书连接器和文件索引器必须使用 Compose 中同一个显式 `legal-workbench-backend` 镜像标签；仅 API 声明 Backend build，其他 Python 服务消费该同一产物。部署时先构建 API 镜像，再统一重建受影响的 Python 服务，禁止让长期运行的 Worker/Scheduler 留在旧代码镜像。
 - Python：3.12 slim；
 - Python依赖：uv 0.12.3读取`apps/backend/uv.lock`，生产环境排除`dev` group并以非editable方式安装；
 - Node：24.15.0 Alpine，仅用于前端构建，使用根`.node-version`、`package-lock.json`和`npm ci`；Docker build 会校验镜像 Node 版本与`.node-version`一致；
@@ -160,7 +161,7 @@ curl --cookie-jar /tmp/legal-workbench-cookie http://localhost:8000/api/v1/syste
 
 故障恢复验证应依次停止/恢复 Redis、Worker 和 API，并检查 PostgreSQL 中 queued 消息、AgentRun 租约、Outbox 和死信仍可由 scheduler 或 `/system/recover-pending-jobs` 恢复。Codex 进程终止测试必须得到明确失败码，不能以伪造成功结果完成。
 
-CI 除 `docker compose config --quiet` 外必须执行 `docker compose build api web`，真实构建生产 Backend/Web Dockerfile，并在镜像内检查 Python/Codex 版本与 Nginx 配置；只检查 Compose 语法不能作为生产镜像可构建证据。Backend 测试填充数据库后还必须对最新迁移执行一次 `downgrade -1` / `upgrade head` 往返。Python 以 `.python-version`、CI 和 Dockerfile 共同声明 3.12 minor policy，依赖由 uv 0.12.3 与 `uv.lock` 固化；不额外复制一个 Python patch 版本来源。
+CI 除 `docker compose config --quiet` 外必须执行 `docker compose build api web`，真实构建生产 Backend/Web Dockerfile，并从共享 Backend 镜像启动 Worker 检查关键 Outbox handler 注册表，同时检查 Python/Codex 版本与 Nginx 配置；只检查 Compose 语法不能作为生产镜像可构建或消费者版本一致的证据。Backend 测试填充数据库后还必须对最新迁移执行一次 `downgrade -1` / `upgrade head` 往返。Python 以 `.python-version`、CI 和 Dockerfile 共同声明 3.12 minor policy，依赖由 uv 0.12.3 与 `uv.lock` 固化；不额外复制一个 Python patch 版本来源。
 
 备份恢复演练应使用独立临时数据库，先对 `.dump` 执行 `pg_restore --list`，再恢复并验证 Alembic head、核心表数量和只追加审计；不得覆盖正在运行的业务库。诊断包只含 Docker/Compose/Git 状态、磁盘及脱敏运维元数据，不含 `.env`、数据库内容、飞书正文或附件。
 

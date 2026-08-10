@@ -6,6 +6,8 @@ x-backend-build: &backend-build
   args:
     CODEX_CLI_VERSION: ${CODEX_CLI_VERSION:?Set CODEX_CLI_VERSION in .env}
 
+x-backend-image: &backend-image legal-workbench-backend:${LEGAL_WORKBENCH_BACKEND_IMAGE_TAG:-local}
+
 x-default-logging: &default-logging
   driver: json-file
   options:
@@ -56,6 +58,7 @@ services:
       retries: 10
 
   api:
+    image: *backend-image
     build: *backend-build
     restart: unless-stopped
     logging: *default-logging
@@ -94,7 +97,7 @@ services:
       retries: 10
 
   worker:
-    build: *backend-build
+    image: *backend-image
     restart: unless-stopped
     logging: *default-logging
     env_file:
@@ -122,7 +125,7 @@ services:
         condition: service_healthy
 
   scheduler:
-    build: *backend-build
+    image: *backend-image
     restart: unless-stopped
     logging: *default-logging
     env_file:
@@ -156,7 +159,7 @@ services:
         condition: service_healthy
 
   feishu-connector:
-    build: *backend-build
+    image: *backend-image
     profiles: ["integrations"]
     restart: unless-stopped
     logging: *default-logging
@@ -174,7 +177,7 @@ services:
         condition: service_healthy
 
   file-indexer:
-    build: *backend-build
+    image: *backend-image
     profiles: ["integrations"]
     restart: "no"
     logging: *default-logging
