@@ -1648,6 +1648,7 @@ class AgentExecutionPlanModel(UuidPrimaryKeyMixin, TimestampMixin, VersionedMixi
     analysis_jurisdiction: Mapped[str] = mapped_column(
         String(64), nullable=False, default="CN", server_default="CN"
     )
+    analysis_effective_date: Mapped[date] = mapped_column(Date, nullable=False)
     historical_as_of: Mapped[date | None] = mapped_column(Date)
 
 

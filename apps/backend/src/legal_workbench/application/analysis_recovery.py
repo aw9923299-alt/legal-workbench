@@ -123,6 +123,8 @@ class AnalysisRecoveryService:
                     run_id=run.id,
                     attempt_number=run.attempt_number,
                 )
+                if not attempt_expired:
+                    continue
                 run.failure_code = "AGENT_LEASE_EXPIRED"
                 run.failure_message = "Agent worker heartbeat lease expired."
                 run.lease_expires_at = None
@@ -203,6 +205,8 @@ class AnalysisRecoveryService:
                     lease_seconds=self._stale_after_seconds,
                     now=self._now,
                 ).expire_current(recovered_run)
+                if not attempt_expired:
+                    continue
                 recovered_run.failure_code = "AGENT_LEASE_EXPIRED"
                 recovered_run.failure_message = "Agent worker heartbeat lease expired."
                 recovered_run.transition_to(AgentRunStatus.FAILED, now=now)
@@ -273,17 +277,27 @@ class AnalysisRecoveryService:
                 (value for value in plan.steps if value.id == run.plan_step_id),
                 None,
             )
-            if matching is not None:
-                step = await uow.agent_execution_plans.get_step_for_update(
-                    plan.id, matching.step_id
-                )
-                if step is not None:
-                    step.status = AgentPlanStepStatus.FAILED
-                    step.failure_code = "AGENT_MAX_ATTEMPTS_EXHAUSTED"
-                    step.failure_message = "Agent lease recovery attempts were exhausted."
-                    step.updated_at = now
-                    step.version += 1
-                    await uow.agent_execution_plans.save_step(step)
+            if matching is None:
+                return
+            step = await uow.agent_execution_plans.get_step_for_update(
+                plan.id, matching.step_id
+            )
+            if step is None or step.latest_run_id != run.id:
+                return
+            step.status = AgentPlanStepStatus.FAILED
+            step.failure_code = "AGENT_MAX_ATTEMPTS_EXHAUSTED"
+            step.failure_message = "Agent lease recovery attempts were exhausted."
+            step.updated_at = now
+            step.version += 1
+            await uow.agent_execution_plans.save_step(step)
+        elif (
+            run.run_role == AgentRunRole.BUTLER_PLANNING
+            and plan.planning_run_id != run.id
+        ) or (
+            run.run_role == AgentRunRole.BUTLER_SYNTHESIS
+            and plan.synthesis_run_id != run.id
+        ):
+            return
         completed = any(
             value.status
             in {

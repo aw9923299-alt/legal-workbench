@@ -2,7 +2,7 @@
 
 运行在本地 Mac 上的法务智能工作系统。系统从经过授权的飞书消息中发现工作，由受控的 Codex Agent 完成消息研判、事项归并、任务规划、专业分析、回复草拟、日报和复盘；所有发送给其他人员的内容必须经过法务审核。
 
-> 当前已实现 `FeishuEvent → FeishuMessage → 附件正文提取 → ContextSnapshot → AgentRun → MessageCandidate → 人工创建/关联 Matter 或提交 MatterUpdateProposal → 人工逐字段审核 → WorkItem` 受控闭环，以及官方 SDK 长连接/Webhook 双入口、断线重连、消息版本、时间窗补偿、运行中心、系统状态和 SSE/轮询恢复。PDF/DOCX/TXT/Markdown 可受控解析，图片和扫描 PDF 明确显示正文不可用。真实飞书与真实 Codex 均需显式开启并提供可用凭证；通用知识库解析和专业 Agent 尚未实现。
+> 当前已实现从消息研判、人工创建 Matter/WorkItem，到 Legal Butler、受控 Specialist DAG、PostgreSQL 法律知识检索、DraftArtifact 和 pending ReviewPackage 的 Phase 2 闭环。PDF/DOCX/TXT/Markdown 可受控解析，图片和扫描 PDF 明确显示正文不可用。真实飞书与 Real Codex E2E 均需显式开启并提供隔离凭证；默认和 CI 的 synthetic E2E 使用明确标记的 Fake Runtime，不代表真实模型通过。
 
 ## 核心闭环
 
@@ -134,6 +134,7 @@ make lint
 make test
 npm run build
 docker compose config --quiet
+docker compose build api web
 ```
 
 ## 设计文档
@@ -155,6 +156,10 @@ docker compose config --quiet
 已完成：
 
 - `ContextSnapshot`、`AgentDefinition`、`AgentRun`、`AgentRunSource`、`DraftArtifact` 和 `MessageCandidate` 正式模型；
+- 两阶段 Legal Butler、五类既有 Specialist、最多四步有界 DAG、Step 直接依赖隔离、显式 rerun 与 latest-valid lineage；
+- AgentRunAttempt lease/heartbeat/fencing 与 PostgreSQL recovery：过期 lease 才能通过 CAS 失效，stale Attempt、stale Step Run 或 stale Synthesis Run 均不能覆盖当前结果；
+- Plan 级 `analysis_effective_date` 在 retry/recovery/rerun 中保持稳定，显式 `historical_as_of` 独立表示历史法律适用时点；
+- Specialist citation 由服务端根据已授权 `sourceRef` 重建标题、类型、定位、哈希和 authority 元数据；越权引用、内部先例冒充正式法律依据和无 canonical metadata 均 fail closed；
 - SQLAlchemy 映射、Repository、Unit of Work和 Alembic 可升降级迁移；
 - 飞书消息 Outbox 自动投递、确定性限界快照、受控 `message_judgement` Agent 和 Pydantic/JSON Schema 输出校验；
 - Codex CLI 统一 Runtime：独立运行目录、授权 JSON stdin、禁用 Shell/代码模式/网络搜索、输入输出审计、超时终止、心跳、输出大小限制和错误分类；
@@ -191,12 +196,12 @@ docker compose config --quiet
 
 - 飞书开关关闭时真实入口 fail closed；长连接缺少 App ID/Secret、Webhook 缺少 Verification Token 时拒绝启动。当前 Mac 已使用 Workbench OAuth Token 实测 OAuth refresh、群历史、群发现和文档搜索；Identity/Messages/Chat discovery/Documents Scope 投影均为 ready。当前库没有可复用 P2P、Thread 或文档 Markdown fixture，相关结果保持 `partial/unsupported`，未伪造通过。Webhook 加密载荷仍明确拒绝；
 - 容器 Worker 以专用 UID、最小环境变量和无知识目录挂载运行 Codex；主机模式仍依赖 Codex 自身只读沙箱，不声称是完整 OS 级隔离。
-- `CODEX_CLI_VERSION` 是唯一部署版本来源；当前宿主 CLI 与新构建 Worker 镜像均为 `0.146.0`。隔离 Worker 仍未配置 Codex 认证，因此真实 Codex 推理未执行，11 类消息仅通过 Fake Runtime + 真实 PostgreSQL 验证。
+- `CODEX_CLI_VERSION` 是唯一 Codex 部署版本来源。Synthetic Fake Runtime E2E 与 Real Codex E2E 使用不同测试和显式门禁；前者只证明确定性编排、持久化和审核边界，不能替代真实模型证据。
 - `infra/launchd` 模板已在当前 Mac 实际安装为 Supervisor 与每日备份 Agent；Supervisor 运行退出码为 0，真实 Scheduled Personal Sync、PostgreSQL custom backup 和隔离恢复均已通过。物理睡眠因 `pmset` 计划唤醒要求 root 且无非交互 sudo 而未执行，详见 `artifacts/mac-operations/final-acceptance-20260809.json`。
 - 当前 Registry 最新 `react-router-dom@7.18.2` 仍命中 RSC Action CSRF 公告 `GHSA-qwww-vcr4-c8h2`；本项目不启用 RSC/Server Actions，但在上游发布可安装修复版本前，`npm audit` 仍会报告 2 个 high，详见 `QA_REPORT.md`。
 
 ## 当前开发顺序
 
 1. 在具备 `pmset` root 权限或有人现场唤醒时补做真实 Mac 睡眠/唤醒，并发送一条新的非敏感飞书消息验证唤醒后新增入库；
-2. 在专用 Runner 认证可用时执行真实 Codex 安全冒烟与真实评估；
+2. 在专用 Runner 隔离认证可用时显式执行 Real Codex E2E 与真实评估；不得读取真实敏感法务材料；
 3. 真实飞书测试消息和官方长连接验收按用户要求后置，恢复时单独执行且人工确认个人未读状态。

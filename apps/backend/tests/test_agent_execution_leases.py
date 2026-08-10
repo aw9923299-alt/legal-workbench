@@ -66,6 +66,8 @@ class _AttemptRepository:
         attempt = self.values[(run_id, attempt_number)]
         if attempt.status != AgentAttemptStatus.RUNNING:
             return False
+        if attempt.lease_expires_at > finished_at:
+            return False
         attempt.expire(now=finished_at)
         return True
 
@@ -123,12 +125,14 @@ async def test_execution_lease_drives_normal_run_lifecycle_and_heartbeat() -> No
 async def test_execution_lease_rejects_late_owner_before_result_can_commit() -> None:
     repository = _AttemptRepository()
     run = _run()
+    current_time = NOW
     service = AgentExecutionLeaseService(
         repository,
         lease_seconds=60,
-        now=lambda: NOW,
+        now=lambda: current_time,
     )
     stale = await service.start(run, worker_id="worker-old")
+    current_time = NOW + timedelta(seconds=61)
     assert await service.expire_current(run) is True
     run.failure_code = "AGENT_LEASE_EXPIRED"
     run.failure_message = "Expired fixture lease."

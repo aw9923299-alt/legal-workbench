@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -13,7 +13,11 @@ from legal_workbench.agents.legal_butler import (
     ButlerPlanningOutput,
     ButlerSynthesisOutput,
 )
-from legal_workbench.agents.legal_contracts import LEGAL_OUTPUT_MODELS, LegalWorkProduct
+from legal_workbench.agents.legal_contracts import (
+    LEGAL_OUTPUT_MODELS,
+    LegalWorkProduct,
+    validate_legal_work_product_sources,
+)
 from legal_workbench.agents.professional import LEGAL_SPECIALIST_KEYS
 from legal_workbench.agents.runtime import (
     AgentExecutionContext,
@@ -56,6 +60,8 @@ from legal_workbench.domain.enums import (
 from legal_workbench.domain.errors import (
     DomainValidationError,
     EntityNotFoundError,
+    InvalidStateTransitionError,
+    StaleAgentAttemptError,
 )
 
 
@@ -71,6 +77,7 @@ class LegalAgentTrigger:
     special_requirements: str | None = None
     specialist_only: str | None = None
     jurisdiction: str = "CN"
+    analysis_effective_date: date | None = None
     historical_as_of: date | None = None
 
 
@@ -103,6 +110,37 @@ class LegalAgentOrchestrationResult:
 @dataclass(frozen=True, slots=True)
 class _ExistingPlanFound(Exception):
     plan: AgentExecutionPlan
+
+
+def ensure_current_step_run(step: AgentPlanStep, run_id: UUID) -> None:
+    if step.latest_run_id != run_id:
+        raise StaleAgentAttemptError(
+            "The Specialist Run is no longer current for this Step.",
+            details={
+                "planId": str(step.execution_plan_id),
+                "stepId": step.step_id,
+                "runId": str(run_id),
+                "currentRunId": (
+                    str(step.latest_run_id) if step.latest_run_id is not None else None
+                ),
+            },
+        )
+
+
+def ensure_current_synthesis_run(plan: AgentExecutionPlan, run_id: UUID) -> None:
+    if plan.synthesis_run_id != run_id:
+        raise StaleAgentAttemptError(
+            "The Butler synthesis Run is no longer current for this Plan.",
+            details={
+                "planId": str(plan.id),
+                "runId": str(run_id),
+                "currentRunId": (
+                    str(plan.synthesis_run_id)
+                    if plan.synthesis_run_id is not None
+                    else None
+                ),
+            },
+        )
 
 
 StepRunner = Callable[
@@ -168,6 +206,7 @@ class LegalAgentOrchestrator:
         lease_seconds: int = 60,
         worker_id: str = "legal-agent-worker",
         timeout_seconds: int = 180,
+        analysis_date_provider: Callable[[], date] | None = None,
     ) -> None:
         self._uow_factory = uow_factory
         self._runtime = runtime
@@ -175,6 +214,7 @@ class LegalAgentOrchestrator:
         self._runs_root = Path(runs_root)
         self._lease_seconds = lease_seconds
         self._worker_id = worker_id
+        self._analysis_date_provider = analysis_date_provider or date.today
         self._definitions = build_legal_agent_definitions(
             timeout_seconds=timeout_seconds
         )
@@ -273,6 +313,7 @@ class LegalAgentOrchestrator:
             correlation_id=correlation_id or plan.correlation_id,
             idempotency_key=plan.idempotency_key,
             jurisdiction=plan.analysis_jurisdiction,
+            analysis_effective_date=plan.analysis_effective_date,
             historical_as_of=plan.historical_as_of,
         )
         if planning_run.status == AgentRunStatus.QUEUED:
@@ -382,9 +423,7 @@ class LegalAgentOrchestrator:
                 "specialistOnly": trigger.specialist_only,
                 "registeredSpecialists": sorted(LEGAL_SPECIALIST_KEYS),
                 "analysisJurisdiction": trigger.jurisdiction,
-                "analysisEffectiveDate": (
-                    trigger.historical_as_of or date.today()
-                ).isoformat(),
+                "analysisEffectiveDate": plan.analysis_effective_date.isoformat(),
                 "analysisHistoricalAsOf": (
                     trigger.historical_as_of.isoformat()
                     if trigger.historical_as_of is not None
@@ -449,12 +488,6 @@ class LegalAgentOrchestrator:
             matter = await uow.matters.get(plan.matter_id)
             if snapshot is None or matter is None:
                 raise EntityNotFoundError("Legal Agent rerun context was not found.")
-            plan.status = AgentExecutionPlanStatus.RUNNING
-            plan.synthesis_run_id = None
-            plan.updated_at = utc_now()
-            plan.version += 1
-            await uow.agent_execution_plans.save(plan)
-            await uow.commit()
         trigger = LegalAgentTrigger(
             matter_id=plan.matter_id,
             work_item_id=plan.work_item_id,
@@ -464,6 +497,7 @@ class LegalAgentOrchestrator:
             correlation_id=correlation_id,
             idempotency_key=f"rerun:{plan.id}:{step.id}:{uuid4().hex}",
             jurisdiction=plan.analysis_jurisdiction,
+            analysis_effective_date=plan.analysis_effective_date,
             historical_as_of=plan.historical_as_of,
         )
         persisted_results = await self._list_step_results(plan.id)
@@ -473,6 +507,15 @@ class LegalAgentOrchestrator:
                 {value.step_id: value for value in persisted_results}
             ),
         )
+        rerun = await self._start_step_run(
+            plan=plan,
+            step=step,
+            snapshot=snapshot,
+            trigger=trigger,
+            retry_of_run_id=step.latest_run_id,
+            dependency_run_ids=dependency_context.dependency_run_ids,
+            reserve_rerun=True,
+        )
         step_result = await self._execute_step(
             plan=plan,
             step=step,
@@ -481,6 +524,7 @@ class LegalAgentOrchestrator:
             matter_type=matter.primary_category.value,
             dependency_context=dependency_context,
             retry_of_run_id=step.latest_run_id,
+            existing_run=rerun,
         )
         await self._invalidate_stale_dependents(plan.id)
         all_results = await self._list_step_results(plan.id)
@@ -590,6 +634,9 @@ class LegalAgentOrchestrator:
                 idempotency_key=trigger.idempotency_key,
                 created_by=trigger.actor_id,
                 analysis_jurisdiction=trigger.jurisdiction,
+                analysis_effective_date=(
+                    trigger.analysis_effective_date or self._analysis_date_provider()
+                ),
                 historical_as_of=trigger.historical_as_of,
             )
             await uow.agent_execution_plans.add(plan)
@@ -628,6 +675,11 @@ class LegalAgentOrchestrator:
             run = await uow.agent_runs.get_for_update(run_id)
             if plan is None or run is None:
                 raise EntityNotFoundError("Planning state was not found.")
+            if plan.planning_run_id != run.id:
+                raise StaleAgentAttemptError(
+                    "The Butler planning Run is no longer current for this Plan.",
+                    details={"planId": str(plan.id), "runId": str(run.id)},
+                )
             steps = [
                 AgentPlanStep(
                     id=uuid4(),
@@ -655,6 +707,7 @@ class LegalAgentOrchestrator:
                 idempotency_key=plan.idempotency_key,
                 created_by=plan.created_by,
                 analysis_jurisdiction=plan.analysis_jurisdiction,
+                analysis_effective_date=plan.analysis_effective_date,
                 historical_as_of=plan.historical_as_of,
                 steps=steps,
                 planning_run_id=run.id,
@@ -713,7 +766,7 @@ class LegalAgentOrchestrator:
             matter_type=matter_type,
             objective=step.objective,
             jurisdiction=trigger.jurisdiction,
-            effective_date=trigger.historical_as_of or date.today(),
+            effective_date=plan.analysis_effective_date,
             historical_as_of=trigger.historical_as_of,
             correlation_id=trigger.correlation_id,
             agent_run_id=run.id,
@@ -747,9 +800,7 @@ class LegalAgentOrchestrator:
                 "stepId": step.step_id,
                 "contextRequirements": step.context_requirements,
                 "analysisJurisdiction": trigger.jurisdiction,
-                "analysisEffectiveDate": (
-                    trigger.historical_as_of or date.today()
-                ).isoformat(),
+                "analysisEffectiveDate": plan.analysis_effective_date.isoformat(),
                 "analysisHistoricalAsOf": (
                     trigger.historical_as_of.isoformat()
                     if trigger.historical_as_of is not None
@@ -772,6 +823,18 @@ class LegalAgentOrchestrator:
             )
             if not isinstance(execution.output, LegalWorkProduct):
                 raise DomainValidationError("Specialist returned the wrong output contract.")
+            try:
+                canonical_product = validate_legal_work_product_sources(
+                    execution.output,
+                    authorized_source_refs=set(context.source_refs),
+                    internal_precedent_refs=set(context.internal_precedent_refs),
+                    source_authorities=context.source_authorities,
+                    analysis_effective_date=plan.analysis_effective_date,
+                    historical_as_of=trigger.historical_as_of,
+                )
+            except ValueError as exc:
+                raise DomainValidationError(str(exc)) from exc
+            execution = replace(execution, output=canonical_product)
         except (AgentRuntimeError, DomainValidationError) as exc:
             failure = self._runtime_failure(exc)
             await self._fail_step(
@@ -795,6 +858,7 @@ class LegalAgentOrchestrator:
                 source_authorities=context.source_authorities,
             )
         product = execution.output
+        assert isinstance(product, LegalWorkProduct)
         needs_information = bool(product.missing_information)
         status = (
             AgentPlanStepStatus.NEEDS_INFORMATION
@@ -808,6 +872,7 @@ class LegalAgentOrchestrator:
             )
             if stored_run is None or stored_step is None:
                 raise EntityNotFoundError("Specialist persistence state was not found.")
+            ensure_current_step_run(stored_step, run.id)
             await self._apply_run_success(
                 uow,
                 stored_run,
@@ -845,18 +910,76 @@ class LegalAgentOrchestrator:
         trigger: LegalAgentTrigger,
         retry_of_run_id: UUID | None,
         dependency_run_ids: tuple[UUID, ...],
+        reserve_rerun: bool = False,
     ) -> AgentRun:
         async with self._uow_factory() as uow:
+            stored_plan = None
+            if reserve_rerun:
+                stored_plan = await uow.agent_execution_plans.get_for_update(plan.id)
+                if stored_plan is None:
+                    raise EntityNotFoundError("Agent execution plan was not found.")
+                if stored_plan.status not in {
+                    AgentExecutionPlanStatus.COMPLETED,
+                    AgentExecutionPlanStatus.NEEDS_INFORMATION,
+                    AgentExecutionPlanStatus.PARTIAL,
+                    AgentExecutionPlanStatus.FAILED,
+                }:
+                    raise InvalidStateTransitionError(
+                        "The Agent execution plan is already active and cannot accept a rerun.",
+                        details={
+                            "planId": str(stored_plan.id),
+                            "status": stored_plan.status.value,
+                        },
+                    )
             stored_step = await uow.agent_execution_plans.get_step_for_update(
                 plan.id, step.step_id
             )
             if stored_step is None:
                 raise EntityNotFoundError("Agent plan step was not found.")
+            if stored_step.status == AgentPlanStepStatus.RUNNING:
+                raise InvalidStateTransitionError(
+                    "The Agent plan Step is already active and cannot start another Run.",
+                    details={"planId": str(plan.id), "stepId": stored_step.step_id},
+                )
+            if reserve_rerun:
+                if stored_step.latest_run_id != retry_of_run_id:
+                    raise StaleAgentAttemptError(
+                        "The requested Step rerun no longer targets the current Run.",
+                        details={"planId": str(plan.id), "stepId": stored_step.step_id},
+                    )
+                assert stored_plan is not None
+                steps_by_id = {value.step_id: value for value in stored_plan.steps}
+                current_dependencies: list[UUID] = []
+                for dependency_id in dict.fromkeys(stored_step.depends_on):
+                    dependency = steps_by_id.get(dependency_id)
+                    if (
+                        dependency is None
+                        or dependency.status
+                        not in {
+                            AgentPlanStepStatus.COMPLETED,
+                            AgentPlanStepStatus.NEEDS_INFORMATION,
+                        }
+                        or dependency.latest_valid_run_id is None
+                    ):
+                        raise InvalidStateTransitionError(
+                            "The Step rerun dependencies are not currently valid.",
+                            details={
+                                "planId": str(plan.id),
+                                "stepId": stored_step.step_id,
+                                "dependencyStepId": dependency_id,
+                            },
+                        )
+                    current_dependencies.append(dependency.latest_valid_run_id)
+                if tuple(current_dependencies) != dependency_run_ids:
+                    raise StaleAgentAttemptError(
+                        "The requested Step rerun dependency lineage changed before reservation.",
+                        details={"planId": str(plan.id), "stepId": stored_step.step_id},
+                    )
             run = self._new_run(
                 definition_key=step.agent_key,
                 snapshot=snapshot,
-                plan=plan,
-                objective=step.objective,
+                plan=stored_plan or plan,
+                objective=stored_step.objective,
                 actor_id=trigger.actor_id,
                 role=AgentRunRole.SPECIALIST,
                 step=stored_step,
@@ -871,6 +994,12 @@ class LegalAgentOrchestrator:
             stored_step.updated_at = utc_now()
             stored_step.version += 1
             await uow.agent_execution_plans.save_step(stored_step)
+            if stored_plan is not None:
+                stored_plan.status = AgentExecutionPlanStatus.RUNNING
+                stored_plan.synthesis_run_id = None
+                stored_plan.updated_at = utc_now()
+                stored_plan.version += 1
+                await uow.agent_execution_plans.save(stored_plan)
             await uow.commit()
         return run
 
@@ -887,17 +1016,27 @@ class LegalAgentOrchestrator:
             plan, snapshot, trigger
         )
         synthesis_run, synthesis_lease = await self._claim_run(synthesis_run.id)
+        valid_step_results = [
+            result
+            for result in step_results
+            if result.output is not None
+            and result.status
+            in {
+                AgentPlanStepStatus.COMPLETED,
+                AgentPlanStepStatus.NEEDS_INFORMATION,
+            }
+        ]
         source_refs = frozenset(
-            value for result in step_results for value in result.source_refs
+            value for result in valid_step_results for value in result.source_refs
         )
         precedents = frozenset(
             value
-            for result in step_results
+            for result in valid_step_results
             for value in result.internal_precedent_refs
         )
         source_authorities = {
             source_ref: metadata
-            for result in step_results
+            for result in valid_step_results
             for source_ref, metadata in result.source_authorities.items()
         }
         persisted_source_metadata = await self._source_metadata_for_runs(
@@ -905,7 +1044,7 @@ class LegalAgentOrchestrator:
                 value
                 for value in [
                     synthesis_run.id,
-                    *(result.run_id for result in step_results),
+                    *(result.run_id for result in valid_step_results),
                 ]
                 if value is not None
             ]
@@ -921,9 +1060,7 @@ class LegalAgentOrchestrator:
             payload={
                 "contextSnapshot": self._context_builder.planning(snapshot).payload,
                 "analysisJurisdiction": trigger.jurisdiction,
-                "analysisEffectiveDate": (
-                    trigger.historical_as_of or date.today()
-                ).isoformat(),
+                "analysisEffectiveDate": plan.analysis_effective_date.isoformat(),
                 "analysisHistoricalAsOf": (
                     trigger.historical_as_of.isoformat()
                     if trigger.historical_as_of is not None
@@ -1104,6 +1241,7 @@ class LegalAgentOrchestrator:
             stored_plan = await uow.agent_execution_plans.get_for_update(plan.id)
             if stored_run is None or stored_plan is None:
                 raise EntityNotFoundError("Synthesis persistence state was not found.")
+            ensure_current_synthesis_run(stored_plan, synthesis_run.id)
             await self._apply_run_success(
                 uow,
                 stored_run,
@@ -1138,10 +1276,21 @@ class LegalAgentOrchestrator:
         trigger: LegalAgentTrigger,
     ) -> AgentRun:
         async with self._uow_factory() as uow:
+            stored_plan = await uow.agent_execution_plans.get_for_update(plan.id)
+            if stored_plan is None:
+                raise EntityNotFoundError("Agent execution plan was not found.")
+            if stored_plan.synthesis_run_id is not None:
+                raise InvalidStateTransitionError(
+                    "The Agent execution plan already has an active synthesis Run.",
+                    details={
+                        "planId": str(stored_plan.id),
+                        "synthesisRunId": str(stored_plan.synthesis_run_id),
+                    },
+                )
             run = self._new_run(
                 definition_key="legal_butler",
                 snapshot=snapshot,
-                plan=plan,
+                plan=stored_plan,
                 objective=f"综合执行计划 {plan.id} 的专业意见",
                 actor_id=trigger.actor_id,
                 role=AgentRunRole.BUTLER_SYNTHESIS,
@@ -1151,9 +1300,6 @@ class LegalAgentOrchestrator:
             await uow.agent_run_sources.add_many(
                 self._context_sources(run.id, snapshot, None)
             )
-            stored_plan = await uow.agent_execution_plans.get_for_update(plan.id)
-            if stored_plan is None:
-                raise EntityNotFoundError("Agent execution plan was not found.")
             stored_plan.status = AgentExecutionPlanStatus.RUNNING
             stored_plan.synthesis_run_id = run.id
             stored_plan.updated_at = utc_now()
@@ -1210,6 +1356,7 @@ class LegalAgentOrchestrator:
             step = await uow.agent_execution_plans.get_step_for_update(plan_id, step_id)
             if run is None or step is None:
                 raise EntityNotFoundError("Failed specialist state was not found.")
+            ensure_current_step_run(step, run.id)
             await self._apply_attempt_failure(uow, run, lease, error)
             self._apply_run_failure(run, error, run_input, working_directory)
             retry_queued = await self._queue_retry_or_dead_letter(uow, run, error)
@@ -1242,6 +1389,16 @@ class LegalAgentOrchestrator:
             plan = await uow.agent_execution_plans.get_for_update(plan_id)
             if run is None or plan is None:
                 raise EntityNotFoundError("Failed Agent state was not found.")
+            if run.run_role == AgentRunRole.BUTLER_SYNTHESIS:
+                ensure_current_synthesis_run(plan, run.id)
+            elif (
+                run.run_role == AgentRunRole.BUTLER_PLANNING
+                and plan.planning_run_id != run.id
+            ):
+                raise StaleAgentAttemptError(
+                    "The Butler planning Run is no longer current for this Plan.",
+                    details={"planId": str(plan.id), "runId": str(run.id)},
+                )
             await self._apply_attempt_failure(uow, run, lease, error)
             self._apply_run_failure(run, error, input_payload, working_directory)
             retry_queued = await self._queue_retry_or_dead_letter(uow, run, error)
@@ -1629,6 +1786,12 @@ class LegalAgentOrchestrator:
         return {
             "id": str(plan.id),
             "objective": plan.objective,
+            "analysisEffectiveDate": plan.analysis_effective_date.isoformat(),
+            "historicalAsOf": (
+                plan.historical_as_of.isoformat()
+                if plan.historical_as_of is not None
+                else None
+            ),
             "taskTypes": plan.task_types,
             "requiresUserInput": plan.requires_user_input,
             "missingInformation": plan.missing_information,

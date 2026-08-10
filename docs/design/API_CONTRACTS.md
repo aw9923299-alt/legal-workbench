@@ -324,6 +324,8 @@ Planning、Specialist 和 Synthesis 与 `message_judgement` 复用同一 Attempt
 
 下游 Step 只接收 `depends_on` 直接依赖的 latest valid Run 输出与这些 Run 的原始授权来源；`COMPLETED/NEEDS_INFORMATION` 有效，`FAILED/SKIPPED` 无效。普通执行和 `rerun` 使用同一依赖重建器，兄弟 Step 输出不会泄漏，依赖变更后的旧下游输出会标记 stale 并从 synthesis 排除。
 
+Plan 查询响应公开 `analysisEffectiveDate`、`historicalAsOf`；Step 公开 `latestRunId` 与 `latestValidRunId`；每个 Run 公开 `dependencyRunIds`。`analysisEffectiveDate` 是 Plan 创建时冻结的当前法执行日期，跨日 retry/recovery/rerun 不变化；只有请求中的显式 `historicalAsOf` 才开启历史法律适用语义。并发 rerun 必须先在数据库行锁内验证 current Plan/Step/依赖 lineage 并保留新 Run，stale completion 不能更新 Step、Plan、Artifact 或 ReviewPackage。
+
 计划完成后由编排器创建 `DraftArtifact` 与 pending `ReviewPackage`。接口不会修改 Matter/WorkItem，也不会创建或发送 Communication。
 
 ## 9. 审核接口

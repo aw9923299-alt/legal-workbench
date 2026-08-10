@@ -1,6 +1,6 @@
 # Codex 项目交接说明
 
-更新日期：2026-08-09
+更新日期：2026-08-10
 
 ## 当前可用闭环
 
@@ -50,7 +50,7 @@ Candidate confirmed / Matter manual trigger
 | ContextSnapshot/AgentDefinition/AgentRun/Source/DraftArtifact | 已实现 |
 | `message_judgement` + `CodexCliRuntime` | 已实现，当前 Mac 已由 Workbench 隔离认证目录完成真实 AgentRun，并产生待人工确认 Candidate |
 | Codex 版本/隔离认证健康检查 | 已实现；宿主与 Worker 均为 0.146.0，显式隔离认证已验收；不得继承 ambient `CODEX_HOME` |
-| AgentRun 状态历史、租约与 PostgreSQL 恢复 | 已统一覆盖 message judgement、Butler planning、Specialist、Synthesis；每次 Runtime 均有 Attempt/lease/heartbeat/fencing，Legal Runtime 遵循统一 `CODEX_RUN_TIMEOUT_SECONDS` 配置，Celery Beat 从 PostgreSQL 恢复最小未完成单元 |
+| AgentRun 状态历史、租约与 PostgreSQL 恢复 | 已统一覆盖 message judgement、Butler planning、Specialist、Synthesis；Attempt 只有在数据库确认 lease 已过期且 lease token/current-attempt CAS 成功后才能失效。恢复扫描 CAS 失败时不再修改 Run/Step/Plan、审计或 Outbox；旧 owner、旧 Step Run 和旧 Synthesis Run 均不能提交有效结果 |
 | Candidate 分析修订历史 | 已实现，旧修订不覆盖 |
 | MatterUpdateProposal 人工审核 | 已实现；Proposal/Matter 双版本锁、逐字段最终值、WorkItem/Deadline 同事务落库；409 刷新保留法务草稿 |
 | WorkItem 全生命周期 | 已实现；13 类领域动作、WorkItem/Dependency 双版本、审计/Outbox/幂等同事务；页面按状态展示合法操作并刷新相关队列 |
@@ -62,10 +62,10 @@ Candidate confirmed / Matter manual trigger
 | 飞书补偿同步 | 已实现配置群聊时间窗方案；未配置群聊时明确为部分恢复 |
 | Mac 常驻运维 | 当前 Mac 已安装并加载 Supervisor/Backup launchd，基础服务、Beat heartbeat、Scheduled Personal Sync、custom backup 与隔离 restore 已验收；`pmset` 计划唤醒要求 root，故物理睡眠/唤醒和唤醒后新消息入库仍为人工待验 |
 | 飞书加密 Webhook | 尚未实现；加密载荷明确拒绝 |
-| Legal Butler + 五类专业 Agent | 已实现两阶段 Butler、最多四步无环 DAG、直接依赖隔离、latest-valid dependency 重建；上游重跑后旧下游标记 `STALE_DEPENDENCY_RUN`、不再携带旧输出进入 synthesis，必须显式重跑；未新增专业 Agent |
+| Legal Butler + 五类专业 Agent | 已实现两阶段 Butler、最多四步无环 DAG、直接依赖隔离、latest-valid dependency 重建；rerun 先在 Plan/Step 行锁内原子保留新 Run，并校验目标 Run 与依赖 lineage 仍为 current。上游重跑后旧下游标记 `STALE_DEPENDENCY_RUN`、旧输出/来源均不进入 synthesis，必须显式重跑；未新增 generation/epoch 或专业 Agent |
 | 本地法律资料沉淀 | 已实现只读扫描、SHA-256 去重、增量/版本化导入、失踪历史保留、单文件失败隔离；失败/中断 Extraction 会按同一 Version 新建审计尝试，提取前后复核源 SHA/size/mtime，长 Segment 按单 Chunk 预算确定性拆分；`.noindex` 后备目录 fail closed |
-| 法律知识检索 | 已实现 PostgreSQL FTS + pg_trgm、确定性 authority taxonomy、SQL 候选窗前哈希去重/超限 Chunk 排除、SQL 与应用层排除数合并审计、应用层 authority/三重 Token Budget、授权 Context 注入；历史资料仅在 API→幂等哈希→Outbox→Worker→Plan→恢复全链路持久化 `historical_as_of` 时召回；真实资料审计按本轮指令暂缓，默认预算仍为待校准值 |
-| 法律 Agent 人工审核 | Butler 综合结果创建 DraftArtifact 与 pending ReviewPackage；事实/问题/风险/策略/行动/冲突保留逐项原始 source refs，citation 标题/定位/hash 由持久化来源覆盖模型字段；未知效力强制降置信并列缺失信息；不会创建 Communication，也不会自动发送 |
+| 法律知识检索 | 已实现 PostgreSQL FTS + pg_trgm、确定性 authority taxonomy、SQL 候选窗前哈希去重/超限 Chunk 排除、SQL 与应用层排除数合并审计、应用层 authority/三重 Token Budget、授权 Context 注入；Plan 创建时持久化 `analysis_effective_date` 并在跨日 retry/recovery/rerun 保持稳定，显式 `historical_as_of` 仍独立控制历史资料召回；真实资料审计按本轮指令暂缓，默认预算仍为待校准值 |
+| 法律 Agent 人工审核 | Butler 综合结果创建 DraftArtifact 与 pending ReviewPackage；事实/问题/风险/策略/行动/冲突保留逐项原始 source refs。Specialist citation 的 title/type/locator/hash/precedent/authority 元数据由服务端按合法 sourceRef 重建，缺少 canonical metadata 或越权引用即失败；不会创建 Communication，也不会自动发送 |
 | 知识管理页 | `/library` 已连接 PostgreSQL，可人工修正 authority/法域/效力/启停并查看 Chunk、Token 与检索命中；不暴露绝对本地路径 |
 
 ## 重要代码入口
@@ -143,4 +143,4 @@ Runtime 将唯一授权 ContextSnapshot 作为不可信 JSON 直接送入 stdin�
 3. 提供现有 P2P chat、Thread 和可读 docx 的非敏感 fixture 后，补齐 P2P history、Thread replies 和 Document Markdown 实探；未读状态仍需另一账号配合；
 4. 为非本地环境补齐生产会话签发器；本轮真实 Candidate 继续保持 `pending_confirmation`，不得自动创建 Matter 或 WorkItem；仅人工确认动作可进入 Matter 后续闭环；
 5. 在 macOS 对真实 `Codex-Obs法务项目` 授权可读后，运行只读 inventory，按真实去重后 Token/类别规模校准三项 Knowledge Budget，再执行正式首次导入；不得使用 `.noindex` 占位后备目录代替真实目录；
-6. Real Codex E2E 依赖显式隔离认证目录与本机 CLI，不进入默认离线测试；任何模型、法规时效或资料不足仍应由 ReviewPackage 人工判断。
+6. `test_synthetic_fake_legal_agent_e2e.py` 明确是 Fake Runtime，只证明 Message→Candidate→Matter/WorkItem→Butler→Specialist→Knowledge→Synthesis→ReviewPackage 的确定性链路；Real Codex E2E 依赖显式隔离认证目录与本机 CLI，不进入默认测试，且不得读取真实敏感材料。

@@ -261,6 +261,13 @@ def validate_butler_synthesis_sources(
                     "internalPrecedent": (
                         citation.source_ref in internal_precedent_refs
                     ),
+                    "authorityType": metadata.get("authorityType"),
+                    "authorityRole": metadata.get("authorityRole"),
+                    "authorityStatus": metadata.get("authorityStatus"),
+                    "metadataStatus": metadata.get("metadataStatus"),
+                    "jurisdiction": metadata.get("jurisdiction"),
+                    "effectiveFrom": metadata.get("effectiveFrom"),
+                    "effectiveTo": metadata.get("effectiveTo"),
                 }
             )
         )

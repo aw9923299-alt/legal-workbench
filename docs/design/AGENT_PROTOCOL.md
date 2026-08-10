@@ -295,17 +295,20 @@ interface Finding {
 
 ```ts
 interface Citation {
-  id: string;
-  sourceType: 'message' | 'file' | 'knowledge_chunk' | 'upstream_agent';
-  sourceId: string;
+  sourceRef: string;
+  sourceType: 'context_snapshot' | 'feishu_message' | 'attachment' | 'knowledge_document' | 'historical_matter' | 'approved_example';
   locator?: string;
-  excerptHash: string;
+  contentHash?: string;
   title: string;
-  effectiveStatus?: 'effective' | 'expired' | 'draft' | 'unknown';
+  internalPrecedent: boolean;
+  authorityType?: string;
+  authorityRole?: string;
+  authorityStatus?: 'effective' | 'superseded' | 'repealed' | 'unknown';
+  jurisdiction?: string;
 }
 ```
 
-前端应可从引用跳转至授权范围内的原始位置。
+模型只能选择 authorized `sourceRef`；服务端从持久化来源重建其余 citation 元数据，不能信任模型自报 title、locator、hash 或 authority。前端应可从引用跳转至授权范围内的原始位置。
 
 ## 7. Agent 停止条件
 
@@ -323,36 +326,13 @@ interface Citation {
 
 ## 8. 执行计划
 
-### 8.1 顺序执行
+Butler Planning 只能在五个已注册 Specialist 中生成最多四步的无环 DAG。确定性编排器按拓扑波次运行：每个 Step 只获得自身 Context Builder 结果、直接依赖的 latest-valid 输出，以及这些依赖 Run 已持久化的原始授权来源；兄弟 Step 和旧依赖 Run 不得泄漏。
 
-```text
-Knowledge Search → Contract Agent → Reply Agent
-```
+每个 Specialist Run 固定保存 `dependencyRunIds`。单 Step rerun 必须在 Plan/Step 行锁内确认目标仍是 current Run、直接依赖仍是 current valid lineage，并原子设置新的 `latestRunId`；同一 Plan 不允许并发 rerun。上游重跑会把依赖旧 Run 的下游标记 `STALE_DEPENDENCY_RUN`，其旧输出和来源从新 synthesis 中排除，直到下游显式重跑。
 
-### 8.2 并行执行
+Planning、Specialist、Synthesis 的成功或失败只能更新当前 Plan/Step 指向的 Run。Attempt lease 过期恢复必须通过数据库 CAS；旧 Worker、续租竞态或已被替代的 Run 只保留历史审计，不能覆盖当前结果。
 
-```text
-Contract Agent ─┐
-HR Agent ───────┼→ Result Synthesizer
-Dispute Agent ──┘
-```
-
-### 8.3 条件执行
-
-```text
-若合同 Agent 标记 possible_employment_relationship
-→ 调用人力 Agent
-```
-
-### 8.4 冲突处理
-
-当不同 Agent 结论冲突：
-
-1. `AgentExecutionPlan` 进入 `paused`；
-2. 结果汇总 Agent列出冲突，不作最终选择；
-3. 创建 `ReviewPackage(type=agent_result)`；
-4. 法务确认采用结论和原因；
-5. 编排器根据确认结果继续。
+冲突由 Butler Synthesis 显式列入 `conflicts`，最终只创建 pending `ReviewPackage` 供法务选择；Agent 不得自行修改 Matter/WorkItem 或发送 Communication。
 
 ## 9. 回复 Agent 约束
 

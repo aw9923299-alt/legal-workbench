@@ -69,6 +69,16 @@ def test_expired_attempt_rejects_late_worker_completion() -> None:
     assert attempt.finished_at == NOW + timedelta(seconds=61)
 
 
+def test_running_attempt_cannot_expire_before_lease_deadline() -> None:
+    attempt, _ = _running_attempt()
+
+    with pytest.raises(StaleAgentAttemptError, match="lease has not expired"):
+        attempt.expire(now=NOW + timedelta(seconds=59))
+
+    assert attempt.status == AgentAttemptStatus.RUNNING
+    assert attempt.finished_at is None
+
+
 def test_matching_attempt_completes_exactly_once() -> None:
     attempt, lease = _running_attempt()
 

@@ -358,6 +358,8 @@ interface AgentExecutionPlan {
   workItemId?: string;
   objective: string;
   status: 'queued' | 'planning' | 'planned' | 'running' | 'partial' | 'completed' | 'failed' | 'needs_information' | 'cancelled';
+  analysisEffectiveDate: string;
+  historicalAsOf?: string;
   taskTypes: string[];
   synthesisStrategy: string;
   missingInformation: string[];
@@ -382,6 +384,7 @@ interface AgentPlanStep {
   contextRequirements: string[];
   status: 'pending' | 'ready' | 'running' | 'completed' | 'failed' | 'skipped' | 'needs_information';
   latestRunId?: string;
+  latestValidRunId?: string;
   attemptCount: number;
   failureCode?: string;
   failureMessage?: string;
@@ -389,7 +392,7 @@ interface AgentPlanStep {
 }
 ```
 
-计划内容由 Butler Planning 生成，但只有确定性应用服务可校验和落库：最多四步、仅注册专业 Agent、依赖必须存在且不得成环。无依赖 Step 同一波次并行，有依赖 Step 按拓扑波次执行；模型不能递归生成新的运行。
+计划内容由 Butler Planning 生成，但只有确定性应用服务可校验和落库：最多四步、仅注册专业 Agent、依赖必须存在且不得成环。`analysisEffectiveDate` 在 Plan 创建时按本地法务时区确定，并在 retry/recovery/rerun 中保持不变；`historicalAsOf` 仅表示调用方明确要求的历史法律适用时点，两者不得混用。`latestRunId` 表示最近尝试，`latestValidRunId` 表示可参与 dependency/synthesis 的最后有效结果。无依赖 Step 同一波次并行，有依赖 Step 按拓扑波次执行；模型不能递归生成新的运行。
 
 ## 2.12 AgentRun
 
@@ -402,6 +405,7 @@ interface AgentRun {
   planStepId?: string;
   parentRunId?: string;
   retryOfRunId?: string;
+  dependencyRunIds: string[];
   runRole: 'standalone' | 'butler_planning' | 'specialist' | 'butler_synthesis';
   feishuMessageId?: string;
   agentDefinitionId: string;
@@ -446,11 +450,11 @@ interface AgentRun {
 }
 ```
 
-`agent_run_status_events` 对每次领域状态迁移只追加记录时间、前后状态、Correlation ID、尝试次数和失败摘要。`candidate_revisions` 对同一 Candidate 保存递增 revision、AgentRun、完整分析 Payload 与 superseded 关系；迁移 `20260801_0006` 可升降级。
+`dependencyRunIds` 固定记录本次 Specialist 实际授权的直接依赖 Run；恢复和 rerun 必须重建并再次验证该 lineage。`agent_run_status_events` 对每次领域状态迁移只追加记录时间、前后状态、Correlation ID、尝试次数和失败摘要。`candidate_revisions` 对同一 Candidate 保存递增 revision、AgentRun、完整分析 Payload 与 superseded 关系；历史数据只追加保留。
 
 ### 2.12.1 AgentRunSource
 
-`AgentRunSource` 只追加记录本次实际授权使用的来源：`feishu_message`、`context_snapshot`、`attachment`、`knowledge_document`、`historical_matter`、`approved_example`。消息研判记录快照、当前/父/线程消息、附件元数据，并为每个实际纳入的附件片段追加一条真实内容哈希和页码/段落定位来源；不保存或返回本地文件路径。
+`AgentRunSource` 只追加记录本次实际授权使用的来源：`feishu_message`、`context_snapshot`、`attachment`、`knowledge_document`、`historical_matter`、`approved_example`。消息研判记录快照、当前/父/线程消息、附件元数据，并为每个实际纳入的附件片段追加一条真实内容哈希和页码/段落定位来源；不保存或返回本地文件路径。Specialist 输出中的 citation 仅提供合法 `sourceRef`，title/type/locator/hash/precedent 与 authority 元数据由服务端从这些持久化来源重建。
 
 ## 2.13 DraftArtifact
 

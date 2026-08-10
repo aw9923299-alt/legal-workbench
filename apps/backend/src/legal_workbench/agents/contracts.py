@@ -204,7 +204,7 @@ class LegalAgentContractRegistry:
             analysis_context = {}
         effective_value = analysis_context.get("analysisEffectiveDate")
         historical_value = analysis_context.get("analysisHistoricalAsOf")
-        validate_legal_work_product_sources(
+        specialist_result = validate_legal_work_product_sources(
             specialist_result,
             authorized_source_refs=set(context.authorized_source_refs),
             internal_precedent_refs=set(context.internal_precedent_refs),

@@ -75,6 +75,9 @@ def _contract_output() -> dict[str, object]:
 @pytest.mark.asyncio
 async def test_runtime_validates_contract_review_with_registered_schema(tmp_path: Path) -> None:
     output = _contract_output()
+    output["citations"][0]["title"] = "模型标题"
+    output["citations"][0]["locator"] = "模型位置"
+    output["citations"][0]["contentHash"] = "f" * 64
     script = tmp_path / "fake-professional-codex.py"
     script.write_text(
         "import pathlib, sys\n"
@@ -135,6 +138,11 @@ async def test_runtime_validates_contract_review_with_registered_schema(tmp_path
         authorized_source_refs=frozenset({"ctx:segment:s-1", "knowledge:chunk:k-1"}),
         source_authorities={
             "knowledge:chunk:k-1": {
+                "title": "数据库法规测试资料",
+                "sourceType": "knowledge_document",
+                "locator": "数据库第一条",
+                "contentHash": "b" * 64,
+                "internalPrecedent": False,
                 "authorityType": "law",
                 "authorityRole": "formal_legal_basis",
                 "authorityStatus": "effective",
@@ -154,4 +162,7 @@ async def test_runtime_validates_contract_review_with_registered_schema(tmp_path
 
     assert isinstance(result.output, ContractReviewProduct)
     assert result.output.clause_risks[0].clause_locator == "第8.2条"
+    assert result.output.citations[0].title == "数据库法规测试资料"
+    assert result.output.citations[0].locator == "数据库第一条"
+    assert result.output.citations[0].content_hash == "b" * 64
     assert run.input_payload["phase"] == "specialist"

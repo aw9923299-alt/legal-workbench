@@ -104,6 +104,7 @@ async def test_postgres_roundtrips_plan_lineage_and_knowledge_provenance() -> No
         correlation_id=f"corr-{uuid4().hex}",
         idempotency_key=f"integration:{uuid4().hex}",
         created_by="user:integration",
+        analysis_effective_date=date(2026, 8, 10),
         steps=steps,
     )
     definitions = build_legal_agent_definitions()
@@ -208,6 +209,7 @@ async def test_postgres_roundtrips_plan_lineage_and_knowledge_provenance() -> No
             stored_chunks = list(await uow.knowledge.list_chunks(knowledge.id))
 
         assert stored_plan is not None
+        assert stored_plan.analysis_effective_date == date(2026, 8, 10)
         assert stored_plan.planning_run_id == planning.id
         assert stored_plan.steps[0].latest_run_id == specialist.id
         assert stored_plan.steps[0].status == AgentPlanStepStatus.COMPLETED

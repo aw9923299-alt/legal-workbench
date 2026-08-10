@@ -78,6 +78,16 @@ async def test_postgres_rejects_completion_from_expired_attempt() -> None:
             )
             await uow.commit()
 
+        async with uow_factory() as uow:
+            expired_early = await uow.agent_run_attempts.expire_current(
+                run_id=run.id,
+                attempt_number=1,
+                finished_at=now + timedelta(seconds=30),
+            )
+            await uow.commit()
+
+        assert expired_early is False
+
         async with session_factory() as session, session.begin():
             await session.execute(
                 update(AgentRunAttemptModel)

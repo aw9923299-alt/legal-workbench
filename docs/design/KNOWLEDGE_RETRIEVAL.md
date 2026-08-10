@@ -33,7 +33,7 @@ Context Builder 每次检索必须显式提供并记录以下范围：
 
 ```text
 agent_type + matter_type + jurisdiction + document_type
-+ effective_date + source_priority
++ analysis_effective_date + historical_as_of + source_priority
 ```
 
 只有命中该授权范围的片段会进入专业 Agent 的 `authorizedContext` 与 `authorizedSourceRefs`。Agent 不持有数据库凭证，也不能直接遍历文件系统、文档表或历史 Matter。
@@ -101,7 +101,7 @@ keyword score
 
 首期排序先执行 effective-date 与元数据硬过滤，再按 `source_priority`、全文相关度、`pg_trgm` 相似度、资料权威等级和生效时间确定顺序。SQL 在候选池上限之前按文本哈希执行窗口去重，并使用本次 `max_single_chunk_tokens` 排除超限 Chunk（历史 Token 计数缺失时按 UTF-8 bytes/4 确定性估算）；应用层继续执行 fail-safe 去重、authority 排序和三重预算选择。这样即使超过 `5 × limit` 的重复或超长旧 Chunk 排在前面，也不能挤掉后续合格证据。每次检索的 Query、过滤器、命中片段和 Correlation ID 均写入只追加审计日志。
 
-默认当前分析只召回 `effective/unknown`。`repealed/superseded` 仅在 Python 侧显式、持久化的 `historical_as_of` 日期存在，且该日期落在资料有效期内时召回；模型输出的 `historicalAnalysis` 不能自行开启历史模式。
+默认当前分析只召回 `effective/unknown`。`analysis_effective_date` 在 Plan 创建时由服务端确定并持久化，使同一 Plan 的 retry/recovery/rerun 即使跨日仍使用同一当前法日期。`repealed/superseded` 仅在 Python 侧显式、持久化的 `historical_as_of` 日期存在，且该日期落在资料有效期内时召回；`historical_as_of` 不会从 `analysis_effective_date` 推导，模型输出的 `historicalAnalysis` 也不能自行开启历史模式。
 
 最终选择还必须受 `LEGAL_KNOWLEDGE_MAX_CHUNKS`、`LEGAL_KNOWLEDGE_MAX_TOKENS` 和 `LEGAL_KNOWLEDGE_MAX_SINGLE_CHUNK_TOKENS` 限制。检索日志只保存 query hash，不保存敏感 query 正文；Repository 返回 SQL 上限前的原始候选数、SQL 前置重复排除数和单 Chunk 超限排除数，应用服务再合并应用层去重/三重预算排除，确保日志完整记录候选数、选中 Chunk/Token、重复排除、预算排除、过滤器、各分量分数和预算快照。当前默认值为未完成真实资料审计前的保守运行值，真实导入前必须根据 inventory 校准。
 
@@ -118,6 +118,8 @@ keyword score
 前端不能只显示文件名。
 
 Butler 的事实、问题、风险、策略、行动和冲突均保存逐项 source/support refs。最终引用必须属于参与运行的原始授权来源并能解析到飞书消息、附件 Segment、Knowledge Chunk、法规、合同或内部先例；Specialist Run ID 只能作为执行 provenance，不能替代事实或法律依据。
+
+Specialist citation 不信任模型提供的审计元数据。模型给出的 `sourceRef` 必须属于本 Run 的 authorized source set；服务端随后从持久化 source metadata 重建 title、source type、locator、content hash、internal-precedent 标记和 authority 字段。缺少 canonical metadata、越权 sourceRef、内部先例被用作正式法律依据、法域/效力/日期不匹配时全部 fail closed。
 
 ## 7. 本地只读增量导入
 

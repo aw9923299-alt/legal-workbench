@@ -257,6 +257,11 @@ class AgentRunAttempt:
             )
         finished_at = now or utc_now()
         require_aware(finished_at, field_name="Agent attempt expiry time")
+        if self.lease_expires_at > finished_at:
+            raise StaleAgentAttemptError(
+                "The Agent Attempt lease has not expired.",
+                details={"runId": str(self.run_id), "attemptNumber": self.attempt_number},
+            )
         self.status = AgentAttemptStatus.EXPIRED
         self.finished_at = finished_at
         self.lease_expires_at = finished_at
@@ -451,6 +456,7 @@ class AgentExecutionPlan:
     idempotency_key: str
     created_by: str
     analysis_jurisdiction: str = "CN"
+    analysis_effective_date: date = field(default_factory=date.today)
     historical_as_of: date | None = None
     steps: list[AgentPlanStep] = field(default_factory=list)
     planning_run_id: UUID | None = None

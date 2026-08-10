@@ -197,6 +197,7 @@ export interface AgentRunRecord {
   planStepId: string | null;
   parentRunId: string | null;
   retryOfRunId: string | null;
+  dependencyRunIds: string[];
   runRole: 'standalone' | 'butler_planning' | 'specialist' | 'butler_synthesis';
 }
 
@@ -221,6 +222,7 @@ export interface AgentPlanStepRecord {
   contextRequirements: string[];
   status: 'pending' | 'ready' | 'running' | 'completed' | 'failed' | 'skipped' | 'needs_information';
   latestRunId: string | null;
+  latestValidRunId: string | null;
   attemptCount: number;
   failureCode: string | null;
   failureMessage: string | null;
@@ -237,6 +239,8 @@ export interface AgentExecutionPlanRecord {
   missingInformation: string[];
   requiresUserInput: boolean;
   correlationId: string;
+  analysisEffectiveDate: string;
+  historicalAsOf: string | null;
   planningRunId: string | null;
   synthesisRunId: string | null;
   steps: AgentPlanStepRecord[];

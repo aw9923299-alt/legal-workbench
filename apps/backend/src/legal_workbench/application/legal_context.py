@@ -82,8 +82,14 @@ class LegalContextBuilder:
         precedents = {
             result.source_ref for result in results if result.internal_precedent
         }
-        source_authorities: dict[str, dict[str, object]] = {
+        source_authorities = self._snapshot_source_metadata(snapshot)
+        source_authorities.update({
             result.source_ref: {
+                "title": result.document.title,
+                "sourceType": "knowledge_document",
+                "locator": result.chunk.locator,
+                "contentHash": result.chunk.text_hash,
+                "internalPrecedent": result.internal_precedent,
                 "authorityType": result.document.authority_type.value,
                 "authorityRole": (
                     result.document.authority_role.value
@@ -105,7 +111,7 @@ class LegalContextBuilder:
                 ),
             }
             for result in results
-        }
+        })
         return AuthorizedLegalContext(
             payload={
                 "contextSnapshot": self._snapshot_payload(snapshot),
@@ -172,3 +178,59 @@ class LegalContextBuilder:
             if value.get("contentHash")
         )
         return refs
+
+    @staticmethod
+    def _snapshot_source_metadata(
+        snapshot: ContextSnapshot,
+    ) -> dict[str, dict[str, object]]:
+        metadata: dict[str, dict[str, object]] = {
+            f"ctx:snapshot:{snapshot.id}": {
+                "title": "Authorized ContextSnapshot",
+                "sourceType": "context_snapshot",
+                "locator": None,
+                "contentHash": snapshot.content_hash,
+                "internalPrecedent": False,
+            }
+        }
+        messages = snapshot.content.get("messages", [])
+        message_metadata = {
+            str(item.get("messageId")): item
+            for item in messages
+            if isinstance(item, dict) and item.get("messageId")
+        } if isinstance(messages, list) else {}
+        for message_id in dict.fromkeys(snapshot.message_ids):
+            item = message_metadata.get(message_id, {})
+            content_hash = str(item.get("contentHash") or snapshot.content_hash)
+            metadata[f"ctx:message:{message_id}"] = {
+                "title": f"Authorized Feishu message {message_id}",
+                "sourceType": "feishu_message",
+                "locator": None,
+                "contentHash": content_hash,
+                "internalPrecedent": False,
+            }
+        for segment in snapshot.included_segments:
+            content_hash = str(segment.get("contentHash") or "")
+            if not content_hash:
+                continue
+            locator_parts = [
+                f"page:{segment['pageNumber']}"
+                if segment.get("pageNumber") is not None
+                else None,
+                f"paragraph:{segment['paragraphNumber']}"
+                if segment.get("paragraphNumber") is not None
+                else None,
+            ]
+            metadata[f"ctx:segment:{content_hash}"] = {
+                "title": str(
+                    segment.get("fileName")
+                    or segment.get("title")
+                    or "Authorized document segment"
+                ),
+                "sourceType": "attachment",
+                "locator": ",".join(
+                    value for value in locator_parts if value is not None
+                ) or None,
+                "contentHash": content_hash,
+                "internalPrecedent": False,
+            }
+        return metadata

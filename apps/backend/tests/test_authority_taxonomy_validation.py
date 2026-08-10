@@ -9,6 +9,14 @@ from legal_workbench.agents.legal_contracts import (
     validate_legal_work_product_sources,
 )
 
+CANONICAL_CITATION_METADATA = {
+    "title": "数据库权威资料",
+    "sourceType": "knowledge_document",
+    "locator": "第一条",
+    "contentHash": "a" * 64,
+    "internalPrecedent": False,
+}
+
 
 def _product(
     *,
@@ -77,6 +85,7 @@ def test_non_law_sources_cannot_masquerade_as_formal_legal_basis(
             authorized_source_refs={"ctx:message:m1", "knowledge:chunk:k1"},
             source_authorities={
                 "knowledge:chunk:k1": {
+                    **CANONICAL_CITATION_METADATA,
                     "authorityType": authority_type,
                     "authorityRole": actual_role,
                     "authorityStatus": "effective",
@@ -97,6 +106,7 @@ def test_effective_law_can_ground_formal_legal_basis() -> None:
         authorized_source_refs={"ctx:message:m1", "knowledge:chunk:k1"},
         source_authorities={
             "knowledge:chunk:k1": {
+                **CANONICAL_CITATION_METADATA,
                 "authorityType": "law",
                 "authorityRole": "formal_legal_basis",
                 "authorityStatus": "effective",
@@ -118,6 +128,7 @@ def test_repealed_law_rejected_for_current_basis() -> None:
             authorized_source_refs={"ctx:message:m1", "knowledge:chunk:k1"},
             source_authorities={
                 "knowledge:chunk:k1": {
+                    **CANONICAL_CITATION_METADATA,
                     "authorityType": "law",
                     "authorityRole": "formal_legal_basis",
                     "authorityStatus": "repealed",
@@ -138,6 +149,7 @@ def test_historical_basis_requires_backend_as_of_and_valid_period() -> None:
     )
     authority = {
         "knowledge:chunk:k1": {
+            **CANONICAL_CITATION_METADATA,
             "authorityType": "law",
             "authorityRole": "formal_legal_basis",
             "authorityStatus": "repealed",
@@ -168,6 +180,7 @@ def test_unknown_status_requires_low_confidence_and_missing_information() -> Non
     product = _product(role="formal_legal_basis", confidence=0.8)
     authority = {
         "knowledge:chunk:k1": {
+            **CANONICAL_CITATION_METADATA,
             "authorityType": "law",
             "authorityRole": "formal_legal_basis",
             "authorityStatus": "unknown",

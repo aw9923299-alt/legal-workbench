@@ -127,8 +127,14 @@ class _PlanRepo:
 
 
 class _AttemptRepo:
-    def __init__(self, attempts: list[AgentRunAttempt]) -> None:
+    def __init__(
+        self,
+        attempts: list[AgentRunAttempt],
+        *,
+        force_expire_result: bool | None = None,
+    ) -> None:
         self.attempts = attempts
+        self.force_expire_result = force_expire_result
 
     async def expire_current(
         self,
@@ -137,6 +143,8 @@ class _AttemptRepo:
         attempt_number: int,
         finished_at: datetime,
     ) -> bool:
+        if self.force_expire_result is False:
+            return False
         attempt = next(
             (
                 value
@@ -148,6 +156,8 @@ class _AttemptRepo:
             None,
         )
         if attempt is None:
+            return False
+        if attempt.lease_expires_at > finished_at:
             return False
         attempt.expire(now=finished_at)
         return True
@@ -269,6 +279,30 @@ async def test_recovery_expires_worker_lease_and_requeues_retryable_run() -> Non
     assert uow.agent_run_attempts.attempts[0].status == AgentAttemptStatus.EXPIRED
     assert message.status == FeishuMessageStatus.ANALYSIS_FAILED
     assert len(uow.outbox_events.events) == 1
+
+
+@pytest.mark.asyncio
+async def test_recovery_leaves_run_and_plan_unchanged_when_attempt_expiry_cas_loses() -> None:
+    plan, run = _legal_fixture(
+        run_status=AgentRunStatus.RUNNING,
+        run_role=AgentRunRole.SPECIALIST,
+    )
+    original_attempt_number = run.attempt_number
+    original_step_status = plan.steps[1].status
+    uow = _Uow(messages=[], queued=[], stale=[run], plans=[plan])
+    uow.agent_run_attempts.force_expire_result = False
+
+    result = await AnalysisRecoveryService(_Factory(uow), now=lambda: NOW).recover()
+
+    assert result.legal_runs_requeued == 0
+    assert result.legal_dead_lettered == 0
+    assert run.status == AgentRunStatus.RUNNING
+    assert run.attempt_number == original_attempt_number
+    assert run.failure_code is None
+    assert plan.status == AgentExecutionPlanStatus.RUNNING
+    assert plan.steps[1].status == original_step_status
+    assert uow.outbox_events.events == []
+    assert uow.audit_events.events == []
 
 
 @pytest.mark.asyncio
@@ -407,3 +441,26 @@ async def test_recovery_dead_letters_exhausted_synthesis_but_keeps_partial_succe
     assert plan.status == AgentExecutionPlanStatus.PARTIAL
     assert plan.steps[0].status == AgentPlanStepStatus.COMPLETED
     assert uow.outbox_events.events == []
+
+
+@pytest.mark.asyncio
+async def test_recovery_dead_letter_for_superseded_step_does_not_mutate_current_lineage() -> None:
+    plan, stale_run = _legal_fixture(
+        run_status=AgentRunStatus.RUNNING,
+        run_role=AgentRunRole.SPECIALIST,
+        attempt_number=1,
+        max_attempts=1,
+    )
+    current_run_id = uuid4()
+    current_step = plan.steps[1]
+    current_step.latest_run_id = current_run_id
+    current_step.status = AgentPlanStepStatus.RUNNING
+    uow = _Uow(messages=[], queued=[], stale=[stale_run], plans=[plan])
+
+    result = await AnalysisRecoveryService(_Factory(uow), now=lambda: NOW).recover()
+
+    assert result.legal_dead_lettered == 1
+    assert stale_run.status == AgentRunStatus.DEAD_LETTER
+    assert plan.status == AgentExecutionPlanStatus.RUNNING
+    assert current_step.status == AgentPlanStepStatus.RUNNING
+    assert current_step.latest_run_id == current_run_id

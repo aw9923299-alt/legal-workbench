@@ -1,9 +1,10 @@
 import asyncio
-from datetime import date
+from datetime import date, datetime
 from hashlib import sha256
 from pathlib import Path
 from typing import Any
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 from legal_workbench.agents.codex_cli import CodexCliRuntime
 from legal_workbench.agents.codex_health import CodexRuntimeHealthChecker
@@ -105,6 +106,7 @@ async def _orchestrate_legal_agents(
 ) -> dict[str, object]:
     orchestrator = _build_legal_agent_orchestrator()
     work_item_id = payload.get("workItemId")
+    analysis_date_value = payload.get("analysisEffectiveDate")
     historical_value = payload.get("historicalAsOf")
     result = await orchestrator.execute(
         LegalAgentTrigger(
@@ -126,6 +128,11 @@ async def _orchestrate_legal_agents(
                 else None
             ),
             jurisdiction=str(payload.get("jurisdiction") or "CN"),
+            analysis_effective_date=(
+                date.fromisoformat(str(analysis_date_value))
+                if analysis_date_value
+                else None
+            ),
             historical_as_of=(
                 date.fromisoformat(str(historical_value)) if historical_value else None
             ),
@@ -172,6 +179,9 @@ def _build_legal_agent_orchestrator() -> LegalAgentOrchestrator:
         lease_seconds=settings.agent_run_lease_seconds,
         worker_id="legal-agent-worker",
         timeout_seconds=settings.codex_run_timeout_seconds,
+        analysis_date_provider=lambda: datetime.now(
+            ZoneInfo(settings.local_timezone)
+        ).date(),
     )
 
 

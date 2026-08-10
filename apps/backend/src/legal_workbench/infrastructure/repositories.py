@@ -534,6 +534,7 @@ class SqlAlchemyAgentExecutionPlanRepository:
             idempotency_key=plan.idempotency_key,
             created_by=plan.created_by,
             analysis_jurisdiction=plan.analysis_jurisdiction,
+            analysis_effective_date=plan.analysis_effective_date,
             historical_as_of=plan.historical_as_of,
             created_at=plan.created_at,
             updated_at=plan.updated_at,
@@ -617,6 +618,7 @@ class SqlAlchemyAgentExecutionPlanRepository:
         model.planning_run_id = plan.planning_run_id
         model.synthesis_run_id = plan.synthesis_run_id
         model.analysis_jurisdiction = plan.analysis_jurisdiction
+        model.analysis_effective_date = plan.analysis_effective_date
         model.historical_as_of = plan.historical_as_of
         model.updated_at = plan.updated_at
         model.version = plan.version
@@ -667,6 +669,7 @@ class SqlAlchemyAgentExecutionPlanRepository:
             idempotency_key=model.idempotency_key,
             created_by=model.created_by,
             analysis_jurisdiction=model.analysis_jurisdiction,
+            analysis_effective_date=model.analysis_effective_date,
             historical_as_of=model.historical_as_of,
             steps=[self._step_to_domain(step) for step in step_models],
             created_at=model.created_at,
@@ -1085,6 +1088,7 @@ class SqlAlchemyAgentRunAttemptRepository:
                 AgentRunAttemptModel.agent_run_id == run_id,
                 AgentRunAttemptModel.attempt_number == attempt_number,
                 AgentRunAttemptModel.status == AgentAttemptStatus.RUNNING,
+                AgentRunAttemptModel.lease_expires_at <= finished_at,
             )
             .values(
                 status=AgentAttemptStatus.EXPIRED,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -39,11 +40,15 @@ from legal_workbench.domain.enums import (
     MatterCategory,
     ReviewPackageStatus,
 )
+from legal_workbench.domain.errors import InvalidStateTransitionError
 
 SOURCE_REF = "knowledge:chunk:fixture-law"
+STALE_SUMMARY_SOURCE_REF = "knowledge:chunk:stale-summary-only"
 
 
-def _common_product() -> dict[str, object]:
+def _common_product(
+    *, effective_date: str, historical_analysis: bool
+) -> dict[str, object]:
     return {
         "executiveSummary": "建议在补齐授权链并收窄责任条款后推进。",
         "facts": [
@@ -59,8 +64,8 @@ def _common_product() -> dict[str, object]:
                 "sourceRefs": [SOURCE_REF],
                 "authorityRole": "formal_legal_basis",
                 "jurisdiction": "CN",
-                "effectiveDate": date(2021, 1, 1).isoformat(),
-                "historicalAnalysis": False,
+                "effectiveDate": effective_date,
+                "historicalAnalysis": historical_analysis,
             }
         ],
         "analysis": [
@@ -103,22 +108,79 @@ class FakeContextBuilder:
         )
 
     async def specialist(self, **kwargs: object) -> AuthorizedLegalContext:
+        agent_type = str(kwargs.get("agent_type") or "")
+        retrieval_results = [
+            {
+                "sourceRef": SOURCE_REF,
+                "title": "非敏感法律依据 fixture",
+                "textHash": "b" * 64,
+                "locator": "第一条",
+                "internalPrecedent": False,
+                "authorityType": "law",
+                "authorityRole": "formal_legal_basis",
+                "authorityStatus": "effective",
+                "metadataStatus": "ready",
+                "jurisdiction": "CN",
+                "effectiveFrom": "2021-01-01",
+                "effectiveTo": None,
+            }
+        ]
+        if agent_type == "legal_consultation":
+            retrieval_results.append(
+                {
+                    "sourceRef": STALE_SUMMARY_SOURCE_REF,
+                    "title": "仅旧下游咨询使用的非敏感 fixture",
+                    "textHash": "e" * 64,
+                    "locator": "旧咨询段落",
+                    "internalPrecedent": False,
+                    "authorityType": "law",
+                    "authorityRole": "formal_legal_basis",
+                    "authorityStatus": "effective",
+                    "metadataStatus": "ready",
+                    "jurisdiction": "CN",
+                    "effectiveFrom": "2021-01-01",
+                    "effectiveTo": None,
+                }
+            )
+        source_refs = {"ctx:snapshot:fixture", SOURCE_REF}
+        source_refs.update(
+            str(value["sourceRef"])
+            for value in retrieval_results
+        )
         return AuthorizedLegalContext(
             payload={
                 "contextSnapshot": {"fixture": True},
-                "retrievalResults": [
-                    {
-                        "sourceRef": SOURCE_REF,
-                        "title": "非敏感法律依据 fixture",
-                        "textHash": "b" * 64,
-                        "locator": "第一条",
-                        "internalPrecedent": False,
-                    }
-                ],
+                "retrievalResults": retrieval_results,
                 "upstreamOutputs": kwargs.get("upstream_outputs", {}),
             },
-            source_refs=frozenset({"ctx:snapshot:fixture", SOURCE_REF}),
+            source_refs=frozenset(source_refs),
             internal_precedent_refs=frozenset(),
+            source_authorities={
+                "ctx:snapshot:fixture": {
+                    "title": "Authorized ContextSnapshot fixture",
+                    "sourceType": "context_snapshot",
+                    "locator": None,
+                    "contentHash": "a" * 64,
+                    "internalPrecedent": False,
+                },
+                **{
+                    str(value["sourceRef"]): {
+                        "title": value["title"],
+                        "sourceType": "knowledge_document",
+                        "locator": value["locator"],
+                        "contentHash": value["textHash"],
+                        "internalPrecedent": value["internalPrecedent"],
+                        "authorityType": value["authorityType"],
+                        "authorityRole": value["authorityRole"],
+                        "authorityStatus": value["authorityStatus"],
+                        "metadataStatus": value["metadataStatus"],
+                        "jurisdiction": value["jurisdiction"],
+                        "effectiveFrom": value["effectiveFrom"],
+                        "effectiveTo": value["effectiveTo"],
+                    }
+                    for value in retrieval_results
+                },
+            },
         )
 
 
@@ -134,6 +196,9 @@ class FakeLegalRuntime:
         self.crash_at = crash_at
         self.crashed = False
         self.planning_requires_user_input = planning_requires_user_input
+        self.block_next_specialist_key: str | None = None
+        self.blocked_specialist_entered = asyncio.Event()
+        self.release_blocked_specialist = asyncio.Event()
 
     async def execute(
         self,
@@ -150,10 +215,23 @@ class FakeLegalRuntime:
             upstream = (context.input_payload or {}).get("upstreamOutputs", {})
             assert isinstance(upstream, dict)
             self.upstream_by_key.setdefault(key, []).append(upstream)
+            if self.block_next_specialist_key == key:
+                self.block_next_specialist_key = None
+                self.blocked_specialist_entered.set()
+                await self.release_blocked_specialist.wait()
         marker = f"specialist:{key}" if phase == "specialist" else phase
         if marker == self.crash_at and not self.crashed:
             self.crashed = True
             raise RuntimeError(f"Synthetic worker crash at {marker}.")
+        analysis_context = (context.input_payload or {}).get("authorizedContext", {})
+        assert isinstance(analysis_context, dict)
+        historical_as_of = analysis_context.get("analysisHistoricalAsOf")
+        basis_date = historical_as_of or analysis_context.get("analysisEffectiveDate")
+        assert isinstance(basis_date, str)
+        common_product = _common_product(
+            effective_date=basis_date,
+            historical_analysis=historical_as_of is not None,
+        )
         if key == "legal_butler" and phase == "planning":
             output = ButlerPlanningOutput.model_validate(
                 {
@@ -196,7 +274,7 @@ class FakeLegalRuntime:
             )
         elif key == "contract_review":
             output = ContractReviewProduct.model_validate(
-                _common_product()
+                common_product
                 | {
                     "contractSummary": "虚构合作合同",
                     "parties": ["甲方", "乙方"],
@@ -218,7 +296,7 @@ class FakeLegalRuntime:
             )
         elif key == "ip_copyright":
             output = IpCopyrightProduct.model_validate(
-                _common_product()
+                common_product
                 | {
                     "rightsObjects": [
                         {
@@ -251,7 +329,7 @@ class FakeLegalRuntime:
             )
         elif key == "legal_consultation":
             output = LegalConsultationProduct.model_validate(
-                _common_product()
+                common_product
                 | {
                     "questions": ["是否可推进"],
                     "legalRelationships": ["合同关系"],
@@ -389,11 +467,13 @@ async def test_multi_agent_orchestration_persists_lineage_draft_and_review() -> 
                 select(func.count(CommunicationModel.id))
             )
 
+        analysis_clock = [date(2026, 8, 10)]
         orchestrator = LegalAgentOrchestrator(
             factory,
             runtime,
             FakeContextBuilder(),
             runs_root="/isolated/legal-agent-runs",
+            analysis_date_provider=lambda: analysis_clock[0],
         )
         result = await orchestrator.execute(trigger)
 
@@ -413,6 +493,7 @@ async def test_multi_agent_orchestration_persists_lineage_draft_and_review() -> 
                 for run in runs
             }
         assert plan is not None
+        assert plan.analysis_effective_date == date(2026, 8, 10)
         assert [step.status.value for step in plan.steps] == [
             "completed",
             "completed",
@@ -457,12 +538,26 @@ async def test_multi_agent_orchestration_persists_lineage_draft_and_review() -> 
         assert replay.idempotent_replay is True
         assert replay.plan_id == result.plan_id
 
-        rerun = await orchestrator.rerun_step(
-            plan_id=result.plan_id,
-            step_id="contract",
-            actor_id="user:fixture",
-            correlation_id=f"rerun-{uuid4().hex}",
+        analysis_clock[0] = date(2026, 8, 11)
+        runtime.block_next_specialist_key = "contract_review"
+        first_rerun = asyncio.create_task(
+            orchestrator.rerun_step(
+                plan_id=result.plan_id,
+                step_id="contract",
+                actor_id="user:fixture",
+                correlation_id=f"rerun-{uuid4().hex}",
+            )
         )
+        await asyncio.wait_for(runtime.blocked_specialist_entered.wait(), timeout=5)
+        with pytest.raises(InvalidStateTransitionError, match="already active"):
+            await orchestrator.rerun_step(
+                plan_id=result.plan_id,
+                step_id="contract",
+                actor_id="user:fixture",
+                correlation_id=f"overlapping-rerun-{uuid4().hex}",
+            )
+        runtime.release_blocked_specialist.set()
+        rerun = await first_rerun
         assert rerun.status == AgentExecutionPlanStatus.PARTIAL
         async with factory() as uow:
             rerun_plan = await uow.agent_execution_plans.get(result.plan_id)
@@ -477,6 +572,9 @@ async def test_multi_agent_orchestration_persists_lineage_draft_and_review() -> 
             run for run in rerun_runs if run.id == contract_step.latest_run_id
         )
         assert latest_contract_run.retry_of_run_id is not None
+        assert latest_contract_run.input_payload["authorizedContext"][
+            "analysisEffectiveDate"
+        ] == "2026-08-10"
         stale_summary = next(
             step for step in rerun_plan.steps if step.step_id == "summary"
         )
@@ -492,6 +590,12 @@ async def test_multi_agent_orchestration_persists_lineage_draft_and_review() -> 
         ]
         assert stale_summary_input["status"] == "skipped"
         assert "executiveSummary" not in stale_summary_input
+        assert STALE_SUMMARY_SOURCE_REF not in latest_synthesis.input_payload[
+            "authorizedSourceRefs"
+        ]
+        assert latest_synthesis.input_payload["authorizedContext"][
+            "analysisEffectiveDate"
+        ] == "2026-08-10"
 
         rerun_summary = await orchestrator.rerun_step(
             plan_id=result.plan_id,
@@ -672,6 +776,7 @@ async def test_legal_agent_crash_recovery_resumes_only_incomplete_phase(
         runs_root="/isolated/legal-agent-runs",
         lease_seconds=1,
         worker_id="crash-fixture-worker",
+        analysis_date_provider=lambda: date(2026, 8, 10),
     )
     trigger = LegalAgentTrigger(
         matter_id=matter.id,
@@ -718,6 +823,7 @@ async def test_legal_agent_crash_recovery_resumes_only_incomplete_phase(
             final_plan = await uow.agent_execution_plans.get(plan.id)
             final_runs = list(await uow.agent_runs.list_by_plan(plan.id))
         assert final_plan is not None
+        assert final_plan.analysis_effective_date == date(2026, 8, 10)
         assert final_plan.historical_as_of == date(2024, 1, 15)
         assert all(step.status.value == "completed" for step in final_plan.steps)
         assert {
@@ -726,6 +832,9 @@ async def test_legal_agent_crash_recovery_resumes_only_incomplete_phase(
             if step.step_id in completed_before
         } == completed_before
         recovered_run = next(value for value in final_runs if value.attempt_number == 2)
+        assert recovered_run.input_payload["authorizedContext"][
+            "analysisEffectiveDate"
+        ] == "2026-08-10"
         assert recovered_run.input_payload["authorizedContext"][
             "analysisHistoricalAsOf"
         ] == "2024-01-15"
