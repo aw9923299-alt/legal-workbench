@@ -652,7 +652,12 @@ async def test_multi_agent_orchestration_persists_lineage_draft_and_review() -> 
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_retryable_specialist_failure_waits_for_recovery_before_synthesis() -> None:
+@pytest.mark.parametrize(
+    "lineage_case", ["valid", "orphan_step", "orphan_synthesis"]
+)
+async def test_retryable_phase_waits_for_recovery_and_repairs_legacy_lineage(
+    lineage_case: str,
+) -> None:
     if os.getenv("RUN_POSTGRES_INTEGRATION_TESTS") != "1":
         pytest.skip("PostgreSQL integration tests are disabled")
 
@@ -692,7 +697,11 @@ async def test_retryable_specialist_failure_waits_for_recovery_before_synthesis(
         content={"fixture": "retryable specialist"},
     )
     runtime = FakeLegalRuntime(
-        retryable_failure_at="specialist:contract_review"
+        retryable_failure_at=(
+            "synthesis"
+            if lineage_case == "orphan_synthesis"
+            else "specialist:contract_review"
+        )
     )
     orchestrator = LegalAgentOrchestrator(
         factory,
@@ -718,34 +727,84 @@ async def test_retryable_specialist_failure_waits_for_recovery_before_synthesis(
         pending = await orchestrator.execute(trigger)
 
         assert pending.status == AgentExecutionPlanStatus.RUNNING
-        assert pending.synthesis_run_id is None
         assert pending.artifact_id is None
         assert pending.review_package_id is None
-        assert not any(phase == "synthesis" for _, phase in runtime.calls)
         async with factory() as uow:
             plan = await uow.agent_execution_plans.get(pending.plan_id)
             runs = list(await uow.agent_runs.list_by_plan(pending.plan_id))
         assert plan is not None
         assert plan.status == AgentExecutionPlanStatus.RUNNING
-        contract_step = next(step for step in plan.steps if step.step_id == "contract")
-        summary_step = next(step for step in plan.steps if step.step_id == "summary")
-        retry_run = next(run for run in runs if run.id == contract_step.latest_run_id)
-        assert contract_step.status == AgentPlanStepStatus.RUNNING
-        assert summary_step.status == AgentPlanStepStatus.PENDING
-        assert retry_run.status == AgentRunStatus.QUEUED
-        assert retry_run.attempt_number == 2
+        if lineage_case == "orphan_synthesis":
+            assert plan.synthesis_run_id is not None
+            retry_run = next(run for run in runs if run.id == plan.synthesis_run_id)
+            assert retry_run.run_role == AgentRunRole.BUTLER_SYNTHESIS
+            assert retry_run.status == AgentRunStatus.QUEUED
+            assert retry_run.attempt_number == 2
+            async with factory() as uow:
+                stored_plan = await uow.agent_execution_plans.get_for_update(
+                    pending.plan_id
+                )
+                assert stored_plan is not None
+                stored_plan.synthesis_run_id = plan.planning_run_id
+                stored_plan.version += 1
+                await uow.agent_execution_plans.save(stored_plan)
+                await uow.commit()
+        else:
+            assert plan.synthesis_run_id is None
+            assert not any(phase == "synthesis" for _, phase in runtime.calls)
+            contract_step = next(
+                step for step in plan.steps if step.step_id == "contract"
+            )
+            summary_step = next(step for step in plan.steps if step.step_id == "summary")
+            retry_run = next(run for run in runs if run.id == contract_step.latest_run_id)
+            assert contract_step.status == AgentPlanStepStatus.RUNNING
+            assert summary_step.status == AgentPlanStepStatus.PENDING
+            assert retry_run.status == AgentRunStatus.QUEUED
+            assert retry_run.attempt_number == 2
+            if lineage_case == "orphan_step":
+                async with factory() as uow:
+                    stored_step = await uow.agent_execution_plans.get_step_for_update(
+                        pending.plan_id, contract_step.step_id
+                    )
+                    assert stored_step is not None
+                    # Reproduce the observed legacy state: Step is RUNNING, but its
+                    # current pointer references the Butler planning Run instead of
+                    # the durable queued Specialist retry.
+                    stored_step.latest_run_id = plan.planning_run_id
+                    stored_step.version += 1
+                    await uow.agent_execution_plans.save_step(stored_step)
+                    await uow.commit()
         replay = await orchestrator.execute(trigger)
         assert replay.idempotent_replay is True
         assert replay.status == AgentExecutionPlanStatus.RUNNING
-        assert replay.synthesis_run_id is None
 
         recovered = await orchestrator.recover(plan_id=pending.plan_id)
 
-        assert recovered.status == AgentExecutionPlanStatus.COMPLETED
+        assert recovered.status == (
+            AgentExecutionPlanStatus.PARTIAL
+            if lineage_case == "orphan_step"
+            else AgentExecutionPlanStatus.COMPLETED
+        )
         assert recovered.synthesis_run_id is not None
         assert recovered.artifact_id is not None
         assert recovered.review_package_id is not None
-        assert [phase for _, phase in runtime.calls].count("synthesis") == 1
+        assert [phase for _, phase in runtime.calls].count("synthesis") == (
+            2 if lineage_case == "orphan_synthesis" else 1
+        )
+        if lineage_case == "orphan_step":
+            async with factory() as uow:
+                repaired_plan = await uow.agent_execution_plans.get(pending.plan_id)
+            assert repaired_plan is not None
+            repaired_step = next(
+                step for step in repaired_plan.steps if step.step_id == "contract"
+            )
+            assert repaired_step.status == AgentPlanStepStatus.FAILED
+            assert repaired_step.failure_code == "AGENT_RECOVERY_LINEAGE_INVALID"
+        elif lineage_case == "orphan_synthesis":
+            async with factory() as uow:
+                repaired_plan = await uow.agent_execution_plans.get(pending.plan_id)
+            assert repaired_plan is not None
+            assert repaired_plan.synthesis_run_id != repaired_plan.planning_run_id
     finally:
         await engine.dispose()
 

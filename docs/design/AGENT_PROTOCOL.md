@@ -332,6 +332,8 @@ Butler Planning 只能在五个已注册 Specialist 中生成最多四步的无�
 
 Planning、Specialist、Synthesis 的成功或失败只能更新当前 Plan/Step 指向的 Run。Attempt lease 过期恢复必须通过数据库 CAS；recovery 在重排前必须再次锁定并核验 current Run。旧 Worker、续租竞态或已被替代的 Run 只终止并保留历史审计，不能覆盖当前结果或产生恢复 Outbox。可重试 Specialist 仍为 `RUNNING` 时不得持久化依赖失败，也不得提前启动 synthesis；恢复后只有全部 Step 到达确定性终态才可综合。
 
+若历史数据中的 `RUNNING` Step 已不再指向同 Step 的可恢复 Specialist Run，恢复流程必须将该 Step 以 `AGENT_RECOVERY_LINEAGE_INVALID` 失败关闭并保留审计，不得猜测或采用旧输出；若 `synthesis_run_id` 错误指向非 synthesis Run，则只清除该无效 reservation，再基于当前有效 Step lineage 创建新的 synthesis Run。两种修复都保留历史 Run，不删除审计数据。
+
 冲突由 Butler Synthesis 显式列入 `conflicts`，最终只创建 pending `ReviewPackage` 供法务选择；Agent 不得自行修改 Matter/WorkItem 或发送 Communication。
 
 ## 9. 回复 Agent 约束

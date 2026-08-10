@@ -43,6 +43,7 @@ from legal_workbench.domain.entities import (
     AgentPlanStep,
     AgentRun,
     AgentRunSource,
+    AuditEvent,
     ContextSnapshot,
     DraftArtifact,
     OutboxEvent,
@@ -334,12 +335,21 @@ class LegalAgentOrchestrator:
         }:
             return await self._replay_result(plan)
 
+        await self._normalize_orphaned_recovery_lineage(plan.id)
         await self._invalidate_stale_dependents(plan.id)
         async with self._uow_factory() as uow:
             refreshed_plan = await uow.agent_execution_plans.get(plan.id)
+            refreshed_runs = list(await uow.agent_runs.list_by_plan(plan.id))
         if refreshed_plan is None:
             raise EntityNotFoundError("Agent execution plan disappeared during recovery.")
         plan = refreshed_plan
+        runs = refreshed_runs
+        if plan.status in {
+            AgentExecutionPlanStatus.COMPLETED,
+            AgentExecutionPlanStatus.NEEDS_INFORMATION,
+            AgentExecutionPlanStatus.CANCELLED,
+        } or any(run.status in active for run in runs):
+            return await self._replay_result(plan)
         persisted_results = await self._list_step_results(plan.id)
         initial_results = tuple(
             value
@@ -572,6 +582,104 @@ class LegalAgentOrchestrator:
                 step.updated_at = utc_now()
                 step.version += 1
                 await uow.agent_execution_plans.save_step(step)
+            await uow.commit()
+
+    async def _normalize_orphaned_recovery_lineage(self, plan_id: UUID) -> None:
+        """Fail closed or clear reservations that reference the wrong Run role."""
+
+        async with self._uow_factory() as uow:
+            plan = await uow.agent_execution_plans.get_for_update(plan_id)
+            if plan is None:
+                raise EntityNotFoundError("Agent execution plan was not found.")
+            runs = list(await uow.agent_runs.list_by_plan(plan_id))
+            runs_by_id = {run.id: run for run in runs}
+            synthesis_run = (
+                runs_by_id.get(plan.synthesis_run_id)
+                if plan.synthesis_run_id is not None
+                else None
+            )
+            if plan.synthesis_run_id is not None and (
+                synthesis_run is None
+                or synthesis_run.run_role != AgentRunRole.BUTLER_SYNTHESIS
+                or synthesis_run.execution_plan_id != plan.id
+            ):
+                orphaned_run_id = plan.synthesis_run_id
+                plan.synthesis_run_id = None
+                plan.updated_at = utc_now()
+                plan.version += 1
+                await uow.agent_execution_plans.save(plan)
+                await uow.audit_events.add(
+                    AuditEvent(
+                        id=uuid4(),
+                        aggregate_type="agent_execution_plan",
+                        aggregate_id=plan.id,
+                        event_type="legal_agent_synthesis_reservation_cleared",
+                        actor_id="legal-agent-recovery",
+                        actor_source="system",
+                        payload={
+                            "planId": str(plan.id),
+                            "orphanedRunId": str(orphaned_run_id),
+                            "action": "cleared_wrong_role_reservation",
+                        },
+                        correlation_id=plan.correlation_id,
+                    )
+                )
+            recoverable_statuses = {
+                AgentRunStatus.QUEUED,
+                AgentRunStatus.PREPARING,
+                AgentRunStatus.RUNNING,
+                AgentRunStatus.VALIDATING,
+            }
+            for candidate in plan.steps:
+                if candidate.status != AgentPlanStepStatus.RUNNING:
+                    continue
+                step = await uow.agent_execution_plans.get_step_for_update(
+                    plan.id, candidate.step_id
+                )
+                if step is None or step.status != AgentPlanStepStatus.RUNNING:
+                    continue
+                current_run = (
+                    runs_by_id.get(step.latest_run_id)
+                    if step.latest_run_id is not None
+                    else None
+                )
+                if (
+                    current_run is not None
+                    and current_run.run_role == AgentRunRole.SPECIALIST
+                    and current_run.execution_plan_id == plan.id
+                    and current_run.plan_step_id == step.id
+                    and current_run.status in recoverable_statuses
+                ):
+                    continue
+                step.status = AgentPlanStepStatus.FAILED
+                step.failure_code = "AGENT_RECOVERY_LINEAGE_INVALID"
+                step.failure_message = (
+                    "Recovery found no current recoverable Specialist Run for this Step."
+                )
+                step.updated_at = utc_now()
+                step.version += 1
+                await uow.agent_execution_plans.save_step(step)
+                await uow.audit_events.add(
+                    AuditEvent(
+                        id=uuid4(),
+                        aggregate_type="agent_plan_step",
+                        aggregate_id=step.id,
+                        event_type="legal_agent_step_recovery_failed_closed",
+                        actor_id="legal-agent-recovery",
+                        actor_source="system",
+                        payload={
+                            "planId": str(plan.id),
+                            "stepId": step.step_id,
+                            "latestRunId": (
+                                str(step.latest_run_id)
+                                if step.latest_run_id is not None
+                                else None
+                            ),
+                            "failureCode": step.failure_code,
+                        },
+                        correlation_id=plan.correlation_id,
+                    )
+                )
             await uow.commit()
 
     @staticmethod
