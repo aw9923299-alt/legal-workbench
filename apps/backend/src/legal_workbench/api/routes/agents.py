@@ -121,6 +121,7 @@ def _run_response(details: AgentRunDetails) -> AgentRunResponse:
         plan_step_id=run.plan_step_id,
         parent_run_id=run.parent_run_id,
         retry_of_run_id=run.retry_of_run_id,
+        dependency_run_ids=run.dependency_run_ids,
         run_role=run.run_role,
     )
 
@@ -145,6 +146,8 @@ async def _plan_response(
         missing_information=execution_plan.missing_information,
         requires_user_input=execution_plan.requires_user_input,
         correlation_id=execution_plan.correlation_id,
+        analysis_effective_date=execution_plan.analysis_effective_date,
+        historical_as_of=execution_plan.historical_as_of,
         planning_run_id=execution_plan.planning_run_id,
         synthesis_run_id=execution_plan.synthesis_run_id,
         steps=[AgentPlanStepResponse.model_validate(step) for step in execution_plan.steps],
@@ -177,6 +180,7 @@ async def request_legal_agent_plan(
             special_requirements=body.special_requirements,
             specialist_only=body.specialist_only,
             jurisdiction=body.jurisdiction,
+            historical_as_of=body.historical_as_of,
             actor_id=actor.actor_id,
             correlation_id=get_correlation_id(request),
             idempotency_key=idempotency_key,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from datetime import date
 
 from pydantic import BaseModel
 
@@ -12,6 +13,7 @@ from legal_workbench.agents.definitions import (
 from legal_workbench.agents.legal_butler import (
     ButlerPlanningOutput,
     ButlerSynthesisOutput,
+    validate_butler_synthesis_sources,
 )
 from legal_workbench.agents.legal_contracts import (
     LEGAL_OUTPUT_MODELS,
@@ -163,35 +165,59 @@ class LegalAgentContractRegistry:
                 return ButlerPlanningOutput.model_validate(payload)
             if phase == "synthesis":
                 synthesis_result = ButlerSynthesisOutput.model_validate(payload)
-                unauthorized = sorted(
-                    citation.source_ref
-                    for citation in synthesis_result.citations
-                    if citation.source_ref not in context.authorized_source_refs
+                analysis_context = (
+                    context.input_payload.get("authorizedContext", {})
+                    if context.input_payload is not None
+                    else {}
                 )
-                if unauthorized:
-                    raise DomainValidationError(
-                        f"Unauthorized Butler synthesis citations: {unauthorized}"
-                    )
-                mislabeled = sorted(
-                    citation.source_ref
-                    for citation in synthesis_result.citations
-                    if citation.internal_precedent
-                    != (citation.source_ref in context.internal_precedent_refs)
+                if not isinstance(analysis_context, dict):
+                    analysis_context = {}
+                historical_value = analysis_context.get("analysisHistoricalAsOf")
+                historical_as_of = (
+                    date.fromisoformat(historical_value)
+                    if isinstance(historical_value, str) and historical_value
+                    else None
                 )
-                if mislabeled:
-                    raise DomainValidationError(
-                        "Butler synthesis precedent labels do not match authorized context: "
-                        f"{mislabeled}"
+                synthesis_result = validate_butler_synthesis_sources(
+                    synthesis_result,
+                    authorized_source_refs=set(context.authorized_source_refs),
+                    internal_precedent_refs=set(context.internal_precedent_refs),
+                    source_metadata=context.source_authorities,
+                    analysis_jurisdiction=str(
+                        analysis_context.get("analysisJurisdiction") or ""
                     )
+                    or None,
+                    historical_as_of=historical_as_of,
+                )
                 return synthesis_result
             raise DomainValidationError("Butler input phase must be planning or synthesis.")
         output_model = LEGAL_OUTPUT_MODELS.get(definition.key)
         if output_model is None:
             raise DomainValidationError("Agent is not registered for structured legal output.")
         specialist_result = output_model.model_validate(payload)
-        validate_legal_work_product_sources(
+        analysis_context = (
+            context.input_payload.get("authorizedContext", {})
+            if context.input_payload is not None
+            else {}
+        )
+        if not isinstance(analysis_context, dict):
+            analysis_context = {}
+        effective_value = analysis_context.get("analysisEffectiveDate")
+        historical_value = analysis_context.get("analysisHistoricalAsOf")
+        specialist_result = validate_legal_work_product_sources(
             specialist_result,
             authorized_source_refs=set(context.authorized_source_refs),
             internal_precedent_refs=set(context.internal_precedent_refs),
+            source_authorities=context.source_authorities,
+            analysis_effective_date=(
+                date.fromisoformat(effective_value)
+                if isinstance(effective_value, str) and effective_value
+                else None
+            ),
+            historical_as_of=(
+                date.fromisoformat(historical_value)
+                if isinstance(historical_value, str) and historical_value
+                else None
+            ),
         )
         return specialist_result

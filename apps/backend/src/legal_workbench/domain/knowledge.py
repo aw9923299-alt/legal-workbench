@@ -6,11 +6,59 @@ from datetime import date, datetime
 from uuid import UUID
 
 from legal_workbench.domain.common import utc_now
-from legal_workbench.domain.errors import DomainValidationError
+from legal_workbench.domain.enums import (
+    AuthorityRole,
+    AuthorityStatus,
+    AuthorityType,
+    KnowledgeMetadataStatus,
+)
+from legal_workbench.domain.errors import (
+    DomainValidationError,
+    EntityVersionConflictError,
+)
 
 
 def normalize_knowledge_text(value: str) -> str:
     return re.sub(r"\s+", " ", value.casefold()).strip()
+
+
+AUTHORITY_ROLE_BY_TYPE: dict[AuthorityType, AuthorityRole] = {
+    AuthorityType.LAW: AuthorityRole.FORMAL_LEGAL_BASIS,
+    AuthorityType.ADMINISTRATIVE_REGULATION: AuthorityRole.FORMAL_LEGAL_BASIS,
+    AuthorityType.JUDICIAL_INTERPRETATION: AuthorityRole.FORMAL_LEGAL_BASIS,
+    AuthorityType.DEPARTMENT_RULE: AuthorityRole.FORMAL_LEGAL_BASIS,
+    AuthorityType.LOCAL_REGULATION: AuthorityRole.FORMAL_LEGAL_BASIS,
+    AuthorityType.LOCAL_GOVERNMENT_RULE: AuthorityRole.FORMAL_LEGAL_BASIS,
+    AuthorityType.NORMATIVE_DOCUMENT: AuthorityRole.FORMAL_LEGAL_BASIS,
+    AuthorityType.GUIDING_CASE: AuthorityRole.PERSUASIVE_AUTHORITY,
+    AuthorityType.COURT_CASE: AuthorityRole.PERSUASIVE_AUTHORITY,
+    AuthorityType.REGULATORY_GUIDANCE: AuthorityRole.PERSUASIVE_AUTHORITY,
+    AuthorityType.CONTRACT: AuthorityRole.CONTRACTUAL_BASIS,
+    AuthorityType.COMPANY_POLICY: AuthorityRole.INTERNAL_BASIS,
+    AuthorityType.BUSINESS_RULE: AuthorityRole.INTERNAL_BASIS,
+    AuthorityType.LEGAL_OPINION: AuthorityRole.STRATEGY_REFERENCE,
+    AuthorityType.INTERNAL_PRECEDENT: AuthorityRole.STRATEGY_REFERENCE,
+}
+
+
+def authority_role_for_type(authority_type: AuthorityType) -> AuthorityRole | None:
+    return AUTHORITY_ROLE_BY_TYPE.get(authority_type)
+
+
+def authority_priority_for_type(authority_type: AuthorityType) -> int:
+    role = authority_role_for_type(authority_type)
+    if role == AuthorityRole.FORMAL_LEGAL_BASIS:
+        return 100
+    if role in {
+        AuthorityRole.PERSUASIVE_AUTHORITY,
+        AuthorityRole.CONTRACTUAL_BASIS,
+    }:
+        return 80
+    if role == AuthorityRole.INTERNAL_BASIS:
+        return 60
+    if role == AuthorityRole.STRATEGY_REFERENCE:
+        return 40
+    return 20
 
 
 @dataclass(slots=True)
@@ -32,6 +80,13 @@ class KnowledgeDocument:
     effective_to: date | None = None
     status: str = "active"
     approved_by: str | None = None
+    authority_type: AuthorityType = AuthorityType.UNKNOWN
+    authority_role: AuthorityRole | None = None
+    authority_status: AuthorityStatus = AuthorityStatus.UNKNOWN
+    metadata_status: KnowledgeMetadataStatus = KnowledgeMetadataStatus.PENDING_METADATA
+    issuer: str | None = None
+    document_number: str | None = None
+    enabled: bool = True
     created_at: datetime = field(default_factory=utc_now)
     updated_at: datetime = field(default_factory=utc_now)
     version: int = 1
@@ -43,6 +98,97 @@ class KnowledgeDocument:
             raise DomainValidationError("Knowledge source priority must be between 0 and 100.")
         if self.effective_from and self.effective_to and self.effective_to < self.effective_from:
             raise DomainValidationError("Knowledge source effective dates are invalid.")
+        expected_role = authority_role_for_type(self.authority_type)
+        if self.authority_type == AuthorityType.UNKNOWN:
+            if (
+                self.authority_role is not None
+                or self.metadata_status != KnowledgeMetadataStatus.PENDING_METADATA
+            ):
+                raise DomainValidationError(
+                    "Unknown authority must remain pending metadata without a role."
+                )
+        elif self.authority_role != expected_role:
+            raise DomainValidationError(
+                "Knowledge authority role does not match its authority type."
+            )
+
+    def is_current_formal_legal_basis(self, *, on_date: date) -> bool:
+        if (
+            not self.enabled
+            or self.authority_role != AuthorityRole.FORMAL_LEGAL_BASIS
+            or self.authority_status != AuthorityStatus.EFFECTIVE
+        ):
+            return False
+        if self.effective_from is not None and on_date < self.effective_from:
+            return False
+        return self.effective_to is None or on_date <= self.effective_to
+
+    def update_metadata(
+        self,
+        *,
+        expected_version: int,
+        title: str,
+        authority_type: AuthorityType,
+        authority_role: AuthorityRole | None,
+        authority_status: AuthorityStatus,
+        jurisdiction: str,
+        effective_from: date | None,
+        effective_to: date | None,
+        issuer: str | None,
+        document_number: str | None,
+        enabled: bool,
+    ) -> None:
+        if self.version != expected_version:
+            raise EntityVersionConflictError(
+                "Knowledge document version does not match.",
+                details={
+                    "expectedVersion": expected_version,
+                    "actualVersion": self.version,
+                },
+            )
+        normalized_title = title.strip()
+        normalized_jurisdiction = jurisdiction.strip()
+        if not normalized_title or not normalized_jurisdiction:
+            raise DomainValidationError(
+                "Knowledge title and jurisdiction are required."
+            )
+        if effective_from and effective_to and effective_to < effective_from:
+            raise DomainValidationError("Knowledge source effective dates are invalid.")
+        expected_role = authority_role_for_type(authority_type)
+        if authority_role != expected_role:
+            raise DomainValidationError(
+                "Knowledge metadata must use the deterministic authority role."
+            )
+        if authority_type == AuthorityType.UNKNOWN and (
+            authority_status != AuthorityStatus.UNKNOWN
+        ):
+            raise DomainValidationError(
+                "Unknown authority cannot claim an effective authority status."
+            )
+        self.title = normalized_title
+        self.authority_type = authority_type
+        self.authority_role = expected_role
+        self.authority_status = authority_status
+        self.metadata_status = (
+            KnowledgeMetadataStatus.PENDING_METADATA
+            if authority_type == AuthorityType.UNKNOWN
+            else KnowledgeMetadataStatus.READY
+        )
+        self.document_type = authority_type.value
+        self.source_priority = authority_priority_for_type(authority_type)
+        self.jurisdiction = normalized_jurisdiction
+        self.effective_from = effective_from
+        self.effective_to = effective_to
+        self.issuer = issuer.strip() if issuer and issuer.strip() else None
+        self.document_number = (
+            document_number.strip()
+            if document_number and document_number.strip()
+            else None
+        )
+        self.enabled = enabled
+        self.internal_precedent = authority_type == AuthorityType.INTERNAL_PRECEDENT
+        self.updated_at = utc_now()
+        self.version += 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,6 +201,9 @@ class KnowledgeChunk:
     normalized_text: str
     text_hash: str
     document_segment_id: UUID | None = None
+    estimated_token_count: int = 0
+    token_estimator: str = "utf8-bytes-ceil-div-4-v1"
+    token_count_estimated: bool = True
     created_at: datetime = field(default_factory=utc_now)
 
     def __post_init__(self) -> None:
@@ -62,6 +211,8 @@ class KnowledgeChunk:
             raise DomainValidationError("Knowledge chunk sequence, locator and text are required.")
         if len(self.text_hash) != 64:
             raise DomainValidationError("Knowledge chunk content hash is invalid.")
+        if self.estimated_token_count < 0 or not self.token_estimator.strip():
+            raise DomainValidationError("Knowledge chunk token metadata is invalid.")
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,11 +224,26 @@ class KnowledgeRetrievalLog:
     component_scores: dict[str, dict[str, float]]
     correlation_id: str
     agent_run_id: UUID | None = None
+    candidate_count: int = 0
+    selected_chunk_count: int = 0
+    selected_token_count: int = 0
+    excluded_by_token_budget_count: int = 0
+    excluded_duplicate_count: int = 0
+    budget: dict[str, int] = field(default_factory=dict)
     created_at: datetime = field(default_factory=utc_now)
 
     def __post_init__(self) -> None:
         if len(self.query_hash) != 64 or not self.correlation_id.strip():
             raise DomainValidationError("Knowledge retrieval audit metadata is invalid.")
+        counts = (
+            self.candidate_count,
+            self.selected_chunk_count,
+            self.selected_token_count,
+            self.excluded_by_token_budget_count,
+            self.excluded_duplicate_count,
+        )
+        if any(value < 0 for value in counts):
+            raise DomainValidationError("Knowledge retrieval audit counts are invalid.")
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,9 +255,11 @@ class KnowledgeSearchRequest:
     document_types: tuple[str, ...]
     effective_date: date
     correlation_id: str
+    historical_as_of: date | None = None
     agent_run_id: UUID | None = None
     source_priority_min: int = 0
     limit: int = 8
+    max_candidate_tokens: int | None = None
 
     def __post_init__(self) -> None:
         if not self.query.strip() or not self.agent_type.strip() or not self.matter_type.strip():
@@ -100,6 +268,8 @@ class KnowledgeSearchRequest:
             raise DomainValidationError("Knowledge jurisdiction and document type are required.")
         if not 0 <= self.source_priority_min <= 100 or not 1 <= self.limit <= 50:
             raise DomainValidationError("Knowledge priority or result limit is invalid.")
+        if self.max_candidate_tokens is not None and self.max_candidate_tokens < 1:
+            raise DomainValidationError("Knowledge candidate token limit must be positive.")
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,3 +283,27 @@ class KnowledgeSearchResult:
     @property
     def internal_precedent(self) -> bool:
         return self.document.internal_precedent
+
+
+@dataclass(frozen=True, slots=True)
+class KnowledgeSearchBatch:
+    candidates: tuple[KnowledgeSearchResult, ...]
+    candidate_count: int
+    excluded_by_token_budget_count: int = 0
+    excluded_duplicate_count: int = 0
+
+    def __post_init__(self) -> None:
+        counts = (
+            self.candidate_count,
+            self.excluded_by_token_budget_count,
+            self.excluded_duplicate_count,
+        )
+        if any(value < 0 for value in counts):
+            raise DomainValidationError("Knowledge candidate audit counts are invalid.")
+        accounted_for = (
+            len(self.candidates)
+            + self.excluded_by_token_budget_count
+            + self.excluded_duplicate_count
+        )
+        if accounted_for > self.candidate_count:
+            raise DomainValidationError("Knowledge candidate audit counts are inconsistent.")

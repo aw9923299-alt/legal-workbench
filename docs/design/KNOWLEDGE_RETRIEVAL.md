@@ -22,7 +22,9 @@ Query Context
 → PostgreSQL Full Text Search
 → pg_trgm 标题、术语和短语相似度
 → 合并和去重候选
-→ Codex基于有限候选进行相关性选择和引用
+→ 确定性 authority 排序
+→ Chunk/单 Chunk/Token 三重预算
+→ Codex 仅基于 Authorized Context 进行分析和引用
 ```
 
 首期不依赖向量字段即可上线。
@@ -31,7 +33,7 @@ Context Builder 每次检索必须显式提供并记录以下范围：
 
 ```text
 agent_type + matter_type + jurisdiction + document_type
-+ effective_date + source_priority
++ analysis_effective_date + historical_as_of + source_priority
 ```
 
 只有命中该授权范围的片段会进入专业 Agent 的 `authorizedContext` 与 `authorizedSourceRefs`。Agent 不持有数据库凭证，也不能直接遍历文件系统、文档表或历史 Matter。
@@ -56,12 +58,12 @@ agent_type + matter_type + jurisdiction + document_type
 - 原始文件ID、路径和SHA-256；
 - 文件类型和解析状态；
 - 公司主体、业务线和事项类型；
-- 文档类别：正式制度、模板、历史事项、审核样例；
+- 确定性的 `authority_type`、`authority_role`、效力状态和人工元数据状态；
 - 版本、生效日、失效日和批准状态；
 - 保密等级和访问策略；
 - 删除、撤权和Legal Hold状态。
 
-首期允许登记的来源类型包括公司制度、合同模板、历史法律意见、历史 Matter/已审核处理方案、法规资料和业务规则。历史内部意见和已审核历史方案必须保存 `internal_precedent=true`；它们可以支持处理口径和表达，但不能填入专业 Agent 的正式 `legalBasis`。
+正式法律依据仅允许 `formal_legal_basis`。法规、行政法规、司法解释、规章和规范性文件映射到该角色；案例/监管指引为 `persuasive_authority`，合同为 `contractual_basis`，公司制度/业务规则为 `internal_basis`，历史意见/内部先例为 `strategy_reference`。该映射由领域代码校验，Codex 无权自行升级来源等级。`superseded/repealed` 不得作为当前正式依据；`unknown` 必须降低置信度并形成缺失信息。
 
 `KnowledgeChunk`保存：
 
@@ -72,6 +74,7 @@ agent_type + matter_type + jurisdiction + document_type
 - 可选`vector`；
 - embedding生成器和版本；
 - 片段哈希。
+- 估算 Token 数、估算器版本和是否为近似值。
 
 ## 5. 排序
 
@@ -96,7 +99,11 @@ keyword score
 
 正式制度和批准模板优先于历史事项；历史审核样例只能影响表达和流程，不自动成为法律规则。
 
-首期排序先执行 effective-date 与元数据硬过滤，再按 `source_priority`、全文相关度、`pg_trgm` 相似度、资料权威等级和生效时间确定顺序。每次检索的 Query、过滤器、命中片段和 Correlation ID 均写入只追加审计日志。
+首期排序先执行 effective-date 与元数据硬过滤，再按 `source_priority`、全文相关度、`pg_trgm` 相似度、资料权威等级和生效时间确定顺序。SQL 在候选池上限之前按文本哈希执行窗口去重，并使用本次 `max_single_chunk_tokens` 排除超限 Chunk（历史 Token 计数缺失时按 UTF-8 bytes/4 确定性估算）；应用层继续执行 fail-safe 去重、authority 排序和三重预算选择。这样即使超过 `5 × limit` 的重复或超长旧 Chunk 排在前面，也不能挤掉后续合格证据。每次检索的 Query、过滤器、命中片段和 Correlation ID 均写入只追加审计日志。
+
+默认当前分析只召回 `effective/unknown`。`analysis_effective_date` 在 Plan 创建时由服务端确定并持久化，使同一 Plan 的 retry/recovery/rerun 即使跨日仍使用同一当前法日期。`repealed/superseded` 仅在 Python 侧显式、持久化的 `historical_as_of` 日期存在，且该日期落在资料有效期内时召回；`historical_as_of` 不会从 `analysis_effective_date` 推导，模型输出的 `historicalAnalysis` 也不能自行开启历史模式。
+
+最终选择还必须受 `LEGAL_KNOWLEDGE_MAX_CHUNKS`、`LEGAL_KNOWLEDGE_MAX_TOKENS` 和 `LEGAL_KNOWLEDGE_MAX_SINGLE_CHUNK_TOKENS` 限制。检索日志只保存 query hash，不保存敏感 query 正文；Repository 返回 SQL 上限前的原始候选数、SQL 前置重复排除数和单 Chunk 超限排除数，应用服务再合并应用层去重/三重预算排除，确保日志完整记录候选数、选中 Chunk/Token、重复排除、预算排除、过滤器、各分量分数和预算快照。当前默认值为未完成真实资料审计前的保守运行值，真实导入前必须根据 inventory 校准。
 
 ## 6. 引用
 
@@ -110,7 +117,21 @@ keyword score
 
 前端不能只显示文件名。
 
-## 7. 删除和失效
+Butler 的事实、问题、风险、策略、行动和冲突均保存逐项 source/support refs。最终引用必须属于参与运行的原始授权来源并能解析到飞书消息、附件 Segment、Knowledge Chunk、法规、合同或内部先例；Specialist Run ID 只能作为执行 provenance，不能替代事实或法律依据。
+
+Specialist citation 不信任模型提供的审计元数据。模型给出的 `sourceRef` 必须属于本 Run 的 authorized source set；服务端随后从持久化 source metadata 重建 title、source type、locator、content hash、internal-precedent 标记和 authority 字段。缺少 canonical metadata、越权 sourceRef、内部先例被用作正式法律依据、法域/效力/日期不匹配时全部 fail closed。
+
+## 7. 本地只读增量导入
+
+```text
+make knowledge-import SOURCE="/真实可读/Codex-Obs法务项目"
+```
+
+导入器只读扫描源目录，复用现有隔离 PDF/DOCX/TXT/Markdown 解析器，依次形成 `LocalDocumentSource → DocumentVersion → DocumentExtraction → DocumentSegment → KnowledgeDocument → KnowledgeChunk`。只有“成功 Extraction + Segment + KnowledgeDocument”才可作为 unchanged/dedup 目标；失败或中断会在同一 Version 上追加新的 Extraction 尝试。提取前后重新校验 SHA-256、size 和 mtime，发生竞态即安全失败并等待下次扫描。长 Segment 在 Knowledge 注册阶段按安全文本边界拆分，每个 Chunk 不超过配置的单 Chunk Token 上限并保留字符 offset locator。失踪源只标记 `missing`，不删除历史。单文件失败隔离，日志不输出正文，API/Agent 输入不暴露绝对路径。`.noindex` File Provider 后备目录会 fail closed，避免把占位文件当成真实资料。
+
+首次分类只接受无冲突的精确目录段标记；文件名中的偶然关键词不会升级来源等级。即使类型可推断，效力仍保持 `unknown` 且元数据保持 `pending_metadata`，由单机知识管理页人工确认类型、法域、效力日期/状态和启停，并查看 Chunk 与检索命中。
+
+## 8. 删除和失效
 
 文件删除、版本替代、权限撤销或制度失效时：
 

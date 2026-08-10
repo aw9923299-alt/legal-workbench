@@ -26,8 +26,12 @@ from legal_workbench.domain.entities import (
 from legal_workbench.domain.enums import (
     AgentExecutionPlanStatus,
     AgentRunRole,
+    AuthorityRole,
+    AuthorityStatus,
+    AuthorityType,
     BusinessImpact,
     Confidentiality,
+    KnowledgeMetadataStatus,
     LegalRisk,
     MatterCategory,
 )
@@ -110,6 +114,10 @@ async def test_real_codex_single_and_multi_agent_e2e() -> None:
         internal_precedent=False,
         confidentiality="internal",
         approved_by="synthetic-fixture",
+        authority_type=AuthorityType.BUSINESS_RULE,
+        authority_role=AuthorityRole.INTERNAL_BASIS,
+        authority_status=AuthorityStatus.EFFECTIVE,
+        metadata_status=KnowledgeMetadataStatus.READY,
     )
     chunk = KnowledgeChunk(
         id=uuid4(),
@@ -183,6 +191,7 @@ async def test_real_codex_single_and_multi_agent_e2e() -> None:
         runtime,
         LegalContextBuilder(KnowledgeRetrievalService(factory)),
         runs_root=runs_root,
+        timeout_seconds=900,
     )
     try:
         async with factory() as uow:
@@ -252,6 +261,22 @@ async def test_real_codex_single_and_multi_agent_e2e() -> None:
             assert artifact.structured_payload["participatingAgents"]
             assert artifact.structured_payload["citations"]
             assert review is not None
+            citation_refs = {
+                str(value["sourceRef"]) for value in review.citations
+            }
+            for section, refs_key in (
+                ("coreFacts", "sourceRefs"),
+                ("keyLegalIssues", "sourceRefs"),
+                ("integratedRisks", "supportRefs"),
+                ("recommendedStrategy", "supportRefs"),
+                ("nextActions", "supportRefs"),
+            ):
+                grounded_items = review.grounding_payload[section]
+                assert grounded_items
+                assert all(value[refs_key] for value in grounded_items)
+                assert all(
+                    set(value[refs_key]) <= citation_refs for value in grounded_items
+                )
         async with session_factory() as session:
             communications_after = int(
                 await session.scalar(select(func.count(CommunicationModel.id))) or 0

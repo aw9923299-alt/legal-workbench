@@ -42,7 +42,7 @@ const navItems = [
   { key: '/inbox', icon: <InboxOutlined />, label: 'AI 收件箱' },
   { key: '/matters', icon: <AppstoreOutlined />, label: '法务事项' },
   { key: '/reviews', icon: <AuditOutlined />, label: '审核中心' },
-  { key: '/library', icon: <DatabaseOutlined />, label: '法务事项库' },
+  { key: '/library', icon: <DatabaseOutlined />, label: '法务知识库' },
   { key: '/agent-runs', icon: <RobotOutlined />, label: 'Agent 运行中心' },
   { key: '/security', icon: <SafetyCertificateOutlined />, label: '数据与权限' },
   { key: '/setup', icon: <SettingOutlined />, label: '首次配置' },
@@ -98,7 +98,7 @@ function RouteContent() {
     <Route path="/matters/:matterId" element={<MatterDetailRoute />} />
     <Route path="/matter-update-proposals/:proposalId" element={<MatterUpdateProposalPage />} />
     <Route path="/reviews" element={<ReviewCenterPage />} />
-    <Route path="/library" element={<LibraryPage onBrowseCategory={(category) => navigate(`/matters?category=${encodeURIComponent(category)}`)} />} />
+    <Route path="/library" element={<LibraryPage />} />
     <Route path="/security" element={<SecurityPage />} />
     <Route path="*" element={<div className="page placeholder-page"><h2>页面不存在</h2><Button onClick={() => navigate('/inbox')}>返回收件箱</Button></div>} />
   </Routes>;

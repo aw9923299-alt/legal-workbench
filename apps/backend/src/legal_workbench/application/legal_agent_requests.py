@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass
+from datetime import date
 from uuid import UUID, uuid4
 
 from legal_workbench.agents.professional import LEGAL_SPECIALIST_KEYS
@@ -27,6 +28,7 @@ class RequestLegalAgentOrchestrationCommand:
     work_item_id: UUID | None = None
     context_snapshot_id: UUID | None = None
     jurisdiction: str = "CN"
+    historical_as_of: date | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,6 +80,11 @@ class RequestLegalAgentOrchestrationHandler:
             "specialRequirements": command.special_requirements,
             "specialistOnly": command.specialist_only,
             "jurisdiction": command.jurisdiction,
+            "historicalAsOf": (
+                command.historical_as_of.isoformat()
+                if command.historical_as_of is not None
+                else None
+            ),
         }
         request_hash = hashlib.sha256(
             json.dumps(request_payload, sort_keys=True).encode()

@@ -30,8 +30,10 @@ def _grounded_envelope() -> dict[str, object]:
             {
                 "proposition": "使用他人作品通常需要核验许可范围。",
                 "sourceRefs": ["knowledge:chunk:k-1"],
+                "authorityRole": "formal_legal_basis",
                 "jurisdiction": "CN",
                 "effectiveDate": date(2021, 6, 1).isoformat(),
+                "historicalAnalysis": False,
             }
         ],
         "analysis": [
@@ -161,6 +163,84 @@ def test_consultation_keeps_assumptions_separate_from_grounded_facts() -> None:
     payload["facts"][0]["sourceRefs"] = []
     with pytest.raises(ValidationError):
         LegalConsultationProduct.model_validate(payload)
+
+
+def test_specialist_citations_are_rebuilt_from_canonical_server_metadata() -> None:
+    payload = _grounded_envelope() | {
+        "questions": ["是否可以直接上线图片"],
+        "legalRelationships": ["图片许可关系"],
+    }
+    payload["citations"][0] = {
+        "sourceRef": "knowledge:chunk:k-1",
+        "title": "模型伪造标题",
+        "sourceType": "upstream_agent",
+        "locator": "模型伪造位置",
+        "contentHash": "f" * 64,
+        "internalPrecedent": True,
+    }
+    product = LegalConsultationProduct.model_validate(payload)
+    canonical_metadata = {
+        "knowledge:chunk:k-1": {
+            "title": "数据库法规标题",
+            "sourceType": "knowledge_document",
+            "locator": "数据库第一条",
+            "contentHash": "a" * 64,
+            "internalPrecedent": False,
+            "authorityType": "law",
+            "authorityRole": "formal_legal_basis",
+            "authorityStatus": "effective",
+            "metadataStatus": "ready",
+            "jurisdiction": "CN",
+            "effectiveFrom": "2021-01-01",
+            "effectiveTo": None,
+        }
+    }
+
+    canonical = validate_legal_work_product_sources(
+        product,
+        authorized_source_refs={"ctx:message:m-1", "knowledge:chunk:k-1"},
+        internal_precedent_refs=set(),
+        source_authorities=canonical_metadata,
+        analysis_effective_date=date(2021, 6, 1),
+    )
+
+    citation = canonical.citations[0]
+    assert citation.title == "数据库法规标题"
+    assert citation.source_type == "knowledge_document"
+    assert citation.locator == "数据库第一条"
+    assert citation.content_hash == "a" * 64
+    assert citation.internal_precedent is False
+    assert citation.authority_type.value == "law"
+    assert citation.authority_role.value == "formal_legal_basis"
+    assert citation.authority_status.value == "effective"
+
+
+def test_specialist_citation_fails_closed_without_canonical_metadata() -> None:
+    product = LegalConsultationProduct.model_validate(
+        _grounded_envelope()
+        | {
+            "questions": ["是否可以直接上线图片"],
+            "legalRelationships": ["图片许可关系"],
+        }
+    )
+
+    with pytest.raises(ValueError, match="Canonical citation metadata"):
+        validate_legal_work_product_sources(
+            product,
+            authorized_source_refs={"ctx:message:m-1", "knowledge:chunk:k-1"},
+            source_authorities={
+                "knowledge:chunk:k-1": {
+                    "authorityType": "law",
+                    "authorityRole": "formal_legal_basis",
+                    "authorityStatus": "effective",
+                    "metadataStatus": "ready",
+                    "jurisdiction": "CN",
+                    "effectiveFrom": "2021-01-01",
+                    "effectiveTo": None,
+                }
+            },
+            analysis_effective_date=date(2021, 6, 1),
+        )
 
 
 def test_butler_planning_rejects_unknown_agent_cycle_and_unbounded_steps() -> None:

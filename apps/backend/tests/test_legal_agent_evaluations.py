@@ -52,10 +52,12 @@ def test_specialist_quality_scores_cover_grounding_hallucination_and_usefulness(
             "issues": ["促销文案合规问题"],
             "legalBasis": [
                 {
-                    "proposition": "应核验适用规则。",
-                    "sourceRefs": ["knowledge:chunk:fixture"],
-                    "jurisdiction": "CN",
-                    "effectiveDate": date(2026, 1, 1).isoformat(),
+                        "proposition": "应核验适用规则。",
+                        "sourceRefs": ["knowledge:chunk:fixture"],
+                        "authorityRole": "formal_legal_basis",
+                        "jurisdiction": "CN",
+                        "effectiveDate": date(2026, 1, 1).isoformat(),
+                        "historicalAnalysis": False,
                 }
             ],
             "analysis": [
@@ -146,15 +148,44 @@ def test_butler_quality_scores_route_only_required_parallel_specialists() -> Non
         {
             "phase": "synthesis",
             "matterAssessment": "需修改合同并补授权。",
-            "coreFacts": ["存在合同及图片使用安排"],
-            "keyLegalIssues": ["责任条款", "图片授权"],
-            "integratedRisks": [],
-            "recommendedStrategy": ["同步推进修改和补件"],
-            "nextActions": ["修改合同", "补授权"],
+            "coreFacts": [
+                {"fact": "存在合同及图片使用安排", "sourceRefs": ["ctx:fixture"]}
+            ],
+            "keyLegalIssues": [
+                {"issue": "责任条款", "sourceRefs": ["ctx:fixture"]},
+                {"issue": "图片授权", "sourceRefs": ["ctx:fixture"]},
+            ],
+            "integratedRisks": [
+                {
+                    "description": "责任条款与图片授权均存在缺口",
+                    "severity": "high",
+                    "likelihood": "possible",
+                    "supportRefs": ["ctx:fixture"],
+                }
+            ],
+            "recommendedStrategy": [
+                {
+                    "action": "同步推进修改和补件",
+                    "rationale": "两项风险并行",
+                    "supportRefs": ["ctx:fixture"],
+                }
+            ],
+            "nextActions": [
+                {"action": "修改合同", "supportRefs": ["ctx:fixture"]},
+                {"action": "补授权", "supportRefs": ["ctx:fixture"]},
+            ],
             "missingInformation": [],
             "draftResponse": "请按清单补充资料并确认修改。",
             "participatingAgents": ["contract_review", "ip_copyright"],
-            "citations": [],
+            "citations": [
+                {
+                    "sourceRef": "ctx:fixture",
+                    "title": "非敏感评估 fixture",
+                    "sourceType": "context_snapshot",
+                    "contentHash": "c" * 64,
+                    "internalPrecedent": False,
+                }
+            ],
             "conflicts": [],
             "confidence": 0.8,
         }

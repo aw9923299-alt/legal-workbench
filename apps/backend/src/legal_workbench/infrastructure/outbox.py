@@ -101,6 +101,16 @@ async def _handle_legal_agent_step_rerun(
     )
 
 
+async def _handle_legal_agent_recovery(
+    _: OutboxDispatcher, event: ClaimedOutboxEvent
+) -> None:
+    celery_app.send_task(
+        "legal_agents.recover",
+        args=[event.payload, event.correlation_id],
+        headers={"correlation_id": event.correlation_id},
+    )
+
+
 async def _handle_internal_notification(_: OutboxDispatcher, event: ClaimedOutboxEvent) -> None:
     logger.info(
         "outbox_internal_event_acknowledged",
@@ -442,6 +452,7 @@ OUTBOX_HANDLERS: dict[str, OutboxHandler] = {
     "CodexSetupCheckRequested": _handle_codex_setup_check,
     "LegalButlerRequested": _handle_legal_butler,
     "LegalAgentStepRerunRequested": _handle_legal_agent_step_rerun,
+    "LegalAgentRecoveryRequested": _handle_legal_agent_recovery,
     "LegalMatterCreated": _handle_internal_notification,
     "MessageCandidateCreated": _handle_internal_notification,
     "MessageCandidateResolved": _handle_internal_notification,

@@ -50,9 +50,13 @@ from legal_workbench.domain.entities import (
     KnowledgeChunk,
     KnowledgeDocument,
     KnowledgeRetrievalLog,
+    KnowledgeSearchBatch,
     KnowledgeSearchRequest,
     KnowledgeSearchResult,
     LegalMatter,
+    LocalDocumentObservation,
+    LocalDocumentSource,
+    LocalKnowledgeScan,
     MatterUpdateProposal,
     MessageCandidate,
     OutboxEvent,
@@ -68,12 +72,14 @@ from legal_workbench.domain.enums import (
     AgentDefinitionStatus,
     AgentRunStatus,
     AttachmentDownloadStatus,
+    AuthorityType,
     CandidateMatterRelation,
     CandidateStatus,
     CommunicationStatus,
     DeadlineStatus,
     DocumentExtractionStatus,
     FeishuMessageStatus,
+    KnowledgeMetadataStatus,
     MatterCategory,
     MatterUpdateProposalStatus,
     ReviewDecision,
@@ -121,6 +127,9 @@ from legal_workbench.infrastructure.models import (
     KnowledgeDocumentModel,
     KnowledgeRetrievalLogModel,
     LegalMatterModel,
+    LocalDocumentObservationModel,
+    LocalDocumentSourceModel,
+    LocalKnowledgeScanModel,
     MatterUpdateProposalModel,
     MessageCandidateModel,
     OutboxEventModel,
@@ -524,6 +533,9 @@ class SqlAlchemyAgentExecutionPlanRepository:
             correlation_id=plan.correlation_id,
             idempotency_key=plan.idempotency_key,
             created_by=plan.created_by,
+            analysis_jurisdiction=plan.analysis_jurisdiction,
+            analysis_effective_date=plan.analysis_effective_date,
+            historical_as_of=plan.historical_as_of,
             created_at=plan.created_at,
             updated_at=plan.updated_at,
             version=plan.version,
@@ -605,6 +617,9 @@ class SqlAlchemyAgentExecutionPlanRepository:
         model.requires_user_input = plan.requires_user_input
         model.planning_run_id = plan.planning_run_id
         model.synthesis_run_id = plan.synthesis_run_id
+        model.analysis_jurisdiction = plan.analysis_jurisdiction
+        model.analysis_effective_date = plan.analysis_effective_date
+        model.historical_as_of = plan.historical_as_of
         model.updated_at = plan.updated_at
         model.version = plan.version
 
@@ -616,6 +631,7 @@ class SqlAlchemyAgentExecutionPlanRepository:
             raise RuntimeError(f"AgentPlanStep {step.id} is not tracked")
         model.status = step.status
         model.latest_run_id = step.latest_run_id
+        model.latest_valid_run_id = step.latest_valid_run_id
         model.attempt_count = step.attempt_count
         model.failure_code = step.failure_code
         model.failure_message = step.failure_message
@@ -652,6 +668,9 @@ class SqlAlchemyAgentExecutionPlanRepository:
             correlation_id=model.correlation_id,
             idempotency_key=model.idempotency_key,
             created_by=model.created_by,
+            analysis_jurisdiction=model.analysis_jurisdiction,
+            analysis_effective_date=model.analysis_effective_date,
+            historical_as_of=model.historical_as_of,
             steps=[self._step_to_domain(step) for step in step_models],
             created_at=model.created_at,
             updated_at=model.updated_at,
@@ -671,6 +690,7 @@ class SqlAlchemyAgentExecutionPlanRepository:
             context_requirements=step.context_requirements,
             status=step.status,
             latest_run_id=step.latest_run_id,
+            latest_valid_run_id=step.latest_valid_run_id,
             attempt_count=step.attempt_count,
             failure_code=step.failure_code,
             failure_message=step.failure_message,
@@ -692,6 +712,7 @@ class SqlAlchemyAgentExecutionPlanRepository:
             context_requirements=model.context_requirements,
             status=model.status,
             latest_run_id=model.latest_run_id,
+            latest_valid_run_id=model.latest_valid_run_id,
             attempt_count=model.attempt_count,
             failure_code=model.failure_code,
             failure_message=model.failure_message,
@@ -745,6 +766,7 @@ class SqlAlchemyAgentRunRepository:
             parent_run_id=run.parent_run_id,
             retry_of_run_id=run.retry_of_run_id,
             run_role=run.run_role,
+            dependency_run_ids=[str(value) for value in run.dependency_run_ids],
             created_at=run.created_at,
             updated_at=run.updated_at,
             version=run.version,
@@ -813,6 +835,7 @@ class SqlAlchemyAgentRunRepository:
         model.parent_run_id = run.parent_run_id
         model.retry_of_run_id = run.retry_of_run_id
         model.run_role = run.run_role
+        model.dependency_run_ids = [str(value) for value in run.dependency_run_ids]
         model.updated_at = run.updated_at
         model.version = run.version
         self._session.add_all(
@@ -961,6 +984,7 @@ class SqlAlchemyAgentRunRepository:
             parent_run_id=model.parent_run_id,
             retry_of_run_id=model.retry_of_run_id,
             run_role=model.run_role,
+            dependency_run_ids=[UUID(value) for value in model.dependency_run_ids],
         )
 
 
@@ -995,7 +1019,7 @@ class SqlAlchemyAgentRunAttemptRepository:
     ) -> None:
         statement = (
             update(AgentRunAttemptModel)
-            .where(*self._active_lease_predicates(lease))
+            .where(*self._active_lease_predicates(lease, active_at=heartbeat_at))
             .values(
                 heartbeat_at=heartbeat_at,
                 lease_expires_at=lease_expires_at,
@@ -1008,7 +1032,7 @@ class SqlAlchemyAgentRunAttemptRepository:
     async def complete(self, lease: AgentAttemptLease, *, finished_at: datetime) -> None:
         statement = (
             update(AgentRunAttemptModel)
-            .where(*self._active_lease_predicates(lease))
+            .where(*self._active_lease_predicates(lease, active_at=finished_at))
             .values(
                 status=AgentAttemptStatus.COMPLETED,
                 finished_at=finished_at,
@@ -1038,7 +1062,7 @@ class SqlAlchemyAgentRunAttemptRepository:
             raise ValueError("Attempt failure status must be terminal.")
         statement = (
             update(AgentRunAttemptModel)
-            .where(*self._active_lease_predicates(lease))
+            .where(*self._active_lease_predicates(lease, active_at=finished_at))
             .values(
                 status=status,
                 finished_at=finished_at,
@@ -1064,6 +1088,7 @@ class SqlAlchemyAgentRunAttemptRepository:
                 AgentRunAttemptModel.agent_run_id == run_id,
                 AgentRunAttemptModel.attempt_number == attempt_number,
                 AgentRunAttemptModel.status == AgentAttemptStatus.RUNNING,
+                AgentRunAttemptModel.lease_expires_at <= finished_at,
             )
             .values(
                 status=AgentAttemptStatus.EXPIRED,
@@ -1088,12 +1113,16 @@ class SqlAlchemyAgentRunAttemptRepository:
     @staticmethod
     def _active_lease_predicates(
         lease: AgentAttemptLease,
+        *,
+        active_at: datetime,
     ) -> tuple[ColumnElement[bool], ...]:
         return (
             AgentRunAttemptModel.agent_run_id == lease.run_id,
             AgentRunAttemptModel.attempt_number == lease.attempt_number,
             AgentRunAttemptModel.lease_token == lease.lease_token,
             AgentRunAttemptModel.status == AgentAttemptStatus.RUNNING,
+            AgentRunAttemptModel.lease_expires_at > active_at,
+            AgentRunAttemptModel.lease_expires_at > func.now(),
         )
 
     @staticmethod
@@ -1193,6 +1222,7 @@ class SqlAlchemyDraftArtifactRepository:
 class SqlAlchemyKnowledgeRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
+        self._tracked_documents: dict[UUID, KnowledgeDocumentModel] = {}
 
     async def add_document(self, document: KnowledgeDocument) -> None:
         self._session.add(
@@ -1214,6 +1244,13 @@ class SqlAlchemyKnowledgeRepository:
                 internal_precedent=document.internal_precedent,
                 confidentiality=document.confidentiality,
                 approved_by=document.approved_by,
+                authority_type=document.authority_type,
+                authority_role=document.authority_role,
+                authority_status=document.authority_status,
+                metadata_status=document.metadata_status,
+                issuer=document.issuer,
+                document_number=document.document_number,
+                enabled=document.enabled,
                 created_at=document.created_at,
                 updated_at=document.updated_at,
                 version=document.version,
@@ -1223,6 +1260,67 @@ class SqlAlchemyKnowledgeRepository:
     async def get_document(self, document_id: UUID) -> KnowledgeDocument | None:
         model = await self._session.get(KnowledgeDocumentModel, document_id)
         return None if model is None else self._document_to_domain(model)
+
+    async def get_document_for_update(
+        self, document_id: UUID
+    ) -> KnowledgeDocument | None:
+        statement = (
+            select(KnowledgeDocumentModel)
+            .where(KnowledgeDocumentModel.id == document_id)
+            .with_for_update()
+        )
+        model = (await self._session.execute(statement)).scalar_one_or_none()
+        if model is None:
+            return None
+        self._tracked_documents[model.id] = model
+        return self._document_to_domain(model)
+
+    async def list_documents(
+        self,
+        *,
+        authority_type: AuthorityType | None,
+        metadata_status: KnowledgeMetadataStatus | None,
+        enabled: bool | None,
+        limit: int,
+    ) -> Sequence[KnowledgeDocument]:
+        statement: Select[tuple[KnowledgeDocumentModel]] = select(KnowledgeDocumentModel)
+        if authority_type is not None:
+            statement = statement.where(
+                KnowledgeDocumentModel.authority_type == authority_type
+            )
+        if metadata_status is not None:
+            statement = statement.where(
+                KnowledgeDocumentModel.metadata_status == metadata_status
+            )
+        if enabled is not None:
+            statement = statement.where(KnowledgeDocumentModel.enabled == enabled)
+        statement = statement.order_by(
+            KnowledgeDocumentModel.updated_at.desc(),
+            KnowledgeDocumentModel.id,
+        ).limit(limit)
+        models = (await self._session.execute(statement)).scalars().all()
+        return [self._document_to_domain(model) for model in models]
+
+    async def save_document(self, document: KnowledgeDocument) -> None:
+        model = self._tracked_documents.get(document.id)
+        if model is None:
+            raise RuntimeError(f"Knowledge document {document.id} is not tracked")
+        model.title = document.title
+        model.document_type = document.document_type
+        model.source_priority = document.source_priority
+        model.jurisdiction = document.jurisdiction
+        model.effective_from = document.effective_from
+        model.effective_to = document.effective_to
+        model.internal_precedent = document.internal_precedent
+        model.authority_type = document.authority_type
+        model.authority_role = document.authority_role
+        model.authority_status = document.authority_status
+        model.metadata_status = document.metadata_status
+        model.issuer = document.issuer
+        model.document_number = document.document_number
+        model.enabled = document.enabled
+        model.updated_at = document.updated_at
+        model.version = document.version
 
     async def find_document_by_source(
         self, *, source_type: str, source_id: str
@@ -1246,6 +1344,9 @@ class SqlAlchemyKnowledgeRepository:
                     text=chunk.text,
                     normalized_text=chunk.normalized_text,
                     text_hash=chunk.text_hash,
+                    estimated_token_count=chunk.estimated_token_count,
+                    token_estimator=chunk.token_estimator,
+                    token_count_estimated=chunk.token_count_estimated,
                     created_at=chunk.created_at,
                 )
                 for chunk in chunks
@@ -1271,15 +1372,53 @@ class SqlAlchemyKnowledgeRepository:
                 component_scores=log.component_scores,
                 correlation_id=log.correlation_id,
                 agent_run_id=log.agent_run_id,
+                candidate_count=log.candidate_count,
+                selected_chunk_count=log.selected_chunk_count,
+                selected_token_count=log.selected_token_count,
+                excluded_by_token_budget_count=log.excluded_by_token_budget_count,
+                excluded_duplicate_count=log.excluded_duplicate_count,
+                budget=log.budget,
                 created_at=log.created_at,
             )
         )
 
+    async def list_retrieval_logs(
+        self, *, document_id: UUID, limit: int
+    ) -> Sequence[KnowledgeRetrievalLog]:
+        chunk_ids = {
+            str(value)
+            for value in (
+                await self._session.execute(
+                    select(KnowledgeChunkModel.id).where(
+                        KnowledgeChunkModel.knowledge_document_id == document_id
+                    )
+                )
+            ).scalars()
+        }
+        if not chunk_ids:
+            return []
+        statement = (
+            select(KnowledgeRetrievalLogModel)
+            .order_by(
+                KnowledgeRetrievalLogModel.created_at.desc(),
+                KnowledgeRetrievalLogModel.id,
+            )
+            .limit(min(limit * 20, 1000))
+        )
+        models = (await self._session.execute(statement)).scalars().all()
+        selected = [
+            model
+            for model in models
+            if chunk_ids.intersection(model.selected_chunk_ids)
+        ][:limit]
+        return [self._retrieval_log_to_domain(model) for model in selected]
+
     async def search(
         self, request: KnowledgeSearchRequest
-    ) -> Sequence[KnowledgeSearchResult]:
+    ) -> KnowledgeSearchBatch:
         rows = (await self._session.execute(build_knowledge_search_statement(request))).all()
-        return [
+        diagnostics = rows[0]
+        candidates = tuple(
             KnowledgeSearchResult(
                 document=self._document_to_domain(document_model),
                 chunk=self._chunk_to_domain(chunk_model),
@@ -1300,8 +1439,20 @@ class SqlAlchemyKnowledgeRepository:
                 priority_score,
                 effective_score,
                 total_score,
+                _candidate_count,
+                _excluded_by_token_budget_count,
+                _excluded_duplicate_count,
             ) in rows
-        ]
+            if chunk_model is not None and document_model is not None
+        )
+        return KnowledgeSearchBatch(
+            candidates=candidates,
+            candidate_count=int(diagnostics.candidate_count),
+            excluded_by_token_budget_count=int(
+                diagnostics.excluded_by_token_budget_count
+            ),
+            excluded_duplicate_count=int(diagnostics.excluded_duplicate_count),
+        )
 
     @staticmethod
     def _document_to_domain(model: KnowledgeDocumentModel) -> KnowledgeDocument:
@@ -1323,6 +1474,13 @@ class SqlAlchemyKnowledgeRepository:
             internal_precedent=model.internal_precedent,
             confidentiality=model.confidentiality,
             approved_by=model.approved_by,
+            authority_type=model.authority_type,
+            authority_role=model.authority_role,
+            authority_status=model.authority_status,
+            metadata_status=model.metadata_status,
+            issuer=model.issuer,
+            document_number=model.document_number,
+            enabled=model.enabled,
             created_at=model.created_at,
             updated_at=model.updated_at,
             version=model.version,
@@ -1339,6 +1497,30 @@ class SqlAlchemyKnowledgeRepository:
             text=model.text,
             normalized_text=model.normalized_text,
             text_hash=model.text_hash,
+            estimated_token_count=model.estimated_token_count,
+            token_estimator=model.token_estimator,
+            token_count_estimated=model.token_count_estimated,
+            created_at=model.created_at,
+        )
+
+    @staticmethod
+    def _retrieval_log_to_domain(
+        model: KnowledgeRetrievalLogModel,
+    ) -> KnowledgeRetrievalLog:
+        return KnowledgeRetrievalLog(
+            id=model.id,
+            query_hash=model.query_hash,
+            filters=model.filters,
+            selected_chunk_ids=[UUID(value) for value in model.selected_chunk_ids],
+            component_scores=model.component_scores,
+            correlation_id=model.correlation_id,
+            agent_run_id=model.agent_run_id,
+            candidate_count=model.candidate_count,
+            selected_chunk_count=model.selected_chunk_count,
+            selected_token_count=model.selected_token_count,
+            excluded_by_token_budget_count=model.excluded_by_token_budget_count,
+            excluded_duplicate_count=model.excluded_duplicate_count,
+            budget=model.budget,
             created_at=model.created_at,
         )
 
@@ -1940,6 +2122,7 @@ class SqlAlchemyReviewPackageRepository:
             risks=package.risks,
             alternatives=package.alternatives,
             citations=package.citations,
+            grounding_payload=package.grounding_payload,
             proposed_content=package.proposed_content,
             target=package.target,
             created_by=package.created_by,
@@ -1964,6 +2147,7 @@ class SqlAlchemyReviewPackageRepository:
             risks=model.risks,
             alternatives=model.alternatives,
             citations=model.citations,
+            grounding_payload=model.grounding_payload,
             proposed_content=model.proposed_content,
             target=model.target,
             created_by=model.created_by,
@@ -2728,6 +2912,167 @@ class SqlAlchemyDocumentRepository:
         self._tracked_feishu_document_subscriptions: dict[
             UUID, FeishuDocumentSubscriptionModel
         ] = {}
+        self._tracked_local_scans: dict[UUID, LocalKnowledgeScanModel] = {}
+        self._tracked_local_sources: dict[UUID, LocalDocumentSourceModel] = {}
+
+    async def add_local_scan(self, scan: LocalKnowledgeScan) -> None:
+        model = LocalKnowledgeScanModel(
+            id=scan.id,
+            source_root_key=scan.source_root_key,
+            correlation_id=scan.correlation_id,
+            status=scan.status,
+            discovered_count=scan.discovered_count,
+            unchanged_count=scan.unchanged_count,
+            imported_count=scan.imported_count,
+            deduplicated_count=scan.deduplicated_count,
+            failed_count=scan.failed_count,
+            unsupported_count=scan.unsupported_count,
+            missing_count=scan.missing_count,
+            started_at=scan.started_at,
+            finished_at=scan.finished_at,
+            created_at=scan.started_at,
+        )
+        self._tracked_local_scans[scan.id] = model
+        self._session.add(model)
+
+    async def save_local_scan(self, scan: LocalKnowledgeScan) -> None:
+        model = self._tracked_local_scans.get(scan.id)
+        if model is None:
+            model = await self._session.get(LocalKnowledgeScanModel, scan.id)
+        if model is None:
+            raise RuntimeError(f"Local knowledge scan {scan.id} is not tracked")
+        model.status = scan.status
+        model.discovered_count = scan.discovered_count
+        model.unchanged_count = scan.unchanged_count
+        model.imported_count = scan.imported_count
+        model.deduplicated_count = scan.deduplicated_count
+        model.failed_count = scan.failed_count
+        model.unsupported_count = scan.unsupported_count
+        model.missing_count = scan.missing_count
+        model.finished_at = scan.finished_at
+
+    async def find_local_source(
+        self, *, source_root_key: str, relative_path: str
+    ) -> LocalDocumentSource | None:
+        model = await self._session.scalar(
+            select(LocalDocumentSourceModel)
+            .where(
+                LocalDocumentSourceModel.source_root_key == source_root_key,
+                LocalDocumentSourceModel.relative_path == relative_path,
+            )
+            .with_for_update()
+        )
+        if model is None:
+            return None
+        self._tracked_local_sources[model.id] = model
+        return self._local_source_to_domain(model)
+
+    async def list_local_sources(
+        self, *, source_root_key: str
+    ) -> Sequence[LocalDocumentSource]:
+        models = (
+            (
+                await self._session.execute(
+                    select(LocalDocumentSourceModel)
+                    .where(LocalDocumentSourceModel.source_root_key == source_root_key)
+                    .order_by(LocalDocumentSourceModel.relative_path)
+                    .with_for_update()
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for model in models:
+            self._tracked_local_sources[model.id] = model
+        return [self._local_source_to_domain(model) for model in models]
+
+    async def add_local_source(self, source: LocalDocumentSource) -> None:
+        model = LocalDocumentSourceModel(
+            id=source.id,
+            source_root_key=source.source_root_key,
+            relative_path=source.relative_path,
+            display_name=source.display_name,
+            status=source.status,
+            last_seen_at=source.last_seen_at,
+            created_at=source.created_at,
+            updated_at=source.updated_at,
+            version=source.version,
+        )
+        self._tracked_local_sources[source.id] = model
+        self._session.add(model)
+
+    async def save_local_source(self, source: LocalDocumentSource) -> None:
+        model = self._tracked_local_sources.get(source.id)
+        if model is None:
+            model = await self._session.get(LocalDocumentSourceModel, source.id)
+        if model is None:
+            raise RuntimeError(f"Local document source {source.id} is not tracked")
+        model.display_name = source.display_name
+        model.status = source.status
+        model.last_seen_at = source.last_seen_at
+        model.updated_at = source.updated_at
+        model.version = source.version
+
+    async def add_local_observation(self, observation: LocalDocumentObservation) -> None:
+        self._session.add(
+            LocalDocumentObservationModel(
+                id=observation.id,
+                local_source_id=observation.local_source_id,
+                scan_id=observation.scan_id,
+                document_version_id=observation.document_version_id,
+                content_sha256=observation.content_sha256,
+                size=observation.size,
+                modified_at_ns=observation.modified_at_ns,
+                observed_at=observation.observed_at,
+            )
+        )
+
+    async def find_latest_local_observation(
+        self, local_source_id: UUID
+    ) -> LocalDocumentObservation | None:
+        model = await self._session.scalar(
+            select(LocalDocumentObservationModel)
+            .where(LocalDocumentObservationModel.local_source_id == local_source_id)
+            .order_by(
+                LocalDocumentObservationModel.observed_at.desc(),
+                LocalDocumentObservationModel.id.desc(),
+            )
+            .limit(1)
+        )
+        return None if model is None else self._local_observation_to_domain(model)
+
+    async def find_any_local_version_by_sha256(
+        self, content_sha256: str
+    ) -> DocumentVersion | None:
+        model = await self._session.scalar(
+            select(DocumentVersionModel)
+            .where(
+                DocumentVersionModel.local_source_id.is_not(None),
+                DocumentVersionModel.content_sha256 == content_sha256,
+            )
+            .order_by(DocumentVersionModel.created_at, DocumentVersionModel.id)
+            .limit(1)
+        )
+        return None if model is None else self._version_to_domain(model)
+
+    async def find_local_version(
+        self, *, local_source_id: UUID, content_sha256: str
+    ) -> DocumentVersion | None:
+        model = await self._session.scalar(
+            select(DocumentVersionModel).where(
+                DocumentVersionModel.local_source_id == local_source_id,
+                DocumentVersionModel.content_sha256 == content_sha256,
+            )
+        )
+        return None if model is None else self._version_to_domain(model)
+
+    async def next_local_version(self, local_source_id: UUID) -> int:
+        value = await self._session.scalar(
+            select(func.coalesce(func.max(DocumentVersionModel.version), 0)).where(
+                DocumentVersionModel.local_source_id == local_source_id
+            )
+        )
+        return int(value or 0) + 1
 
     async def find_feishu_document(
         self, *, authorization_id: UUID, document_token: str
@@ -2901,6 +3246,7 @@ class SqlAlchemyDocumentRepository:
                 id=version.id,
                 attachment_id=version.attachment_id,
                 feishu_document_id=version.feishu_document_id,
+                local_source_id=version.local_source_id,
                 version=version.version,
                 content_sha256=version.content_sha256,
                 file_name=version.file_name,
@@ -2977,6 +3323,7 @@ class SqlAlchemyDocumentRepository:
                     extraction_id=value.extraction_id,
                     attachment_id=value.attachment_id,
                     feishu_document_id=value.feishu_document_id,
+                    local_source_id=value.local_source_id,
                     page_number=value.page_number,
                     paragraph_number=value.paragraph_number,
                     start_offset=value.start_offset,
@@ -3116,12 +3463,36 @@ class SqlAlchemyDocumentRepository:
             )
         return values
 
+    async def list_segments_for_version(
+        self, document_version_id: UUID
+    ) -> Sequence[DocumentSegment]:
+        models = (
+            (
+                await self._session.execute(
+                    select(DocumentSegmentModel)
+                    .join(
+                        DocumentExtractionModel,
+                        DocumentExtractionModel.id == DocumentSegmentModel.extraction_id,
+                    )
+                    .where(
+                        DocumentExtractionModel.document_version_id == document_version_id,
+                        DocumentExtractionModel.status == DocumentExtractionStatus.SUCCEEDED,
+                    )
+                    .order_by(DocumentSegmentModel.paragraph_number)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        return [self._segment_to_domain(model) for model in models]
+
     @staticmethod
     def _version_to_domain(model: DocumentVersionModel) -> DocumentVersion:
         return DocumentVersion(
             id=model.id,
             attachment_id=model.attachment_id,
             feishu_document_id=model.feishu_document_id,
+            local_source_id=model.local_source_id,
             version=model.version,
             content_sha256=model.content_sha256,
             file_name=model.file_name,
@@ -3129,6 +3500,52 @@ class SqlAlchemyDocumentRepository:
             size=model.size,
             local_path=model.local_path,
             created_at=model.created_at,
+        )
+
+    @staticmethod
+    def _segment_to_domain(model: DocumentSegmentModel) -> DocumentSegment:
+        return DocumentSegment(
+            id=model.id,
+            extraction_id=model.extraction_id,
+            attachment_id=model.attachment_id,
+            feishu_document_id=model.feishu_document_id,
+            local_source_id=model.local_source_id,
+            page_number=model.page_number,
+            paragraph_number=model.paragraph_number,
+            start_offset=model.start_offset,
+            end_offset=model.end_offset,
+            content=model.content,
+            content_hash=model.content_hash,
+            created_at=model.created_at,
+        )
+
+    @staticmethod
+    def _local_source_to_domain(model: LocalDocumentSourceModel) -> LocalDocumentSource:
+        return LocalDocumentSource(
+            id=model.id,
+            source_root_key=model.source_root_key,
+            relative_path=model.relative_path,
+            display_name=model.display_name,
+            status=model.status,
+            last_seen_at=model.last_seen_at,
+            created_at=model.created_at,
+            updated_at=model.updated_at,
+            version=model.version,
+        )
+
+    @staticmethod
+    def _local_observation_to_domain(
+        model: LocalDocumentObservationModel,
+    ) -> LocalDocumentObservation:
+        return LocalDocumentObservation(
+            id=model.id,
+            local_source_id=model.local_source_id,
+            scan_id=model.scan_id,
+            document_version_id=model.document_version_id,
+            content_sha256=model.content_sha256,
+            size=model.size,
+            modified_at_ns=model.modified_at_ns,
+            observed_at=model.observed_at,
         )
 
     @staticmethod

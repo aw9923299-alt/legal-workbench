@@ -187,6 +187,8 @@ async def recover_pending_jobs(
         "missingRunsRequeued": result.missing_runs_requeued,
         "staleRunsRequeued": result.stale_runs_requeued,
         "deadLettered": result.dead_lettered,
+        "legalRunsRequeued": result.legal_runs_requeued,
+        "legalDeadLettered": result.legal_dead_lettered,
     }
     async with uow_factory() as uow:
         await uow.lock_idempotency(operation=operation, key=idempotency_key)

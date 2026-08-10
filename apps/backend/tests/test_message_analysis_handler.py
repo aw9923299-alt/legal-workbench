@@ -249,6 +249,8 @@ class AttemptRepository:
         )
         if attempt is None:
             return False
+        if attempt.lease_expires_at > finished_at:
+            return False
         attempt.expire(now=finished_at)
         return True
 
@@ -1063,7 +1065,7 @@ class LateWorkerRuntime(FakeRuntime):
                 lease_expires_at=datetime.now(UTC) + timedelta(seconds=60),
             )
             self.state.attempts.append(first)
-        first.expire(now=datetime.now(UTC))
+        first.expire(now=first.lease_expires_at + timedelta(microseconds=1))
         run.attempt_number += 1
         self.state.attempts.append(
             AgentRunAttempt.start(

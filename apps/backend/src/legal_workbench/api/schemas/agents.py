@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 from uuid import UUID
 
 from pydantic import Field
@@ -78,6 +78,7 @@ class AgentRunResponse(ApiModel):
     plan_step_id: UUID | None
     parent_run_id: UUID | None
     retry_of_run_id: UUID | None
+    dependency_run_ids: list[UUID]
     run_role: AgentRunRole
 
 
@@ -139,6 +140,7 @@ class LegalAgentRequest(ApiModel):
     work_item_id: UUID | None = None
     context_snapshot_id: UUID | None = None
     jurisdiction: str = Field(default="CN", min_length=2, max_length=40)
+    historical_as_of: date | None = None
 
 
 class LegalAgentRequestAcceptedResponse(ApiModel):
@@ -167,6 +169,7 @@ class AgentPlanStepResponse(ApiModel):
     context_requirements: list[str]
     status: AgentPlanStepStatus
     latest_run_id: UUID | None
+    latest_valid_run_id: UUID | None
     attempt_count: int
     failure_code: str | None
     failure_message: str | None
@@ -183,6 +186,8 @@ class AgentExecutionPlanResponse(ApiModel):
     missing_information: list[str]
     requires_user_input: bool
     correlation_id: str
+    analysis_effective_date: date
+    historical_as_of: date | None
     planning_run_id: UUID | None
     synthesis_run_id: UUID | None
     steps: list[AgentPlanStepResponse]

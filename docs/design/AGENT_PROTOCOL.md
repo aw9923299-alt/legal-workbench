@@ -6,10 +6,10 @@
 
 ### 1.1 实现状态
 
-- **已实现**：持久化 AgentDefinition/AgentRun/AgentRunSource/DraftArtifact，以及 `message_judgement@2.2.0`、严格 Codex Structured Output Schema、CLI 版本/显式隔离认证健康检查、一次受控修复、状态事件、Worker 租约、Candidate revision、附件片段引用、Celery 调度和 PostgreSQL 恢复。
+- **已实现**：持久化 AgentDefinition/AgentRun/Attempt/Source/DraftArtifact，`message_judgement@2.2.0`，Legal Butler Planning/Synthesis，五个受控 Specialist Schema 与 DAG 编排，PostgreSQL 法律知识检索和引用审计，以及 pending ReviewPackage。运行层包含严格 Codex Structured Output、隔离认证健康检查、受控修复、Worker lease/CAS fencing、Candidate revision、附件片段引用、Celery/Outbox 调度和 PostgreSQL 恢复。
 - **部分实现**：容器模式使用专用 UID、最小环境变量和工作目录约束；宿主机模式不具备可证明的 OS 级读取白名单。
 - **占位实现**：DraftArtifact 本轮仅建模，未开发通用产物 UI。
-- **尚未实现**：事项归并、任务规划、优先级建议、结果汇总、知识检索和所有专业 Agent。本文中对这些 Agent 的约束是后续设计要求，不代表已上线。
+- **尚未实现**：AI 事项归并、通用优先级建议、日报/学习闭环及自动外发；Real Codex E2E 仍是独立凭证门禁，不以默认 Fake Runtime 测试代替。
 
 ## 2. Agent 分层
 
@@ -295,17 +295,20 @@ interface Finding {
 
 ```ts
 interface Citation {
-  id: string;
-  sourceType: 'message' | 'file' | 'knowledge_chunk' | 'upstream_agent';
-  sourceId: string;
+  sourceRef: string;
+  sourceType: 'context_snapshot' | 'feishu_message' | 'attachment' | 'knowledge_document' | 'historical_matter' | 'approved_example';
   locator?: string;
-  excerptHash: string;
+  contentHash?: string;
   title: string;
-  effectiveStatus?: 'effective' | 'expired' | 'draft' | 'unknown';
+  internalPrecedent: boolean;
+  authorityType?: string;
+  authorityRole?: string;
+  authorityStatus?: 'effective' | 'superseded' | 'repealed' | 'unknown';
+  jurisdiction?: string;
 }
 ```
 
-前端应可从引用跳转至授权范围内的原始位置。
+模型只能选择 authorized `sourceRef`；服务端从持久化来源重建其余 citation 元数据，不能信任模型自报 title、locator、hash 或 authority。前端应可从引用跳转至授权范围内的原始位置。
 
 ## 7. Agent 停止条件
 
@@ -323,36 +326,13 @@ interface Citation {
 
 ## 8. 执行计划
 
-### 8.1 顺序执行
+Butler Planning 只能在五个已注册 Specialist 中生成最多四步的无环 DAG。确定性编排器按拓扑波次运行：每个 Step 只获得自身 Context Builder 结果、直接依赖的 latest-valid 输出，以及这些依赖 Run 已持久化的原始授权来源；兄弟 Step 和旧依赖 Run 不得泄漏。
 
-```text
-Knowledge Search → Contract Agent → Reply Agent
-```
+每个 Specialist Run 固定保存 `dependencyRunIds`。单 Step rerun 必须在 Plan/Step 行锁内确认目标仍是 current Run、直接依赖仍是 current valid lineage，并原子设置新的 `latestRunId`；同一 Plan 不允许并发 rerun。上游重跑会把依赖旧 Run 的下游标记 `STALE_DEPENDENCY_RUN`，其旧输出和来源从新 synthesis 中排除，直到下游显式重跑。
 
-### 8.2 并行执行
+Planning、Specialist、Synthesis 的成功或失败只能更新当前 Plan/Step 指向的 Run。Attempt lease 过期恢复必须通过数据库 CAS；recovery 在重排前必须再次锁定并核验 current Run。旧 Worker、续租竞态或已被替代的 Run 只终止并保留历史审计，不能覆盖当前结果或产生恢复 Outbox。可重试 Specialist 仍为 `RUNNING` 时不得持久化依赖失败，也不得提前启动 synthesis；恢复后只有全部 Step 到达确定性终态才可综合。
 
-```text
-Contract Agent ─┐
-HR Agent ───────┼→ Result Synthesizer
-Dispute Agent ──┘
-```
-
-### 8.3 条件执行
-
-```text
-若合同 Agent 标记 possible_employment_relationship
-→ 调用人力 Agent
-```
-
-### 8.4 冲突处理
-
-当不同 Agent 结论冲突：
-
-1. `AgentExecutionPlan` 进入 `paused`；
-2. 结果汇总 Agent列出冲突，不作最终选择；
-3. 创建 `ReviewPackage(type=agent_result)`；
-4. 法务确认采用结论和原因；
-5. 编排器根据确认结果继续。
+冲突由 Butler Synthesis 显式列入 `conflicts`，最终只创建 pending `ReviewPackage` 供法务选择；Agent 不得自行修改 Matter/WorkItem 或发送 Communication。
 
 ## 9. 回复 Agent 约束
 

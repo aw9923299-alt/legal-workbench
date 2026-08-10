@@ -19,7 +19,7 @@ function run(status: AgentRunRecord['status']): AgentRunRecord {
     correlationId: 'corr-run', createdBy: 'system', createdAt: '2026-08-01T10:00:00Z',
     updatedAt: '2026-08-01T10:00:00Z', version: 1, sources: [], statusEvents: [], candidateId: null,
     matterId: null, workItemId: null, executionPlanId: null, planStepId: null,
-    parentRunId: null, retryOfRunId: null, runRole: 'standalone',
+    parentRunId: null, retryOfRunId: null, dependencyRunIds: [], runRole: 'standalone',
   };
 }
 

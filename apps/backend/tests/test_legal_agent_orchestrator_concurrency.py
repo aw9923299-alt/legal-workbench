@@ -8,10 +8,13 @@ import pytest
 
 from legal_workbench.application.legal_agent_orchestrator import (
     SpecialistStepExecution,
+    ensure_current_step_run,
+    ensure_current_synthesis_run,
     execute_plan_waves,
 )
 from legal_workbench.domain.entities import AgentExecutionPlan, AgentPlanStep
 from legal_workbench.domain.enums import AgentExecutionPlanStatus, AgentPlanStepStatus
+from legal_workbench.domain.errors import StaleAgentAttemptError
 
 
 @pytest.mark.asyncio
@@ -150,3 +153,50 @@ async def test_failed_dependency_is_skipped_without_invoking_runner() -> None:
     assert invoked == ["first"]
     assert results[1].status == AgentPlanStepStatus.SKIPPED
     assert results[1].failure_code == "DEPENDENCY_FAILED"
+
+
+def test_stale_specialist_completion_cannot_replace_current_step_run() -> None:
+    current_run_id = uuid4()
+    stale_run_id = uuid4()
+    step = AgentPlanStep(
+        id=uuid4(),
+        execution_plan_id=uuid4(),
+        step_id="contract",
+        sequence=1,
+        agent_key="contract_review",
+        objective="合同审查",
+        depends_on=[],
+        context_requirements=[],
+        status=AgentPlanStepStatus.RUNNING,
+        latest_run_id=current_run_id,
+    )
+
+    with pytest.raises(StaleAgentAttemptError, match="no longer current"):
+        ensure_current_step_run(step, stale_run_id)
+
+    ensure_current_step_run(step, current_run_id)
+
+
+def test_stale_synthesis_completion_cannot_replace_current_plan_run() -> None:
+    current_run_id = uuid4()
+    stale_run_id = uuid4()
+    plan = AgentExecutionPlan(
+        id=uuid4(),
+        matter_id=uuid4(),
+        work_item_id=None,
+        objective="综合结论",
+        status=AgentExecutionPlanStatus.RUNNING,
+        task_types=["contract"],
+        synthesis_strategy="综合",
+        missing_information=[],
+        requires_user_input=False,
+        correlation_id="stale-synthesis",
+        idempotency_key="stale-synthesis",
+        created_by="test",
+        synthesis_run_id=current_run_id,
+    )
+
+    with pytest.raises(StaleAgentAttemptError, match="no longer current"):
+        ensure_current_synthesis_run(plan, stale_run_id)
+
+    ensure_current_synthesis_run(plan, current_run_id)

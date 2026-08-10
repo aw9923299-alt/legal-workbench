@@ -311,12 +311,20 @@ interface LegalAgentRequest {
     | 'ip_copyright'
     | 'labor_employment';
   jurisdiction?: string;
+  /** 仅由调用方显式开启；贯通幂等哈希、Outbox、Plan 与恢复执行。 */
+  historicalAsOf?: string; // ISO 8601 date
 }
 ```
 
 写接口要求认证 Session、`Idempotency-Key` 和 Correlation ID，返回 `202`；同一幂等键重放返回原请求。API 只登记确定性 Outbox 请求，不在 HTTP 事务中运行 Codex。
 
 Butler Planning 输出经后端校验后才持久化：只允许五个注册专业 Agent、最多四步、Step ID 唯一、依赖必须存在且 DAG 无环。运行响应包含 `executionPlanId`、`planStepId`、`parentRunId`、`retryOfRunId` 和 `runRole`，用于完整 Parent/Child 审计。单 Step 重跑只允许已存在的 Specialist Step，并创建新的 Child AgentRun；Agent 本身不能调用该接口。
+
+Planning、Specialist 和 Synthesis 与 `message_judgement` 复用同一 Attempt/Lease/Fencing/Heartbeat 能力。每次真实 Runtime 均按 `QUEUED → PREPARING → RUNNING → VALIDATING → terminal` 迁移并持有 `AgentRunAttempt`。PostgreSQL recovery scan 只恢复最小未完成单元；过期 owner 的 lease token 不能提交结果，达到最大次数后进入失败/死信并保留部分成功。
+
+下游 Step 只接收 `depends_on` 直接依赖的 latest valid Run 输出与这些 Run 的原始授权来源；`COMPLETED/NEEDS_INFORMATION` 有效，`FAILED/SKIPPED` 无效。普通执行和 `rerun` 使用同一依赖重建器，兄弟 Step 输出不会泄漏，依赖变更后的旧下游输出会标记 stale 并从 synthesis 排除。
+
+Plan 查询响应公开 `analysisEffectiveDate`、`historicalAsOf`；Step 公开 `latestRunId` 与 `latestValidRunId`；每个 Run 公开 `dependencyRunIds`。`analysisEffectiveDate` 是 Plan 创建时冻结的当前法执行日期，跨日 retry/recovery/rerun 不变化；只有请求中的显式 `historicalAsOf` 才开启历史法律适用语义。并发 rerun 必须先在数据库行锁内验证 current Plan/Step/依赖 lineage 并保留新 Run，stale completion 不能更新 Step、Plan、Artifact 或 ReviewPackage。
 
 计划完成后由编排器创建 `DraftArtifact` 与 pending `ReviewPackage`。接口不会修改 Matter/WorkItem，也不会创建或发送 Communication。
 
@@ -350,6 +358,8 @@ interface ApproveWithEditsRequest {
 
 服务端重新计算批准版本哈希，并生成不可变 `ReviewRecord`。
 
+`ReviewPackage` 响应包含结构化 `groundingPayload`，分别保留核心事实、法律问题、综合风险、建议策略、下一步和冲突的逐项原始 source/support refs。任何不属于最终 authorized source union 的引用会在 Runtime 校验阶段 fail closed；审核中心可点击引用查看来源标题、定位和内容哈希。
+
 ## 10. 外发接口
 
 ```http
@@ -382,17 +392,14 @@ interface SendApprovedCommunicationRequest {
 ## 11. 知识库接口
 
 ```http
-GET    /api/v1/knowledge/directories
-POST   /api/v1/knowledge/directories
-POST   /api/v1/knowledge/directories/:id/rescan
-GET    /api/v1/knowledge/documents
-GET    /api/v1/knowledge/documents/:id
-PATCH  /api/v1/knowledge/documents/:id
-POST   /api/v1/knowledge/documents/:id/approve
-POST   /api/v1/knowledge/documents/:id/expire
-POST   /api/v1/knowledge/documents/:id/reindex
-GET    /api/v1/knowledge/search-audit
+GET   /api/v1/knowledge/documents?authorityType=&metadataStatus=&enabled=&limit=
+GET   /api/v1/knowledge/documents/:id
+PATCH /api/v1/knowledge/documents/:id/metadata
 ```
+
+详情响应包含文档 authority 元数据、完整 Chunk（locator、hash、Token 估算）和选择过该 Chunk 的检索日志摘要。普通响应只使用稳定 source/document/version ID，不返回本地绝对路径。
+
+元数据写入要求认证 Actor、`If-Match`、`Idempotency-Key` 和 Correlation ID。`authorityRole` 不能自由指定，必须匹配服务端 type-to-role 确定性映射；成功写入与 Audit/幂等记录在同一 UoW 提交。允许人工修改 title、authority type/status、法域、生效/失效日期、发布主体、文号和检索启停状态。
 
 检索内部接口：
 

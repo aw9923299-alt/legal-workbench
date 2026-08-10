@@ -37,6 +37,11 @@ import type {
   FeishuDocumentSearchResult,
   FeishuDocumentImportResult,
   FeishuFolderSubscription,
+  KnowledgeDocument,
+  KnowledgeDocumentDetails,
+  AuthorityRole,
+  AuthorityStatus,
+  AuthorityType,
 } from '../types/api';
 
 export const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? '/api/v1';
@@ -662,7 +667,8 @@ export const legalApi = {
   },
 
   recoverPendingJobs(mutation?: MutationContext): Promise<{
-    missingRunsRequeued: number; staleRunsRequeued: number; deadLettered: number; idempotentReplay: boolean;
+    missingRunsRequeued: number; staleRunsRequeued: number; deadLettered: number;
+    legalRunsRequeued: number; legalDeadLettered: number; idempotentReplay: boolean;
   }> {
     return request('/system/recover-pending-jobs', { method: 'POST' }, { write: true, mutation });
   },
@@ -695,6 +701,46 @@ export const legalApi = {
 
   listMatters(): Promise<LegalMatter[]> {
     return request('/matters?limit=100');
+  },
+
+  listKnowledgeDocuments(filters: {
+    authorityType?: AuthorityType;
+    metadataStatus?: 'ready' | 'pending_metadata';
+    enabled?: boolean;
+  } = {}): Promise<KnowledgeDocument[]> {
+    const query = new URLSearchParams({ limit: '200' });
+    if (filters.authorityType) query.set('authorityType', filters.authorityType);
+    if (filters.metadataStatus) query.set('metadataStatus', filters.metadataStatus);
+    if (filters.enabled !== undefined) query.set('enabled', String(filters.enabled));
+    return request(`/knowledge/documents?${query.toString()}`);
+  },
+
+  getKnowledgeDocument(documentId: string): Promise<KnowledgeDocumentDetails> {
+    return request(`/knowledge/documents/${documentId}`);
+  },
+
+  updateKnowledgeMetadata(
+    documentId: string,
+    version: number,
+    input: {
+      title: string;
+      authorityType: AuthorityType;
+      authorityRole: AuthorityRole | null;
+      authorityStatus: AuthorityStatus;
+      jurisdiction: string;
+      effectiveFrom: string | null;
+      effectiveTo: string | null;
+      issuer: string | null;
+      documentNumber: string | null;
+      enabled: boolean;
+    },
+    mutation?: MutationContext,
+  ): Promise<{ documentId: string; version: number; idempotentReplay: boolean }> {
+    return request(`/knowledge/documents/${documentId}/metadata`, {
+      method: 'PATCH',
+      headers: { 'If-Match': String(version) },
+      body: JSON.stringify(input),
+    }, { write: true, mutation });
   },
 
   getMatter(matterId: string): Promise<LegalMatter> {

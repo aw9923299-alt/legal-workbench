@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import PurePosixPath
 from uuid import UUID, uuid4
 
 from legal_workbench.domain.common import (
@@ -10,6 +11,8 @@ from legal_workbench.domain.common import (
 )
 from legal_workbench.domain.enums import (
     DocumentExtractionStatus,
+    LocalDocumentSourceStatus,
+    LocalKnowledgeScanStatus,
 )
 from legal_workbench.domain.errors import (
     DomainValidationError,
@@ -60,6 +63,7 @@ class DocumentVersion:
     size: int
     local_path: str
     feishu_document_id: UUID | None = None
+    local_source_id: UUID | None = None
     created_at: datetime = field(default_factory=utc_now)
 
     def __post_init__(self) -> None:
@@ -67,7 +71,11 @@ class DocumentVersion:
             raise DomainValidationError("Document version metadata is invalid.")
         if len(self.content_sha256) != 64:
             raise DomainValidationError("Document version SHA-256 is invalid.")
-        if (self.attachment_id is None) == (self.feishu_document_id is None):
+        source_count = sum(
+            source_id is not None
+            for source_id in (self.attachment_id, self.feishu_document_id, self.local_source_id)
+        )
+        if source_count != 1:
             raise DomainValidationError("Document version must have exactly one source.")
 
 
@@ -124,6 +132,7 @@ class DocumentSegment:
     content: str
     content_hash: str
     feishu_document_id: UUID | None = None
+    local_source_id: UUID | None = None
     created_at: datetime = field(default_factory=utc_now)
 
     @classmethod
@@ -134,6 +143,7 @@ class DocumentSegment:
         attachment_id: UUID | None,
         segment: ExtractedSegment,
         feishu_document_id: UUID | None = None,
+        local_source_id: UUID | None = None,
     ) -> DocumentSegment:
         return cls(
             id=uuid4(),
@@ -146,7 +156,104 @@ class DocumentSegment:
             content=segment.content,
             content_hash=segment.content_hash,
             feishu_document_id=feishu_document_id,
+            local_source_id=local_source_id,
         )
+
+
+@dataclass(slots=True)
+class LocalDocumentSource:
+    id: UUID
+    source_root_key: str
+    relative_path: str
+    display_name: str
+    status: LocalDocumentSourceStatus = LocalDocumentSourceStatus.ACTIVE
+    last_seen_at: datetime | None = None
+    created_at: datetime = field(default_factory=utc_now)
+    updated_at: datetime = field(default_factory=utc_now)
+    version: int = 1
+
+    def __post_init__(self) -> None:
+        path = PurePosixPath(self.relative_path)
+        if (
+            not self.source_root_key.strip()
+            or not self.relative_path.strip()
+            or not self.display_name.strip()
+            or path.is_absolute()
+            or ".." in path.parts
+        ):
+            raise DomainValidationError("Local document relative path and identity are invalid.")
+        if self.version < 1:
+            raise DomainValidationError("Local document source version is invalid.")
+
+    def mark_seen(self, *, now: datetime | None = None) -> None:
+        timestamp = now or utc_now()
+        self.status = LocalDocumentSourceStatus.ACTIVE
+        self.last_seen_at = timestamp
+        self.updated_at = timestamp
+        self.version += 1
+
+    def mark_missing(self, *, now: datetime | None = None) -> None:
+        if self.status == LocalDocumentSourceStatus.DISABLED:
+            return
+        self.status = LocalDocumentSourceStatus.MISSING
+        self.updated_at = now or utc_now()
+        self.version += 1
+
+
+@dataclass(frozen=True, slots=True)
+class LocalDocumentObservation:
+    id: UUID
+    local_source_id: UUID
+    scan_id: UUID
+    content_sha256: str
+    size: int
+    modified_at_ns: int
+    document_version_id: UUID | None = None
+    observed_at: datetime = field(default_factory=utc_now)
+
+    def __post_init__(self) -> None:
+        if len(self.content_sha256) != 64 or self.size < 0 or self.modified_at_ns < 0:
+            raise DomainValidationError("Local document observation metadata is invalid.")
+
+
+@dataclass(slots=True)
+class LocalKnowledgeScan:
+    id: UUID
+    source_root_key: str
+    correlation_id: str
+    status: LocalKnowledgeScanStatus = LocalKnowledgeScanStatus.RUNNING
+    discovered_count: int = 0
+    unchanged_count: int = 0
+    imported_count: int = 0
+    deduplicated_count: int = 0
+    failed_count: int = 0
+    unsupported_count: int = 0
+    missing_count: int = 0
+    started_at: datetime = field(default_factory=utc_now)
+    finished_at: datetime | None = None
+
+    def __post_init__(self) -> None:
+        counts = (
+            self.discovered_count,
+            self.unchanged_count,
+            self.imported_count,
+            self.deduplicated_count,
+            self.failed_count,
+            self.unsupported_count,
+            self.missing_count,
+        )
+        if not self.source_root_key.strip() or not self.correlation_id.strip() or any(
+            count < 0 for count in counts
+        ):
+            raise DomainValidationError("Local knowledge scan metadata is invalid.")
+
+    def finish(self, *, now: datetime | None = None) -> None:
+        self.status = (
+            LocalKnowledgeScanStatus.COMPLETED
+            if self.failed_count == 0
+            else LocalKnowledgeScanStatus.PARTIAL
+        )
+        self.finished_at = now or utc_now()
 
 
 @dataclass(slots=True)

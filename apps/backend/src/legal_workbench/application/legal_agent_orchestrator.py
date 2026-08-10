@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -13,7 +13,11 @@ from legal_workbench.agents.legal_butler import (
     ButlerPlanningOutput,
     ButlerSynthesisOutput,
 )
-from legal_workbench.agents.legal_contracts import LEGAL_OUTPUT_MODELS, LegalWorkProduct
+from legal_workbench.agents.legal_contracts import (
+    LEGAL_OUTPUT_MODELS,
+    LegalWorkProduct,
+    validate_legal_work_product_sources,
+)
 from legal_workbench.agents.professional import LEGAL_SPECIALIST_KEYS
 from legal_workbench.agents.runtime import (
     AgentExecutionContext,
@@ -21,22 +25,31 @@ from legal_workbench.agents.runtime import (
     AgentRuntime,
     AgentRuntimeError,
 )
+from legal_workbench.application.agent_attempts import AgentExecutionLeaseService
 from legal_workbench.application.legal_context import (
     AuthorizedLegalContext,
     LegalContextBuilder,
 )
+from legal_workbench.application.legal_dependencies import (
+    DependencyContext,
+    DependencyContextAssembler,
+    DependencyResult,
+)
 from legal_workbench.application.ports import UnitOfWorkFactory
 from legal_workbench.domain.common import utc_now
 from legal_workbench.domain.entities import (
+    AgentAttemptLease,
     AgentExecutionPlan,
     AgentPlanStep,
     AgentRun,
     AgentRunSource,
     ContextSnapshot,
     DraftArtifact,
+    OutboxEvent,
     ReviewPackage,
 )
 from legal_workbench.domain.enums import (
+    AgentAttemptStatus,
     AgentExecutionPlanStatus,
     AgentPlanStepStatus,
     AgentRunRole,
@@ -47,6 +60,8 @@ from legal_workbench.domain.enums import (
 from legal_workbench.domain.errors import (
     DomainValidationError,
     EntityNotFoundError,
+    InvalidStateTransitionError,
+    StaleAgentAttemptError,
 )
 
 
@@ -62,6 +77,8 @@ class LegalAgentTrigger:
     special_requirements: str | None = None
     specialist_only: str | None = None
     jurisdiction: str = "CN"
+    analysis_effective_date: date | None = None
+    historical_as_of: date | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,6 +92,7 @@ class SpecialistStepExecution:
     failure_message: str | None = None
     source_refs: frozenset[str] = frozenset()
     internal_precedent_refs: frozenset[str] = frozenset()
+    source_authorities: dict[str, dict[str, object]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,6 +112,37 @@ class _ExistingPlanFound(Exception):
     plan: AgentExecutionPlan
 
 
+def ensure_current_step_run(step: AgentPlanStep, run_id: UUID) -> None:
+    if step.latest_run_id != run_id:
+        raise StaleAgentAttemptError(
+            "The Specialist Run is no longer current for this Step.",
+            details={
+                "planId": str(step.execution_plan_id),
+                "stepId": step.step_id,
+                "runId": str(run_id),
+                "currentRunId": (
+                    str(step.latest_run_id) if step.latest_run_id is not None else None
+                ),
+            },
+        )
+
+
+def ensure_current_synthesis_run(plan: AgentExecutionPlan, run_id: UUID) -> None:
+    if plan.synthesis_run_id != run_id:
+        raise StaleAgentAttemptError(
+            "The Butler synthesis Run is no longer current for this Plan.",
+            details={
+                "planId": str(plan.id),
+                "runId": str(run_id),
+                "currentRunId": (
+                    str(plan.synthesis_run_id)
+                    if plan.synthesis_run_id is not None
+                    else None
+                ),
+            },
+        )
+
+
 StepRunner = Callable[
     [AgentPlanStep, dict[str, SpecialistStepExecution]],
     Awaitable[SpecialistStepExecution],
@@ -103,13 +152,17 @@ StepRunner = Callable[
 async def execute_plan_waves(
     plan: AgentExecutionPlan,
     runner: StepRunner,
+    *,
+    initial_results: tuple[SpecialistStepExecution, ...] = (),
 ) -> list[SpecialistStepExecution]:
     """Execute deterministic topological waves; only tasks in one wave overlap."""
 
-    results: dict[str, SpecialistStepExecution] = {}
+    results = {value.step_id: value for value in initial_results}
     for wave in plan.ready_waves():
         runnable: list[AgentPlanStep] = []
         for step in wave:
+            if step.step_id in results:
+                continue
             dependency_results = [results[value] for value in step.depends_on]
             if any(
                 value.status
@@ -150,12 +203,22 @@ class LegalAgentOrchestrator:
         context_builder: LegalContextBuilder,
         *,
         runs_root: str | Path,
+        lease_seconds: int = 60,
+        worker_id: str = "legal-agent-worker",
+        timeout_seconds: int = 180,
+        analysis_date_provider: Callable[[], date] | None = None,
     ) -> None:
         self._uow_factory = uow_factory
         self._runtime = runtime
         self._context_builder = context_builder
         self._runs_root = Path(runs_root)
-        self._definitions = build_legal_agent_definitions()
+        self._lease_seconds = lease_seconds
+        self._worker_id = worker_id
+        self._analysis_date_provider = analysis_date_provider or date.today
+        self._definitions = build_legal_agent_definitions(
+            timeout_seconds=timeout_seconds
+        )
+        self._dependency_assembler = DependencyContextAssembler()
 
     async def execute(self, trigger: LegalAgentTrigger) -> LegalAgentOrchestrationResult:
         existing = await self._get_existing(trigger.idempotency_key)
@@ -165,6 +228,193 @@ class LegalAgentOrchestrator:
             plan, planning_run, snapshot, matter_type = await self._prepare_planning(trigger)
         except _ExistingPlanFound as found:
             return await self._replay_result(found.plan)
+        accepted_plan = await self._run_planning_phase(
+            plan=plan,
+            planning_run=planning_run,
+            snapshot=snapshot,
+            trigger=trigger,
+        )
+        if accepted_plan is None:
+            return self._failed_result(plan, planning_run.id)
+        plan = accepted_plan
+
+        async def runner(
+            step: AgentPlanStep,
+            completed: dict[str, SpecialistStepExecution],
+        ) -> SpecialistStepExecution:
+            dependency_context = self._dependency_assembler.build(
+                step,
+                self._dependency_results(completed),
+            )
+            return await self._execute_step(
+                plan=plan,
+                step=step,
+                snapshot=snapshot,
+                trigger=trigger,
+                matter_type=matter_type,
+                dependency_context=dependency_context,
+            )
+
+        step_results = await execute_plan_waves(plan, runner)
+        if self._has_pending_step_retry(step_results):
+            return self._pending_result(plan, step_results)
+        await self._persist_skipped_steps(plan.id, step_results)
+        return await self._synthesize(
+            plan=plan,
+            snapshot=snapshot,
+            trigger=trigger,
+            step_results=step_results,
+        )
+
+    async def recover(
+        self,
+        *,
+        plan_id: UUID,
+        correlation_id: str | None = None,
+    ) -> LegalAgentOrchestrationResult:
+        """Resume only the durable Legal Agent phase queued by recovery scan."""
+
+        async with self._uow_factory() as uow:
+            await uow.lock_idempotency(
+                operation="legal_agent_recovery",
+                key=str(plan_id),
+            )
+            plan = await uow.agent_execution_plans.get_for_update(plan_id)
+            if plan is None or plan.planning_run_id is None:
+                raise EntityNotFoundError("Recoverable Agent execution plan was not found.")
+            planning_run = await uow.agent_runs.get(plan.planning_run_id)
+            if planning_run is None:
+                raise EntityNotFoundError("Recoverable Butler planning run was not found.")
+            snapshot = await uow.context_snapshots.get(planning_run.context_snapshot_id)
+            matter = await uow.matters.get(plan.matter_id)
+            runs = list(await uow.agent_runs.list_by_plan(plan.id))
+            if snapshot is None or matter is None:
+                raise EntityNotFoundError("Recoverable Legal Agent context was not found.")
+            await uow.commit()
+
+        if plan.status in {
+            AgentExecutionPlanStatus.COMPLETED,
+            AgentExecutionPlanStatus.NEEDS_INFORMATION,
+            AgentExecutionPlanStatus.CANCELLED,
+        }:
+            return await self._replay_result(plan)
+        active = {
+            AgentRunStatus.PREPARING,
+            AgentRunStatus.RUNNING,
+            AgentRunStatus.VALIDATING,
+        }
+        if any(run.status in active for run in runs):
+            return await self._replay_result(plan)
+
+        trigger = LegalAgentTrigger(
+            matter_id=plan.matter_id,
+            work_item_id=plan.work_item_id,
+            context_snapshot_id=snapshot.id,
+            objective=plan.objective,
+            actor_id=plan.created_by,
+            correlation_id=correlation_id or plan.correlation_id,
+            idempotency_key=plan.idempotency_key,
+            jurisdiction=plan.analysis_jurisdiction,
+            analysis_effective_date=plan.analysis_effective_date,
+            historical_as_of=plan.historical_as_of,
+        )
+        if planning_run.status == AgentRunStatus.QUEUED:
+            accepted = await self._run_planning_phase(
+                plan=plan,
+                planning_run=planning_run,
+                snapshot=snapshot,
+                trigger=trigger,
+            )
+            if accepted is None:
+                return self._failed_result(plan, planning_run.id)
+            plan = accepted
+        elif planning_run.status not in {
+            AgentRunStatus.COMPLETED,
+            AgentRunStatus.NEEDS_MORE_INFORMATION,
+        }:
+            return await self._replay_result(plan)
+
+        await self._invalidate_stale_dependents(plan.id)
+        async with self._uow_factory() as uow:
+            refreshed_plan = await uow.agent_execution_plans.get(plan.id)
+        if refreshed_plan is None:
+            raise EntityNotFoundError("Agent execution plan disappeared during recovery.")
+        plan = refreshed_plan
+        persisted_results = await self._list_step_results(plan.id)
+        initial_results = tuple(
+            value
+            for value in persisted_results
+            if value.status
+            in {
+                AgentPlanStepStatus.COMPLETED,
+                AgentPlanStepStatus.NEEDS_INFORMATION,
+                AgentPlanStepStatus.FAILED,
+                AgentPlanStepStatus.SKIPPED,
+            }
+        )
+        runs_by_id = {run.id: run for run in runs}
+
+        async def runner(
+            step: AgentPlanStep,
+            completed: dict[str, SpecialistStepExecution],
+        ) -> SpecialistStepExecution:
+            dependency_context = self._dependency_assembler.build(
+                step,
+                self._dependency_results(completed),
+            )
+            latest = runs_by_id.get(step.latest_run_id) if step.latest_run_id else None
+            existing_run = (
+                latest
+                if latest is not None
+                and latest.status == AgentRunStatus.QUEUED
+                and latest.run_role == AgentRunRole.SPECIALIST
+                else None
+            )
+            return await self._execute_step(
+                plan=plan,
+                step=step,
+                snapshot=snapshot,
+                trigger=trigger,
+                matter_type=matter.primary_category.value,
+                dependency_context=dependency_context,
+                existing_run=existing_run,
+            )
+
+        step_results = await execute_plan_waves(
+            plan,
+            runner,
+            initial_results=initial_results,
+        )
+        if self._has_pending_step_retry(step_results):
+            return self._pending_result(plan, step_results)
+        await self._persist_skipped_steps(plan.id, step_results)
+        synthesis_run = next(
+            (
+                run
+                for run in runs
+                if run.run_role == AgentRunRole.BUTLER_SYNTHESIS
+                and run.status == AgentRunStatus.QUEUED
+                and run.id == plan.synthesis_run_id
+            ),
+            None,
+        )
+        return await self._synthesize(
+            plan=plan,
+            snapshot=snapshot,
+            trigger=trigger,
+            step_results=step_results,
+            existing_run=synthesis_run,
+        )
+
+    async def _run_planning_phase(
+        self,
+        *,
+        plan: AgentExecutionPlan,
+        planning_run: AgentRun,
+        snapshot: ContextSnapshot,
+        trigger: LegalAgentTrigger,
+    ) -> AgentExecutionPlan | None:
+        planning_run, planning_lease = await self._claim_run(planning_run.id)
         planning_context = self._context_builder.planning(snapshot)
         planning_input = self._legal_input(
             run=planning_run,
@@ -176,6 +426,13 @@ class LegalAgentOrchestrator:
                 "specialRequirements": trigger.special_requirements,
                 "specialistOnly": trigger.specialist_only,
                 "registeredSpecialists": sorted(LEGAL_SPECIALIST_KEYS),
+                "analysisJurisdiction": trigger.jurisdiction,
+                "analysisEffectiveDate": plan.analysis_effective_date.isoformat(),
+                "analysisHistoricalAsOf": (
+                    trigger.historical_as_of.isoformat()
+                    if trigger.historical_as_of is not None
+                    else None
+                ),
             },
         )
         try:
@@ -184,6 +441,7 @@ class LegalAgentOrchestrator:
                 planning_run,
                 AgentExecutionContext(
                     snapshot=snapshot,
+                    heartbeat=lambda: self._heartbeat(planning_run.id, planning_lease),
                     input_payload=planning_input,
                     authorized_source_refs=planning_context.source_refs,
                 ),
@@ -196,58 +454,23 @@ class LegalAgentOrchestrator:
             await self._fail_run_and_plan(
                 plan.id,
                 planning_run.id,
+                planning_lease,
                 failure,
                 input_payload=planning_input,
                 working_directory=planning_run.working_directory,
             )
-            return self._failed_result(plan, planning_run.id)
+            return None
         planning_output = planning_execution.output
         plan = await self._accept_planning(
             plan_id=plan.id,
             run_id=planning_run.id,
+            lease=planning_lease,
             output=planning_output,
             execution=planning_execution,
             run_input=planning_input,
             working_directory=planning_run.working_directory,
         )
-        if plan.requires_user_input:
-            return LegalAgentOrchestrationResult(
-                plan_id=plan.id,
-                status=AgentExecutionPlanStatus.NEEDS_INFORMATION,
-                planning_run_id=plan.planning_run_id,
-                synthesis_run_id=None,
-                artifact_id=None,
-                review_package_id=None,
-                step_results=(),
-            )
-
-        async def runner(
-            step: AgentPlanStep,
-            completed: dict[str, SpecialistStepExecution],
-        ) -> SpecialistStepExecution:
-            upstream: dict[str, object] = {
-                key: value.output.model_dump(by_alias=True, mode="json")
-                for key, value in completed.items()
-                if value.output is not None
-            }
-            return await self._execute_step(
-                plan=plan,
-                step=step,
-                snapshot=snapshot,
-                trigger=trigger,
-                matter_type=matter_type,
-                upstream_outputs=upstream,
-            )
-
-        step_results = await execute_plan_waves(plan, runner)
-        await self._persist_skipped_steps(plan.id, step_results)
-        synthesis = await self._synthesize(
-            plan=plan,
-            snapshot=snapshot,
-            trigger=trigger,
-            step_results=step_results,
-        )
-        return synthesis
+        return plan
 
     async def rerun_step(
         self,
@@ -277,6 +500,25 @@ class LegalAgentOrchestrator:
             actor_id=actor_id,
             correlation_id=correlation_id,
             idempotency_key=f"rerun:{plan.id}:{step.id}:{uuid4().hex}",
+            jurisdiction=plan.analysis_jurisdiction,
+            analysis_effective_date=plan.analysis_effective_date,
+            historical_as_of=plan.historical_as_of,
+        )
+        persisted_results = await self._list_step_results(plan.id)
+        dependency_context = self._dependency_assembler.build(
+            step,
+            self._dependency_results(
+                {value.step_id: value for value in persisted_results}
+            ),
+        )
+        rerun = await self._start_step_run(
+            plan=plan,
+            step=step,
+            snapshot=snapshot,
+            trigger=trigger,
+            retry_of_run_id=step.latest_run_id,
+            dependency_run_ids=dependency_context.dependency_run_ids,
+            reserve_rerun=True,
         )
         step_result = await self._execute_step(
             plan=plan,
@@ -284,9 +526,13 @@ class LegalAgentOrchestrator:
             snapshot=snapshot,
             trigger=trigger,
             matter_type=matter.primary_category.value,
-            upstream_outputs={},
+            dependency_context=dependency_context,
             retry_of_run_id=step.latest_run_id,
+            existing_run=rerun,
         )
+        if step_result.status == AgentPlanStepStatus.RUNNING:
+            return self._pending_result(plan, [step_result])
+        await self._invalidate_stale_dependents(plan.id)
         all_results = await self._list_step_results(plan.id)
         by_step = {value.step_id: value for value in all_results}
         by_step[step_result.step_id] = step_result
@@ -296,6 +542,67 @@ class LegalAgentOrchestrator:
             trigger=trigger,
             step_results=list(by_step.values()),
         )
+
+    async def _invalidate_stale_dependents(self, plan_id: UUID) -> None:
+        async with self._uow_factory() as uow:
+            plan = await uow.agent_execution_plans.get_for_update(plan_id)
+            if plan is None:
+                raise EntityNotFoundError("Agent execution plan was not found.")
+            runs = list(await uow.agent_runs.list_by_plan(plan_id))
+            runs_by_id = {run.id: run for run in runs}
+            steps_by_id = {step.step_id: step for step in plan.steps}
+            for step in sorted(plan.steps, key=lambda value: (value.sequence, value.step_id)):
+                if not self._step_has_stale_dependencies(
+                    step,
+                    steps_by_id=steps_by_id,
+                    runs_by_id=runs_by_id,
+                ):
+                    continue
+                if step.status not in {
+                    AgentPlanStepStatus.COMPLETED,
+                    AgentPlanStepStatus.NEEDS_INFORMATION,
+                }:
+                    continue
+                step.status = AgentPlanStepStatus.SKIPPED
+                step.failure_code = "STALE_DEPENDENCY_RUN"
+                step.failure_message = (
+                    "A direct dependency now points to a newer valid Agent Run; "
+                    "this Step requires an explicit rerun."
+                )
+                step.updated_at = utc_now()
+                step.version += 1
+                await uow.agent_execution_plans.save_step(step)
+            await uow.commit()
+
+    @staticmethod
+    def _step_has_stale_dependencies(
+        step: AgentPlanStep,
+        *,
+        steps_by_id: dict[str, AgentPlanStep],
+        runs_by_id: dict[UUID, AgentRun],
+    ) -> bool:
+        if not step.depends_on:
+            return False
+        expected_run_ids: list[UUID] = []
+        for dependency_id in dict.fromkeys(step.depends_on):
+            dependency = steps_by_id.get(dependency_id)
+            if (
+                dependency is None
+                or dependency.status
+                not in {
+                    AgentPlanStepStatus.COMPLETED,
+                    AgentPlanStepStatus.NEEDS_INFORMATION,
+                }
+                or dependency.latest_valid_run_id is None
+            ):
+                return True
+            expected_run_ids.append(dependency.latest_valid_run_id)
+        selected_run = (
+            runs_by_id.get(step.latest_valid_run_id)
+            if step.latest_valid_run_id is not None
+            else None
+        )
+        return selected_run is None or selected_run.dependency_run_ids != expected_run_ids
 
     async def _prepare_planning(
         self, trigger: LegalAgentTrigger
@@ -332,6 +639,11 @@ class LegalAgentOrchestrator:
                 correlation_id=trigger.correlation_id,
                 idempotency_key=trigger.idempotency_key,
                 created_by=trigger.actor_id,
+                analysis_jurisdiction=trigger.jurisdiction,
+                analysis_effective_date=(
+                    trigger.analysis_effective_date or self._analysis_date_provider()
+                ),
+                historical_as_of=trigger.historical_as_of,
             )
             await uow.agent_execution_plans.add(plan)
             await uow.flush()
@@ -358,6 +670,7 @@ class LegalAgentOrchestrator:
         *,
         plan_id: UUID,
         run_id: UUID,
+        lease: AgentAttemptLease,
         output: ButlerPlanningOutput,
         execution: AgentExecutionResult,
         run_input: dict[str, object],
@@ -368,6 +681,11 @@ class LegalAgentOrchestrator:
             run = await uow.agent_runs.get_for_update(run_id)
             if plan is None or run is None:
                 raise EntityNotFoundError("Planning state was not found.")
+            if plan.planning_run_id != run.id:
+                raise StaleAgentAttemptError(
+                    "The Butler planning Run is no longer current for this Plan.",
+                    details={"planId": str(plan.id), "runId": str(run.id)},
+                )
             steps = [
                 AgentPlanStep(
                     id=uuid4(),
@@ -386,11 +704,7 @@ class LegalAgentOrchestrator:
                 matter_id=plan.matter_id,
                 work_item_id=plan.work_item_id,
                 objective=output.objective,
-                status=(
-                    AgentExecutionPlanStatus.NEEDS_INFORMATION
-                    if output.requires_user_input
-                    else AgentExecutionPlanStatus.PLANNED
-                ),
+                status=AgentExecutionPlanStatus.PLANNED,
                 task_types=output.task_types,
                 synthesis_strategy=output.synthesis_strategy,
                 missing_information=output.missing_information,
@@ -398,6 +712,9 @@ class LegalAgentOrchestrator:
                 correlation_id=plan.correlation_id,
                 idempotency_key=plan.idempotency_key,
                 created_by=plan.created_by,
+                analysis_jurisdiction=plan.analysis_jurisdiction,
+                analysis_effective_date=plan.analysis_effective_date,
+                historical_as_of=plan.historical_as_of,
                 steps=steps,
                 planning_run_id=run.id,
                 created_at=plan.created_at,
@@ -410,6 +727,7 @@ class LegalAgentOrchestrator:
                 uow,
                 run,
                 execution,
+                lease=lease,
                 run_input=run_input,
                 working_directory=working_directory,
                 needs_information=output.requires_user_input,
@@ -435,35 +753,66 @@ class LegalAgentOrchestrator:
         snapshot: ContextSnapshot,
         trigger: LegalAgentTrigger,
         matter_type: str,
-        upstream_outputs: dict[str, object],
+        dependency_context: DependencyContext,
         retry_of_run_id: UUID | None = None,
+        existing_run: AgentRun | None = None,
     ) -> SpecialistStepExecution:
-        run = await self._start_step_run(
+        run = existing_run or await self._start_step_run(
             plan=plan,
             step=step,
             snapshot=snapshot,
             trigger=trigger,
             retry_of_run_id=retry_of_run_id,
+            dependency_run_ids=dependency_context.dependency_run_ids,
         )
+        run, lease = await self._claim_run(run.id)
         context = await self._context_builder.specialist(
             snapshot=snapshot,
             agent_type=step.agent_key,
             matter_type=matter_type,
             objective=step.objective,
             jurisdiction=trigger.jurisdiction,
-            effective_date=date.today(),
+            effective_date=plan.analysis_effective_date,
+            historical_as_of=trigger.historical_as_of,
             correlation_id=trigger.correlation_id,
             agent_run_id=run.id,
-            upstream_outputs=upstream_outputs,
+            upstream_outputs=dependency_context.upstream_outputs,
         )
-        await self._add_context_sources(run.id, snapshot, context)
+        context = AuthorizedLegalContext(
+            payload=context.payload,
+            source_refs=context.source_refs | dependency_context.source_refs,
+            internal_precedent_refs=(
+                context.internal_precedent_refs
+                | dependency_context.internal_precedent_refs
+            ),
+            source_authorities={
+                **dependency_context.source_authorities,
+                **context.source_authorities,
+            },
+        )
+        await self._add_context_sources(
+            run.id,
+            snapshot,
+            context,
+            dependency_run_ids=dependency_context.dependency_run_ids,
+        )
         input_payload = self._legal_input(
             run=run,
             phase="specialist",
             trigger=trigger,
             context=context,
-            upstream_outputs=upstream_outputs,
-            extra={"stepId": step.step_id, "contextRequirements": step.context_requirements},
+            upstream_outputs=dependency_context.upstream_outputs,
+            extra={
+                "stepId": step.step_id,
+                "contextRequirements": step.context_requirements,
+                "analysisJurisdiction": trigger.jurisdiction,
+                "analysisEffectiveDate": plan.analysis_effective_date.isoformat(),
+                "analysisHistoricalAsOf": (
+                    trigger.historical_as_of.isoformat()
+                    if trigger.historical_as_of is not None
+                    else None
+                ),
+            },
         )
         try:
             execution = await self._runtime.execute(
@@ -471,19 +820,34 @@ class LegalAgentOrchestrator:
                 run,
                 AgentExecutionContext(
                     snapshot=snapshot,
+                    heartbeat=lambda: self._heartbeat(run.id, lease),
                     input_payload=input_payload,
                     authorized_source_refs=context.source_refs,
                     internal_precedent_refs=context.internal_precedent_refs,
+                    source_authorities=context.source_authorities,
                 ),
             )
             if not isinstance(execution.output, LegalWorkProduct):
                 raise DomainValidationError("Specialist returned the wrong output contract.")
+            try:
+                canonical_product = validate_legal_work_product_sources(
+                    execution.output,
+                    authorized_source_refs=set(context.source_refs),
+                    internal_precedent_refs=set(context.internal_precedent_refs),
+                    source_authorities=context.source_authorities,
+                    analysis_effective_date=plan.analysis_effective_date,
+                    historical_as_of=trigger.historical_as_of,
+                )
+            except ValueError as exc:
+                raise DomainValidationError(str(exc)) from exc
+            execution = replace(execution, output=canonical_product)
         except (AgentRuntimeError, DomainValidationError) as exc:
             failure = self._runtime_failure(exc)
-            await self._fail_step(
+            retry_queued = await self._fail_step(
                 plan.id,
                 step.step_id,
                 run.id,
+                lease,
                 failure,
                 run_input=input_payload,
                 working_directory=run.working_directory,
@@ -492,13 +856,19 @@ class LegalAgentOrchestrator:
                 step_id=step.step_id,
                 agent_key=step.agent_key,
                 run_id=run.id,
-                status=AgentPlanStepStatus.FAILED,
+                status=(
+                    AgentPlanStepStatus.RUNNING
+                    if retry_queued
+                    else AgentPlanStepStatus.FAILED
+                ),
                 failure_code=failure.code,
                 failure_message=str(failure),
                 source_refs=context.source_refs,
                 internal_precedent_refs=context.internal_precedent_refs,
+                source_authorities=context.source_authorities,
             )
         product = execution.output
+        assert isinstance(product, LegalWorkProduct)
         needs_information = bool(product.missing_information)
         status = (
             AgentPlanStepStatus.NEEDS_INFORMATION
@@ -512,15 +882,18 @@ class LegalAgentOrchestrator:
             )
             if stored_run is None or stored_step is None:
                 raise EntityNotFoundError("Specialist persistence state was not found.")
+            ensure_current_step_run(stored_step, run.id)
             await self._apply_run_success(
                 uow,
                 stored_run,
                 execution,
+                lease=lease,
                 run_input=input_payload,
                 working_directory=run.working_directory,
                 needs_information=needs_information,
             )
             stored_step.status = status
+            stored_step.latest_valid_run_id = run.id
             stored_step.failure_code = None
             stored_step.failure_message = None
             stored_step.updated_at = utc_now()
@@ -535,6 +908,7 @@ class LegalAgentOrchestrator:
             output=product,
             source_refs=context.source_refs,
             internal_precedent_refs=context.internal_precedent_refs,
+            source_authorities=context.source_authorities,
         )
 
     async def _start_step_run(
@@ -545,22 +919,91 @@ class LegalAgentOrchestrator:
         snapshot: ContextSnapshot,
         trigger: LegalAgentTrigger,
         retry_of_run_id: UUID | None,
+        dependency_run_ids: tuple[UUID, ...],
+        reserve_rerun: bool = False,
     ) -> AgentRun:
         async with self._uow_factory() as uow:
+            stored_plan = await uow.agent_execution_plans.get_for_update(plan.id)
+            if stored_plan is None:
+                raise EntityNotFoundError("Agent execution plan was not found.")
+            if reserve_rerun:
+                if stored_plan.status not in {
+                    AgentExecutionPlanStatus.COMPLETED,
+                    AgentExecutionPlanStatus.NEEDS_INFORMATION,
+                    AgentExecutionPlanStatus.PARTIAL,
+                    AgentExecutionPlanStatus.FAILED,
+                }:
+                    raise InvalidStateTransitionError(
+                        "The Agent execution plan is already active and cannot accept a rerun.",
+                        details={
+                            "planId": str(stored_plan.id),
+                            "status": stored_plan.status.value,
+                        },
+                    )
+            elif stored_plan.status not in {
+                AgentExecutionPlanStatus.PLANNED,
+                AgentExecutionPlanStatus.RUNNING,
+            } or stored_plan.synthesis_run_id is not None:
+                raise InvalidStateTransitionError(
+                    "The Agent execution plan cannot start an initial Specialist Run.",
+                    details={
+                        "planId": str(stored_plan.id),
+                        "status": stored_plan.status.value,
+                    },
+                )
             stored_step = await uow.agent_execution_plans.get_step_for_update(
                 plan.id, step.step_id
             )
             if stored_step is None:
                 raise EntityNotFoundError("Agent plan step was not found.")
+            if stored_step.status == AgentPlanStepStatus.RUNNING:
+                raise InvalidStateTransitionError(
+                    "The Agent plan Step is already active and cannot start another Run.",
+                    details={"planId": str(plan.id), "stepId": stored_step.step_id},
+                )
+            if reserve_rerun:
+                if stored_step.latest_run_id != retry_of_run_id:
+                    raise StaleAgentAttemptError(
+                        "The requested Step rerun no longer targets the current Run.",
+                        details={"planId": str(plan.id), "stepId": stored_step.step_id},
+                    )
+                steps_by_id = {value.step_id: value for value in stored_plan.steps}
+                current_dependencies: list[UUID] = []
+                for dependency_id in dict.fromkeys(stored_step.depends_on):
+                    dependency = steps_by_id.get(dependency_id)
+                    if (
+                        dependency is None
+                        or dependency.status
+                        not in {
+                            AgentPlanStepStatus.COMPLETED,
+                            AgentPlanStepStatus.NEEDS_INFORMATION,
+                        }
+                        or dependency.latest_valid_run_id is None
+                    ):
+                        raise InvalidStateTransitionError(
+                            "The Step rerun dependencies are not currently valid.",
+                            details={
+                                "planId": str(plan.id),
+                                "stepId": stored_step.step_id,
+                                "dependencyStepId": dependency_id,
+                            },
+                        )
+                    current_dependencies.append(dependency.latest_valid_run_id)
+                if tuple(current_dependencies) != dependency_run_ids:
+                    raise StaleAgentAttemptError(
+                        "The requested Step rerun dependency lineage changed before reservation.",
+                        details={"planId": str(plan.id), "stepId": stored_step.step_id},
+                    )
             run = self._new_run(
                 definition_key=step.agent_key,
                 snapshot=snapshot,
-                plan=plan,
-                objective=step.objective,
+                plan=stored_plan,
+                objective=stored_step.objective,
                 actor_id=trigger.actor_id,
                 role=AgentRunRole.SPECIALIST,
                 step=stored_step,
                 retry_of_run_id=retry_of_run_id,
+                dependency_run_ids=dependency_run_ids,
             )
             await uow.agent_runs.add(run)
             await uow.flush()
@@ -570,6 +1013,12 @@ class LegalAgentOrchestrator:
             stored_step.updated_at = utc_now()
             stored_step.version += 1
             await uow.agent_execution_plans.save_step(stored_step)
+            stored_plan.status = AgentExecutionPlanStatus.RUNNING
+            if reserve_rerun:
+                stored_plan.synthesis_run_id = None
+            stored_plan.updated_at = utc_now()
+            stored_plan.version += 1
+            await uow.agent_execution_plans.save(stored_plan)
             await uow.commit()
         return run
 
@@ -580,19 +1029,64 @@ class LegalAgentOrchestrator:
         snapshot: ContextSnapshot,
         trigger: LegalAgentTrigger,
         step_results: list[SpecialistStepExecution],
+        existing_run: AgentRun | None = None,
     ) -> LegalAgentOrchestrationResult:
-        synthesis_run = await self._start_synthesis_run(plan, snapshot, trigger)
+        if self._has_pending_step_retry(step_results):
+            return self._pending_result(plan, step_results)
+        synthesis_run = existing_run or await self._start_synthesis_run(
+            plan, snapshot, trigger
+        )
+        synthesis_run, synthesis_lease = await self._claim_run(synthesis_run.id)
+        valid_step_results = [
+            result
+            for result in step_results
+            if result.output is not None
+            and result.status
+            in {
+                AgentPlanStepStatus.COMPLETED,
+                AgentPlanStepStatus.NEEDS_INFORMATION,
+            }
+        ]
         source_refs = frozenset(
-            value for result in step_results for value in result.source_refs
+            value for result in valid_step_results for value in result.source_refs
         )
         precedents = frozenset(
             value
-            for result in step_results
+            for result in valid_step_results
             for value in result.internal_precedent_refs
+        )
+        source_authorities = {
+            source_ref: metadata
+            for result in valid_step_results
+            for source_ref, metadata in result.source_authorities.items()
+        }
+        persisted_source_metadata = await self._source_metadata_for_runs(
+            [
+                value
+                for value in [
+                    synthesis_run.id,
+                    *(result.run_id for result in valid_step_results),
+                ]
+                if value is not None
+            ]
+        )
+        source_authorities.update(persisted_source_metadata)
+        source_refs = source_refs | frozenset(persisted_source_metadata)
+        precedents = precedents | frozenset(
+            source_ref
+            for source_ref, metadata in persisted_source_metadata.items()
+            if metadata.get("internalPrecedent") is True
         )
         context = AuthorizedLegalContext(
             payload={
                 "contextSnapshot": self._context_builder.planning(snapshot).payload,
+                "analysisJurisdiction": trigger.jurisdiction,
+                "analysisEffectiveDate": plan.analysis_effective_date.isoformat(),
+                "analysisHistoricalAsOf": (
+                    trigger.historical_as_of.isoformat()
+                    if trigger.historical_as_of is not None
+                    else None
+                ),
                 "specialistFailures": [
                     {
                         "stepId": result.step_id,
@@ -608,6 +1102,7 @@ class LegalAgentOrchestrator:
             source_refs=source_refs
             | self._context_builder.planning(snapshot).source_refs,
             internal_precedent_refs=precedents,
+            source_authorities=source_authorities,
         )
         upstream: dict[str, object] = {
             result.step_id: (
@@ -639,18 +1134,23 @@ class LegalAgentOrchestrator:
                 synthesis_run,
                 AgentExecutionContext(
                     snapshot=snapshot,
+                    heartbeat=lambda: self._heartbeat(
+                        synthesis_run.id, synthesis_lease
+                    ),
                     input_payload=input_payload,
                     authorized_source_refs=context.source_refs,
                     internal_precedent_refs=context.internal_precedent_refs,
+                    source_authorities=context.source_authorities,
                 ),
             )
             if not isinstance(execution.output, ButlerSynthesisOutput):
                 raise DomainValidationError("Butler synthesis returned the wrong contract.")
         except (AgentRuntimeError, DomainValidationError) as exc:
             failure = self._runtime_failure(exc)
-            await self._fail_run_and_plan(
+            retry_queued = await self._fail_run_and_plan(
                 plan.id,
                 synthesis_run.id,
+                synthesis_lease,
                 failure,
                 input_payload=input_payload,
                 working_directory=synthesis_run.working_directory,
@@ -659,9 +1159,13 @@ class LegalAgentOrchestrator:
             return LegalAgentOrchestrationResult(
                 plan_id=plan.id,
                 status=(
-                    AgentExecutionPlanStatus.PARTIAL
-                    if any(result.output is not None for result in step_results)
-                    else AgentExecutionPlanStatus.FAILED
+                    AgentExecutionPlanStatus.RUNNING
+                    if retry_queued
+                    else (
+                        AgentExecutionPlanStatus.PARTIAL
+                        if any(result.output is not None for result in step_results)
+                        else AgentExecutionPlanStatus.FAILED
+                    )
                 ),
                 planning_run_id=plan.planning_run_id,
                 synthesis_run_id=synthesis_run.id,
@@ -674,7 +1178,11 @@ class LegalAgentOrchestrator:
             result.status in {AgentPlanStepStatus.FAILED, AgentPlanStepStatus.SKIPPED}
             for result in step_results
         )
-        needs_information = bool(output.missing_information) or any(
+        planning_missing_information = list(dict.fromkeys(plan.missing_information))
+        all_missing_information = list(
+            dict.fromkeys([*planning_missing_information, *output.missing_information])
+        )
+        needs_information = plan.requires_user_input or bool(all_missing_information) or any(
             result.status == AgentPlanStepStatus.NEEDS_INFORMATION
             for result in step_results
         )
@@ -693,7 +1201,8 @@ class LegalAgentOrchestrator:
             artifact_type="legal_butler_synthesis",
             title=f"法务管家综合意见: {plan.objective}",
             content=output.draft_response,
-            structured_payload=output.model_dump(by_alias=True, mode="json"),
+            structured_payload=output.model_dump(by_alias=True, mode="json")
+            | {"planningMissingInformation": planning_missing_information},
         )
         review = ReviewPackage.create(
             matter_id=plan.matter_id,
@@ -701,11 +1210,16 @@ class LegalAgentOrchestrator:
             package_type=ReviewPackageType.LEGAL_ANALYSIS,
             title=artifact.title,
             background=output.matter_assessment,
-            confirmed_facts=[{"fact": value} for value in output.core_facts],
-            unconfirmed_facts=[
-                {"missingInformation": value} for value in output.missing_information
+            confirmed_facts=[
+                value.model_dump(by_alias=True, mode="json") for value in output.core_facts
             ],
-            reasoning="\n".join(output.recommended_strategy)
+            unconfirmed_facts=[
+                {"missingInformation": value} for value in all_missing_information
+            ],
+            reasoning="\n".join(
+                f"{value.action}: {value.rationale}"
+                for value in output.recommended_strategy
+            )
             or "Butler synthesis is available in the structured payload.",
             risks=[
                 value.model_dump(by_alias=True, mode="json")
@@ -719,6 +1233,32 @@ class LegalAgentOrchestrator:
             proposed_content=output.draft_response,
             target={"channel": "internal", "matterId": str(plan.matter_id)},
             created_by=trigger.actor_id,
+            grounding_payload={
+                "coreFacts": [
+                    value.model_dump(by_alias=True, mode="json")
+                    for value in output.core_facts
+                ],
+                "keyLegalIssues": [
+                    value.model_dump(by_alias=True, mode="json")
+                    for value in output.key_legal_issues
+                ],
+                "integratedRisks": [
+                    value.model_dump(by_alias=True, mode="json")
+                    for value in output.integrated_risks
+                ],
+                "recommendedStrategy": [
+                    value.model_dump(by_alias=True, mode="json")
+                    for value in output.recommended_strategy
+                ],
+                "nextActions": [
+                    value.model_dump(by_alias=True, mode="json")
+                    for value in output.next_actions
+                ],
+                "conflicts": [
+                    value.model_dump(by_alias=True, mode="json")
+                    for value in output.conflicts
+                ],
+            },
         )
         review.submit(expected_version=review.version)
         async with self._uow_factory() as uow:
@@ -726,10 +1266,12 @@ class LegalAgentOrchestrator:
             stored_plan = await uow.agent_execution_plans.get_for_update(plan.id)
             if stored_run is None or stored_plan is None:
                 raise EntityNotFoundError("Synthesis persistence state was not found.")
+            ensure_current_synthesis_run(stored_plan, synthesis_run.id)
             await self._apply_run_success(
                 uow,
                 stored_run,
                 execution,
+                lease=synthesis_lease,
                 run_input=input_payload,
                 working_directory=synthesis_run.working_directory,
                 needs_information=needs_information,
@@ -759,10 +1301,21 @@ class LegalAgentOrchestrator:
         trigger: LegalAgentTrigger,
     ) -> AgentRun:
         async with self._uow_factory() as uow:
+            stored_plan = await uow.agent_execution_plans.get_for_update(plan.id)
+            if stored_plan is None:
+                raise EntityNotFoundError("Agent execution plan was not found.")
+            if stored_plan.synthesis_run_id is not None:
+                raise InvalidStateTransitionError(
+                    "The Agent execution plan already has an active synthesis Run.",
+                    details={
+                        "planId": str(stored_plan.id),
+                        "synthesisRunId": str(stored_plan.synthesis_run_id),
+                    },
+                )
             run = self._new_run(
                 definition_key="legal_butler",
                 snapshot=snapshot,
-                plan=plan,
+                plan=stored_plan,
                 objective=f"综合执行计划 {plan.id} 的专业意见",
                 actor_id=trigger.actor_id,
                 role=AgentRunRole.BUTLER_SYNTHESIS,
@@ -772,9 +1325,6 @@ class LegalAgentOrchestrator:
             await uow.agent_run_sources.add_many(
                 self._context_sources(run.id, snapshot, None)
             )
-            stored_plan = await uow.agent_execution_plans.get_for_update(plan.id)
-            if stored_plan is None:
-                raise EntityNotFoundError("Agent execution plan was not found.")
             stored_plan.status = AgentExecutionPlanStatus.RUNNING
             stored_plan.synthesis_run_id = run.id
             stored_plan.updated_at = utc_now()
@@ -789,10 +1339,15 @@ class LegalAgentOrchestrator:
         run: AgentRun,
         execution: AgentExecutionResult,
         *,
+        lease: AgentAttemptLease,
         run_input: dict[str, object],
         working_directory: str,
         needs_information: bool,
     ) -> None:
+        await AgentExecutionLeaseService(
+            uow.agent_run_attempts,
+            lease_seconds=self._lease_seconds,
+        ).complete(run, lease)
         run.input_payload = run_input
         run.output_payload = execution.output.model_dump(by_alias=True, mode="json")
         run.raw_stdout = execution.raw_stdout
@@ -815,52 +1370,76 @@ class LegalAgentOrchestrator:
         plan_id: UUID,
         step_id: str,
         run_id: UUID,
+        lease: AgentAttemptLease,
         error: AgentRuntimeError,
         *,
         run_input: dict[str, object],
         working_directory: str,
-    ) -> None:
+    ) -> bool:
         async with self._uow_factory() as uow:
             run = await uow.agent_runs.get_for_update(run_id)
             step = await uow.agent_execution_plans.get_step_for_update(plan_id, step_id)
             if run is None or step is None:
                 raise EntityNotFoundError("Failed specialist state was not found.")
+            ensure_current_step_run(step, run.id)
+            await self._apply_attempt_failure(uow, run, lease, error)
             self._apply_run_failure(run, error, run_input, working_directory)
+            retry_queued = await self._queue_retry_or_dead_letter(uow, run, error)
             await uow.agent_runs.save(run)
-            step.status = AgentPlanStepStatus.FAILED
+            step.status = (
+                AgentPlanStepStatus.RUNNING
+                if retry_queued
+                else AgentPlanStepStatus.FAILED
+            )
             step.failure_code = error.code
             step.failure_message = str(error)
             step.updated_at = utc_now()
             step.version += 1
             await uow.agent_execution_plans.save_step(step)
             await uow.commit()
+        return retry_queued
 
     async def _fail_run_and_plan(
         self,
         plan_id: UUID,
         run_id: UUID,
+        lease: AgentAttemptLease,
         error: AgentRuntimeError,
         *,
         input_payload: dict[str, object],
         working_directory: str,
         partial: bool = False,
-    ) -> None:
+    ) -> bool:
         async with self._uow_factory() as uow:
             run = await uow.agent_runs.get_for_update(run_id)
             plan = await uow.agent_execution_plans.get_for_update(plan_id)
             if run is None or plan is None:
                 raise EntityNotFoundError("Failed Agent state was not found.")
+            if run.run_role == AgentRunRole.BUTLER_SYNTHESIS:
+                ensure_current_synthesis_run(plan, run.id)
+            elif (
+                run.run_role == AgentRunRole.BUTLER_PLANNING
+                and plan.planning_run_id != run.id
+            ):
+                raise StaleAgentAttemptError(
+                    "The Butler planning Run is no longer current for this Plan.",
+                    details={"planId": str(plan.id), "runId": str(run.id)},
+                )
+            await self._apply_attempt_failure(uow, run, lease, error)
             self._apply_run_failure(run, error, input_payload, working_directory)
+            retry_queued = await self._queue_retry_or_dead_letter(uow, run, error)
             await uow.agent_runs.save(run)
-            plan.status = (
-                AgentExecutionPlanStatus.PARTIAL
-                if partial
-                else AgentExecutionPlanStatus.FAILED
-            )
+            if not retry_queued:
+                plan.status = (
+                    AgentExecutionPlanStatus.PARTIAL
+                    if partial
+                    else AgentExecutionPlanStatus.FAILED
+                )
             plan.updated_at = utc_now()
             plan.version += 1
             await uow.agent_execution_plans.save(plan)
             await uow.commit()
+        return retry_queued
 
     @staticmethod
     def _apply_run_failure(
@@ -878,6 +1457,65 @@ class LegalAgentOrchestrator:
         run.failure_code = error.code
         run.failure_message = str(error)
         run.transition_to(AgentRunStatus.FAILED)
+
+    async def _apply_attempt_failure(
+        self,
+        uow: Any,
+        run: AgentRun,
+        lease: AgentAttemptLease,
+        error: AgentRuntimeError,
+    ) -> None:
+        attempt_status = {
+            "AGENT_RUNTIME_TIMEOUT": AgentAttemptStatus.TIMED_OUT,
+            "AGENT_RUNTIME_CANCELLED": AgentAttemptStatus.CANCELLED,
+        }.get(error.code, AgentAttemptStatus.FAILED)
+        await AgentExecutionLeaseService(
+            uow.agent_run_attempts,
+            lease_seconds=self._lease_seconds,
+        ).fail(
+            run,
+            lease,
+            status=attempt_status,
+            failure_code=error.code,
+            failure_message=str(error)[:4000],
+        )
+
+    async def _queue_retry_or_dead_letter(
+        self,
+        uow: Any,
+        run: AgentRun,
+        error: AgentRuntimeError,
+    ) -> bool:
+        if error.retryable and run.attempt_number < run.max_attempts:
+            run.attempt_number += 1
+            run.transition_to(AgentRunStatus.QUEUED)
+            run.finished_at = None
+            run.worker_id = None
+            run.failure_code = None
+            run.failure_message = None
+            if run.execution_plan_id is not None and not await uow.outbox_events.exists_pending(
+                event_type="LegalAgentRecoveryRequested",
+                aggregate_id=run.execution_plan_id,
+            ):
+                await uow.outbox_events.add(
+                    OutboxEvent(
+                        id=uuid4(),
+                        event_type="LegalAgentRecoveryRequested",
+                        aggregate_type="agent_execution_plan",
+                        aggregate_id=run.execution_plan_id,
+                        payload={
+                            "planId": str(run.execution_plan_id),
+                            "runId": str(run.id),
+                            "runRole": run.run_role.value,
+                            "recoveryReason": "retryable_runtime_failure",
+                        },
+                        correlation_id=run.correlation_id,
+                    )
+                )
+            return True
+        if run.status == AgentRunStatus.FAILED:
+            run.transition_to(AgentRunStatus.DEAD_LETTER)
+        return False
 
     async def _persist_skipped_steps(
         self, plan_id: UUID, results: list[SpecialistStepExecution]
@@ -905,11 +1543,68 @@ class LegalAgentOrchestrator:
         run_id: UUID,
         snapshot: ContextSnapshot,
         context: AuthorizedLegalContext,
+        *,
+        dependency_run_ids: tuple[UUID, ...] = (),
     ) -> None:
         async with self._uow_factory() as uow:
-            await uow.agent_run_sources.add_many(
-                self._context_sources(run_id, snapshot, context)
+            sources = self._context_sources(run_id, snapshot, context)
+            existing_keys = {
+                (value.source_type, value.source_id, value.source_hash)
+                for value in await uow.agent_run_sources.list_by_run(run_id)
+            }
+            sources = [
+                value
+                for value in sources
+                if (value.source_type, value.source_id, value.source_hash)
+                not in existing_keys
+            ]
+            existing_keys.update(
+                (value.source_type, value.source_id, value.source_hash) for value in sources
             )
+            for dependency_run_id in dependency_run_ids:
+                for source in await uow.agent_run_sources.list_by_run(dependency_run_id):
+                    key = (source.source_type, source.source_id, source.source_hash)
+                    if key in existing_keys:
+                        continue
+                    existing_keys.add(key)
+                    sources.append(
+                        AgentRunSource(
+                            id=uuid4(),
+                            agent_run_id=run_id,
+                            source_type=source.source_type,
+                            source_id=source.source_id,
+                            source_version=source.source_version,
+                            source_hash=source.source_hash,
+                            display_name=source.display_name,
+                            citation_metadata=source.citation_metadata,
+                        )
+                    )
+            await uow.agent_run_sources.add_many(sources)
+            await uow.commit()
+
+    async def _claim_run(self, run_id: UUID) -> tuple[AgentRun, AgentAttemptLease]:
+        async with self._uow_factory() as uow:
+            run = await uow.agent_runs.get_for_update(run_id)
+            if run is None:
+                raise EntityNotFoundError("Agent run was not found before lease claim.")
+            lease = await AgentExecutionLeaseService(
+                uow.agent_run_attempts,
+                lease_seconds=self._lease_seconds,
+            ).start(run, worker_id=self._worker_id)
+            await uow.agent_runs.save(run)
+            await uow.commit()
+        return run, lease
+
+    async def _heartbeat(self, run_id: UUID, lease: AgentAttemptLease) -> None:
+        async with self._uow_factory() as uow:
+            run = await uow.agent_runs.get_for_update(run_id)
+            if run is None:
+                raise EntityNotFoundError("Agent run was not found during heartbeat.")
+            await AgentExecutionLeaseService(
+                uow.agent_run_attempts,
+                lease_seconds=self._lease_seconds,
+            ).heartbeat(run, lease)
+            await uow.agent_runs.save(run)
             await uow.commit()
 
     def _context_sources(
@@ -930,6 +1625,83 @@ class LegalAgentOrchestrator:
                 citation_metadata={"sourceRef": f"ctx:snapshot:{snapshot.id}"},
             )
         ]
+        messages = snapshot.content.get("messages", [])
+        message_metadata = {
+            str(item.get("messageId")): item
+            for item in messages
+            if isinstance(item, dict) and item.get("messageId")
+        } if isinstance(messages, list) else {}
+        for message_id in dict.fromkeys(snapshot.message_ids):
+            metadata = message_metadata.get(message_id, {})
+            source_hash = str(metadata.get("contentHash") or snapshot.content_hash)
+            if len(source_hash) != 64:
+                source_hash = snapshot.content_hash
+            values.append(
+                AgentRunSource(
+                    id=uuid4(),
+                    agent_run_id=run_id,
+                    source_type=AgentRunSourceType.FEISHU_MESSAGE,
+                    source_id=message_id,
+                    source_version=(
+                        str(metadata["messageVersion"])
+                        if metadata.get("messageVersion") is not None
+                        else None
+                    ),
+                    source_hash=source_hash,
+                    display_name=f"Authorized Feishu message {message_id}",
+                    citation_metadata={
+                        "sourceRef": f"ctx:message:{message_id}",
+                        "sourceType": "feishu_message",
+                    },
+                )
+            )
+        for segment in snapshot.included_segments:
+            source_hash = str(segment.get("contentHash") or "")
+            if len(source_hash) != 64:
+                continue
+            attachment_id = segment.get("attachmentId")
+            document_id = segment.get("documentId")
+            source_id = str(attachment_id or document_id or source_hash)
+            source_type = (
+                AgentRunSourceType.ATTACHMENT
+                if attachment_id
+                else AgentRunSourceType.KNOWLEDGE_DOCUMENT
+                if document_id
+                else AgentRunSourceType.CONTEXT_SNAPSHOT
+            )
+            locator_parts = [
+                f"page:{segment['pageNumber']}"
+                if segment.get("pageNumber") is not None
+                else None,
+                f"paragraph:{segment['paragraphNumber']}"
+                if segment.get("paragraphNumber") is not None
+                else None,
+            ]
+            values.append(
+                AgentRunSource(
+                    id=uuid4(),
+                    agent_run_id=run_id,
+                    source_type=source_type,
+                    source_id=source_id,
+                    source_version=None,
+                    source_hash=source_hash,
+                    display_name=str(
+                        segment.get("fileName")
+                        or segment.get("title")
+                        or "Authorized document segment"
+                    ),
+                    citation_metadata={
+                        "sourceRef": f"ctx:segment:{source_hash}",
+                        "sourceType": "document_segment",
+                        "locator": ",".join(
+                            value for value in locator_parts if value is not None
+                        )
+                        or None,
+                        "attachmentId": attachment_id,
+                        "documentId": document_id,
+                    },
+                )
+            )
         if context is None:
             return values
         retrieval = context.payload.get("retrievalResults", [])
@@ -955,6 +1727,13 @@ class LegalAgentOrchestrator:
                         "sourceRef": source_ref,
                         "locator": item.get("locator"),
                         "internalPrecedent": item.get("internalPrecedent", False),
+                        "authorityType": item.get("authorityType"),
+                        "authorityRole": item.get("authorityRole"),
+                        "authorityStatus": item.get("authorityStatus"),
+                        "metadataStatus": item.get("metadataStatus"),
+                        "jurisdiction": item.get("jurisdiction"),
+                        "effectiveFrom": item.get("effectiveFrom"),
+                        "effectiveTo": item.get("effectiveTo"),
                     },
                 )
             )
@@ -971,17 +1750,18 @@ class LegalAgentOrchestrator:
         role: AgentRunRole,
         step: AgentPlanStep | None = None,
         retry_of_run_id: UUID | None = None,
+        dependency_run_ids: tuple[UUID, ...] = (),
     ) -> AgentRun:
         definition = self._definitions[definition_key]
         return AgentRun(
             id=uuid4(),
             agent_definition_id=definition.id,
             context_snapshot_id=snapshot.id,
-            status=AgentRunStatus.RUNNING,
+            status=AgentRunStatus.QUEUED,
             objective=objective,
             prompt_snapshot=definition.prompt_template,
             working_directory=str(self._runs_root / "pending"),
-            attempt_number=(step.attempt_count + 1 if step else 1),
+            attempt_number=1,
             max_attempts=definition.max_retries + 1,
             correlation_id=plan.correlation_id,
             created_by=actor_id,
@@ -992,6 +1772,7 @@ class LegalAgentOrchestrator:
             parent_run_id=plan.planning_run_id if role != AgentRunRole.BUTLER_PLANNING else None,
             retry_of_run_id=retry_of_run_id,
             run_role=role,
+            dependency_run_ids=list(dependency_run_ids),
             agent_definition_version=definition.version,
             prompt_version=definition.version,
         )
@@ -1032,7 +1813,15 @@ class LegalAgentOrchestrator:
         return {
             "id": str(plan.id),
             "objective": plan.objective,
+            "analysisEffectiveDate": plan.analysis_effective_date.isoformat(),
+            "historicalAsOf": (
+                plan.historical_as_of.isoformat()
+                if plan.historical_as_of is not None
+                else None
+            ),
             "taskTypes": plan.task_types,
+            "requiresUserInput": plan.requires_user_input,
+            "missingInformation": plan.missing_information,
             "steps": [
                 {
                     "stepId": step.step_id,
@@ -1049,6 +1838,63 @@ class LegalAgentOrchestrator:
         async with self._uow_factory() as uow:
             return await uow.agent_execution_plans.get_by_idempotency_key(key)
 
+    async def _source_metadata_for_runs(
+        self,
+        run_ids: list[UUID],
+    ) -> dict[str, dict[str, object]]:
+        async with self._uow_factory() as uow:
+            sources = [
+                source
+                for run_id in dict.fromkeys(run_ids)
+                for source in await uow.agent_run_sources.list_by_run(run_id)
+            ]
+        return self._source_metadata(sources)
+
+    @staticmethod
+    def _source_metadata(
+        sources: list[AgentRunSource],
+    ) -> dict[str, dict[str, object]]:
+        source_type_map = {
+            AgentRunSourceType.FEISHU_MESSAGE: "feishu_message",
+            AgentRunSourceType.CONTEXT_SNAPSHOT: "context_snapshot",
+            AgentRunSourceType.ATTACHMENT: "attachment",
+            AgentRunSourceType.KNOWLEDGE_DOCUMENT: "knowledge_document",
+            AgentRunSourceType.HISTORICAL_MATTER: "historical_matter",
+            AgentRunSourceType.APPROVED_EXAMPLE: "approved_example",
+        }
+        values: dict[str, dict[str, object]] = {}
+        for source in sources:
+            source_ref = source.citation_metadata.get("sourceRef")
+            if not isinstance(source_ref, str) or not source_ref:
+                continue
+            metadata = {
+                "title": source.display_name,
+                "sourceType": source.citation_metadata.get("sourceType")
+                or source_type_map[source.source_type],
+                "locator": source.citation_metadata.get("locator"),
+                "contentHash": source.source_hash,
+                "internalPrecedent": source.citation_metadata.get(
+                    "internalPrecedent", False
+                ),
+            }
+            metadata.update(
+                {
+                    key: source.citation_metadata.get(key)
+                    for key in (
+                        "authorityType",
+                        "authorityRole",
+                        "authorityStatus",
+                        "metadataStatus",
+                        "jurisdiction",
+                        "effectiveFrom",
+                        "effectiveTo",
+                    )
+                    if source.citation_metadata.get(key) is not None
+                }
+            )
+            values[source_ref] = metadata
+        return values
+
     async def _list_step_results(self, plan_id: UUID) -> list[SpecialistStepExecution]:
         async with self._uow_factory() as uow:
             plan = await uow.agent_execution_plans.get(plan_id)
@@ -1060,15 +1906,58 @@ class LegalAgentOrchestrator:
         if plan is None:
             return []
         by_id = {run.id: run for run in runs}
+        steps_by_id = {step.step_id: step for step in plan.steps}
         values: list[SpecialistStepExecution] = []
         for step in plan.steps:
-            run = by_id.get(step.latest_run_id) if step.latest_run_id else None
+            stale_dependency = (
+                step.status
+                in {
+                    AgentPlanStepStatus.COMPLETED,
+                    AgentPlanStepStatus.NEEDS_INFORMATION,
+                }
+                and self._step_has_stale_dependencies(
+                    step,
+                    steps_by_id=steps_by_id,
+                    runs_by_id=by_id,
+                )
+            ) or (
+                step.status == AgentPlanStepStatus.SKIPPED
+                and step.failure_code == "STALE_DEPENDENCY_RUN"
+            )
+            effective_status = (
+                AgentPlanStepStatus.SKIPPED if stale_dependency else step.status
+            )
+            selected_run_id = (
+                step.latest_valid_run_id
+                if effective_status
+                in {
+                    AgentPlanStepStatus.COMPLETED,
+                    AgentPlanStepStatus.NEEDS_INFORMATION,
+                }
+                else step.latest_run_id
+            )
+            run = by_id.get(selected_run_id) if selected_run_id else None
             output: LegalWorkProduct | None = None
-            if run and run.output_payload:
+            if (
+                run
+                and run.output_payload
+                and run.status
+                in {
+                    AgentRunStatus.COMPLETED,
+                    AgentRunStatus.NEEDS_MORE_INFORMATION,
+                }
+                and effective_status
+                in {
+                    AgentPlanStepStatus.COMPLETED,
+                    AgentPlanStepStatus.NEEDS_INFORMATION,
+                }
+            ):
                 output = LEGAL_OUTPUT_MODELS[step.agent_key].model_validate(
                     run.output_payload
                 )
-            run_sources = sources_by_run.get(run.id, []) if run else []
+            run_sources = (
+                sources_by_run.get(run.id, []) if run is not None and output is not None else []
+            )
             source_refs = frozenset(
                 str(source.citation_metadata.get("sourceRef"))
                 for source in run_sources
@@ -1080,20 +1969,51 @@ class LegalAgentOrchestrator:
                 if source.citation_metadata.get("sourceRef")
                 and source.citation_metadata.get("internalPrecedent") is True
             )
+            source_authorities = self._source_metadata(run_sources)
             values.append(
                 SpecialistStepExecution(
                     step_id=step.step_id,
                     agent_key=step.agent_key,
-                    run_id=step.latest_run_id,
-                    status=step.status,
+                    run_id=run.id if run is not None else step.latest_run_id,
+                    status=effective_status,
                     output=output,
-                    failure_code=step.failure_code,
-                    failure_message=step.failure_message,
+                    failure_code=(
+                        "STALE_DEPENDENCY_RUN"
+                        if stale_dependency
+                        else step.failure_code
+                    ),
+                    failure_message=(
+                        "A direct dependency changed; this Step requires an explicit rerun."
+                        if stale_dependency
+                        else step.failure_message
+                    ),
                     source_refs=source_refs,
                     internal_precedent_refs=internal_precedent_refs,
+                    source_authorities=source_authorities,
                 )
             )
         return values
+
+    @staticmethod
+    def _dependency_results(
+        results: dict[str, SpecialistStepExecution],
+    ) -> dict[str, DependencyResult]:
+        return {
+            step_id: DependencyResult(
+                step_id=value.step_id,
+                run_id=value.run_id,
+                status=value.status,
+                output_payload=(
+                    value.output.model_dump(by_alias=True, mode="json")
+                    if value.output is not None
+                    else None
+                ),
+                source_refs=value.source_refs,
+                internal_precedent_refs=value.internal_precedent_refs,
+                source_authorities=value.source_authorities,
+            )
+            for step_id, value in results.items()
+        }
 
     async def _snapshot_id_for_plan(self, uow: Any, plan: AgentExecutionPlan) -> UUID:
         if plan.planning_run_id is None:
@@ -1147,12 +2067,35 @@ class LegalAgentOrchestrator:
         )
 
     @staticmethod
+    def _has_pending_step_retry(
+        step_results: list[SpecialistStepExecution],
+    ) -> bool:
+        return any(
+            result.status == AgentPlanStepStatus.RUNNING for result in step_results
+        )
+
+    @staticmethod
+    def _pending_result(
+        plan: AgentExecutionPlan,
+        step_results: list[SpecialistStepExecution],
+    ) -> LegalAgentOrchestrationResult:
+        return LegalAgentOrchestrationResult(
+            plan_id=plan.id,
+            status=AgentExecutionPlanStatus.RUNNING,
+            planning_run_id=plan.planning_run_id,
+            synthesis_run_id=None,
+            artifact_id=None,
+            review_package_id=None,
+            step_results=tuple(step_results),
+        )
+
+    @staticmethod
     def _failed_result(
         plan: AgentExecutionPlan, planning_run_id: UUID
     ) -> LegalAgentOrchestrationResult:
         return LegalAgentOrchestrationResult(
             plan_id=plan.id,
-            status=AgentExecutionPlanStatus.FAILED,
+            status=plan.status,
             planning_run_id=planning_run_id,
             synthesis_run_id=None,
             artifact_id=None,

@@ -197,6 +197,7 @@ export interface AgentRunRecord {
   planStepId: string | null;
   parentRunId: string | null;
   retryOfRunId: string | null;
+  dependencyRunIds: string[];
   runRole: 'standalone' | 'butler_planning' | 'specialist' | 'butler_synthesis';
 }
 
@@ -221,6 +222,7 @@ export interface AgentPlanStepRecord {
   contextRequirements: string[];
   status: 'pending' | 'ready' | 'running' | 'completed' | 'failed' | 'skipped' | 'needs_information';
   latestRunId: string | null;
+  latestValidRunId: string | null;
   attemptCount: number;
   failureCode: string | null;
   failureMessage: string | null;
@@ -237,6 +239,8 @@ export interface AgentExecutionPlanRecord {
   missingInformation: string[];
   requiresUserInput: boolean;
   correlationId: string;
+  analysisEffectiveDate: string;
+  historicalAsOf: string | null;
   planningRunId: string | null;
   synthesisRunId: string | null;
   steps: AgentPlanStepRecord[];
@@ -794,7 +798,102 @@ export interface ReviewPackage {
   createdBy: string;
   submittedAt: string | null;
   approvedContentHash: string | null;
+  groundingPayload: Record<string, Array<Record<string, unknown>>>;
   version: number;
+}
+
+export type AuthorityType =
+  | 'unknown'
+  | 'law'
+  | 'administrative_regulation'
+  | 'judicial_interpretation'
+  | 'department_rule'
+  | 'local_regulation'
+  | 'local_government_rule'
+  | 'normative_document'
+  | 'guiding_case'
+  | 'court_case'
+  | 'regulatory_guidance'
+  | 'contract'
+  | 'company_policy'
+  | 'business_rule'
+  | 'legal_opinion'
+  | 'internal_precedent';
+
+export type AuthorityRole =
+  | 'formal_legal_basis'
+  | 'persuasive_authority'
+  | 'contractual_basis'
+  | 'internal_basis'
+  | 'strategy_reference';
+
+export type AuthorityStatus = 'effective' | 'superseded' | 'repealed' | 'unknown';
+
+export interface KnowledgeDocument {
+  id: string;
+  sourceType: string;
+  sourceId: string;
+  documentVersionId: string | null;
+  matterId: string | null;
+  title: string;
+  documentType: string;
+  agentTypes: string[];
+  matterTypes: string[];
+  jurisdiction: string;
+  effectiveFrom: string | null;
+  effectiveTo: string | null;
+  status: string;
+  sourcePriority: number;
+  internalPrecedent: boolean;
+  confidentiality: string;
+  approvedBy: string | null;
+  authorityType: AuthorityType;
+  authorityRole: AuthorityRole | null;
+  authorityStatus: AuthorityStatus;
+  metadataStatus: 'ready' | 'pending_metadata';
+  issuer: string | null;
+  documentNumber: string | null;
+  enabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+  version: number;
+}
+
+export interface KnowledgeChunk {
+  id: string;
+  knowledgeDocumentId: string;
+  documentSegmentId: string | null;
+  sequence: number;
+  locator: string;
+  text: string;
+  textHash: string;
+  estimatedTokenCount: number;
+  tokenEstimator: string;
+  tokenCountEstimated: boolean;
+  createdAt: string;
+}
+
+export interface KnowledgeRetrievalLog {
+  id: string;
+  queryHash: string;
+  filters: Record<string, unknown>;
+  selectedChunkIds: string[];
+  componentScores: Record<string, Record<string, number>>;
+  correlationId: string;
+  agentRunId: string | null;
+  candidateCount: number;
+  selectedChunkCount: number;
+  selectedTokenCount: number;
+  excludedByTokenBudgetCount: number;
+  excludedDuplicateCount: number;
+  budget: Record<string, number>;
+  createdAt: string;
+}
+
+export interface KnowledgeDocumentDetails {
+  document: KnowledgeDocument;
+  chunks: KnowledgeChunk[];
+  retrievalLogs: KnowledgeRetrievalLog[];
 }
 
 export interface ReviewRecord {

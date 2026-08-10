@@ -11,13 +11,17 @@ from legal_workbench.domain.documents import (
     DocumentVersion,
     FeishuDocument,
     FeishuDocumentSubscription,
+    LocalDocumentObservation,
+    LocalDocumentSource,
+    LocalKnowledgeScan,
 )
+from legal_workbench.domain.enums import AuthorityType, KnowledgeMetadataStatus
 from legal_workbench.domain.knowledge import (
     KnowledgeChunk,
     KnowledgeDocument,
     KnowledgeRetrievalLog,
+    KnowledgeSearchBatch,
     KnowledgeSearchRequest,
-    KnowledgeSearchResult,
 )
 
 __all__ = [
@@ -28,6 +32,27 @@ __all__ = [
 
 
 class DocumentRepository(Protocol):
+    async def add_local_scan(self, scan: LocalKnowledgeScan) -> None: ...
+    async def save_local_scan(self, scan: LocalKnowledgeScan) -> None: ...
+    async def find_local_source(
+        self, *, source_root_key: str, relative_path: str
+    ) -> LocalDocumentSource | None: ...
+    async def list_local_sources(
+        self, *, source_root_key: str
+    ) -> Sequence[LocalDocumentSource]: ...
+    async def add_local_source(self, source: LocalDocumentSource) -> None: ...
+    async def save_local_source(self, source: LocalDocumentSource) -> None: ...
+    async def add_local_observation(self, observation: LocalDocumentObservation) -> None: ...
+    async def find_latest_local_observation(
+        self, local_source_id: UUID
+    ) -> LocalDocumentObservation | None: ...
+    async def find_any_local_version_by_sha256(
+        self, content_sha256: str
+    ) -> DocumentVersion | None: ...
+    async def find_local_version(
+        self, *, local_source_id: UUID, content_sha256: str
+    ) -> DocumentVersion | None: ...
+    async def next_local_version(self, local_source_id: UUID) -> int: ...
     async def find_feishu_document(
         self, *, authorization_id: UUID, document_token: str
     ) -> FeishuDocument | None: ...
@@ -74,20 +99,38 @@ class DocumentRepository(Protocol):
     async def list_latest_feishu_segments_for_messages(
         self, message_ids: Sequence[UUID]
     ) -> Sequence[tuple[FeishuDocument, DocumentSegment]]: ...
+    async def list_segments_for_version(
+        self, document_version_id: UUID
+    ) -> Sequence[DocumentSegment]: ...
 
 
 class KnowledgeRepository(Protocol):
     async def add_document(self, document: KnowledgeDocument) -> None: ...
     async def get_document(self, document_id: UUID) -> KnowledgeDocument | None: ...
+    async def get_document_for_update(
+        self, document_id: UUID
+    ) -> KnowledgeDocument | None: ...
+    async def list_documents(
+        self,
+        *,
+        authority_type: AuthorityType | None,
+        metadata_status: KnowledgeMetadataStatus | None,
+        enabled: bool | None,
+        limit: int,
+    ) -> Sequence[KnowledgeDocument]: ...
+    async def save_document(self, document: KnowledgeDocument) -> None: ...
     async def find_document_by_source(
         self, *, source_type: str, source_id: str
     ) -> KnowledgeDocument | None: ...
     async def add_chunks(self, chunks: Sequence[KnowledgeChunk]) -> None: ...
     async def list_chunks(self, document_id: UUID) -> Sequence[KnowledgeChunk]: ...
     async def add_retrieval_log(self, log: KnowledgeRetrievalLog) -> None: ...
+    async def list_retrieval_logs(
+        self, *, document_id: UUID, limit: int
+    ) -> Sequence[KnowledgeRetrievalLog]: ...
     async def search(
         self, request: KnowledgeSearchRequest
-    ) -> Sequence[KnowledgeSearchResult]: ...
+    ) -> KnowledgeSearchBatch: ...
 
 
 class AttachmentStorageQuotaRepository(Protocol):

@@ -86,11 +86,22 @@ jobs:
       - name: Pytest
         working-directory: apps/backend
         run: uv run --locked pytest
+      - name: Round-trip latest migration with populated data
+        working-directory: apps/backend
+        run: |
+          uv run --locked alembic -c alembic.ini downgrade -1
+          uv run --locked alembic -c alembic.ini upgrade head
 
-  compose:
+  production-images:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - name: Validate Compose
         run: cp .env.example .env && docker compose config --quiet
+      - name: Build production API and Web images
+        run: docker compose build api web
+      - name: Smoke production image runtimes
+        run: |
+          docker compose run --rm --no-deps api sh -c 'python --version && codex --version'
+          docker compose run --rm --no-deps web nginx -t

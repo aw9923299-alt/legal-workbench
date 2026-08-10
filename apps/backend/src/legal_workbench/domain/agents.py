@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime
 from typing import ClassVar
 from uuid import UUID, uuid4
 
@@ -181,8 +181,19 @@ class AgentRunAttempt:
             lease_token=self.lease_token,
         )
 
-    def ensure_current(self, lease: AgentAttemptLease) -> None:
-        if self.status != AgentAttemptStatus.RUNNING or lease != self.lease:
+    def ensure_current(
+        self,
+        lease: AgentAttemptLease,
+        *,
+        active_at: datetime | None = None,
+    ) -> None:
+        checked_at = active_at or utc_now()
+        require_aware(checked_at, field_name="Agent attempt lease check time")
+        if (
+            self.status != AgentAttemptStatus.RUNNING
+            or lease != self.lease
+            or self.lease_expires_at <= checked_at
+        ):
             raise StaleAgentAttemptError(
                 "The Agent Attempt lease is stale and cannot update this run.",
                 details={
@@ -192,9 +203,9 @@ class AgentRunAttempt:
             )
 
     def complete(self, lease: AgentAttemptLease, *, now: datetime | None = None) -> None:
-        self.ensure_current(lease)
         finished_at = now or utc_now()
         require_aware(finished_at, field_name="Agent attempt completion time")
+        self.ensure_current(lease, active_at=finished_at)
         self.status = AgentAttemptStatus.COMPLETED
         self.finished_at = finished_at
         self.lease_expires_at = finished_at
@@ -206,9 +217,9 @@ class AgentRunAttempt:
         heartbeat_at: datetime,
         lease_expires_at: datetime,
     ) -> None:
-        self.ensure_current(lease)
         require_aware(heartbeat_at, field_name="Agent attempt heartbeat")
         require_aware(lease_expires_at, field_name="Agent attempt lease expiry")
+        self.ensure_current(lease, active_at=heartbeat_at)
         if lease_expires_at <= heartbeat_at:
             raise DomainValidationError("Agent attempt lease expiry must follow its heartbeat.")
         self.heartbeat_at = heartbeat_at
@@ -223,7 +234,6 @@ class AgentRunAttempt:
         failure_message: str,
         now: datetime | None = None,
     ) -> None:
-        self.ensure_current(lease)
         if status not in {
             AgentAttemptStatus.FAILED,
             AgentAttemptStatus.TIMED_OUT,
@@ -232,6 +242,7 @@ class AgentRunAttempt:
             raise DomainValidationError("Agent attempt failure requires a failure terminal status.")
         finished_at = now or utc_now()
         require_aware(finished_at, field_name="Agent attempt failure time")
+        self.ensure_current(lease, active_at=finished_at)
         self.status = status
         self.finished_at = finished_at
         self.lease_expires_at = finished_at
@@ -246,6 +257,11 @@ class AgentRunAttempt:
             )
         finished_at = now or utc_now()
         require_aware(finished_at, field_name="Agent attempt expiry time")
+        if self.lease_expires_at > finished_at:
+            raise StaleAgentAttemptError(
+                "The Agent Attempt lease has not expired.",
+                details={"runId": str(self.run_id), "attemptNumber": self.attempt_number},
+            )
         self.status = AgentAttemptStatus.EXPIRED
         self.finished_at = finished_at
         self.lease_expires_at = finished_at
@@ -295,6 +311,7 @@ class AgentRun:
     parent_run_id: UUID | None = None
     retry_of_run_id: UUID | None = None
     run_role: AgentRunRole = AgentRunRole.STANDALONE
+    dependency_run_ids: list[UUID] = field(default_factory=list)
     pending_status_changes: list[AgentRunStatusChange] = field(default_factory=list, repr=False)
 
     _TRANSITIONS: ClassVar[dict[AgentRunStatus, set[AgentRunStatus]]] = {
@@ -407,6 +424,7 @@ class AgentPlanStep:
     context_requirements: list[str]
     status: AgentPlanStepStatus = AgentPlanStepStatus.PENDING
     latest_run_id: UUID | None = None
+    latest_valid_run_id: UUID | None = None
     attempt_count: int = 0
     failure_code: str | None = None
     failure_message: str | None = None
@@ -437,6 +455,9 @@ class AgentExecutionPlan:
     correlation_id: str
     idempotency_key: str
     created_by: str
+    analysis_jurisdiction: str = "CN"
+    analysis_effective_date: date = field(default_factory=date.today)
+    historical_as_of: date | None = None
     steps: list[AgentPlanStep] = field(default_factory=list)
     planning_run_id: UUID | None = None
     synthesis_run_id: UUID | None = None
@@ -453,6 +474,8 @@ class AgentExecutionPlan:
             raise DomainValidationError(
                 "Execution plan correlation and idempotency keys are required."
             )
+        if not self.analysis_jurisdiction.strip():
+            raise DomainValidationError("Execution plan analysis jurisdiction is required.")
 
     def validate_steps(self, registered_agent_keys: set[str] | frozenset[str]) -> None:
         if not 1 <= len(self.steps) <= 4:

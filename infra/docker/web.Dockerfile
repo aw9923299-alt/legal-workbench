@@ -1,6 +1,8 @@
-FROM node:22.23.2-alpine AS build
+FROM node:24.15.0-alpine AS build
 
 WORKDIR /workspace
+COPY .node-version /tmp/legal-workbench-node-version
+RUN test "$(node --version)" = "v$(cat /tmp/legal-workbench-node-version)"
 COPY package.json package-lock.json ./
 COPY apps/web/package.json ./apps/web/package.json
 RUN npm ci --workspace @legal-workbench/web --no-audit --no-fund

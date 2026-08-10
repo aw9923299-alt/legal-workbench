@@ -4,12 +4,14 @@ Python 3.12 模块化单体后端。一个代码库通过不同进程角色提�
 
 ## 当前已实现
 
-首个业务垂直切片已经落地：
+当前业务垂直切片已经落地：
 
 ```text
 ContextSnapshot → MessageCandidate
 → 法务确认创建 LegalMatter
 → 同事务创建一个或多个 WorkItem
+→ AgentExecutionPlan → Specialist DAG → DraftArtifact
+→ pending ReviewPackage
 → AuditEvent + OutboxEvent + IdempotencyRecord
 ```
 
@@ -25,6 +27,9 @@ ContextSnapshot → MessageCandidate
 - Candidate、Matter 和 WorkItem 查询及写入 API；
 - 应用层单元测试和ORM元数据测试；
 - CI真实PostgreSQL迁移及HTTP端到端集成测试。
+- AgentRunAttempt lease/fencing、PostgreSQL recovery、Step latest-valid lineage 与 stale completion 防护；
+- PostgreSQL 知识检索、authority/historical-as-of 校验和服务端 citation canonicalization；
+- Synthetic Fake Runtime 全链 E2E；Real Codex E2E 保持独立显式门禁。
 
 ## API
 
@@ -75,4 +80,4 @@ uv run --locked pytest
 uv run --locked alembic -c alembic.ini upgrade head --sql
 ```
 
-正式业务对象和接口以 `docs/design/` 为准。飞书、Codex Runtime、审核包和真实外发尚未接入。
+正式业务对象和接口以 `docs/design/` 为准。所有 Agent 结果只形成 DraftArtifact 与待人工审核包；不得把 Fake Runtime 测试描述为 Real Codex，也不得绕过审核自动外发。
