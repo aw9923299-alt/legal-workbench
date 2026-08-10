@@ -459,8 +459,46 @@ async def test_recovery_dead_letter_for_superseded_step_does_not_mutate_current_
 
     result = await AnalysisRecoveryService(_Factory(uow), now=lambda: NOW).recover()
 
-    assert result.legal_dead_lettered == 1
-    assert stale_run.status == AgentRunStatus.DEAD_LETTER
+    assert result.legal_dead_lettered == 0
+    assert result.legal_runs_requeued == 0
+    assert stale_run.status == AgentRunStatus.CANCELLED
     assert plan.status == AgentExecutionPlanStatus.RUNNING
     assert current_step.status == AgentPlanStepStatus.RUNNING
     assert current_step.latest_run_id == current_run_id
+    assert uow.outbox_events.events == []
+    assert uow.audit_events.events[-1].event_type == "legal_agent_run_superseded"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "run_status",
+    [AgentRunStatus.QUEUED, AgentRunStatus.RUNNING],
+)
+async def test_recovery_never_requeues_non_exhausted_superseded_legal_run(
+    run_status: AgentRunStatus,
+) -> None:
+    plan, stale_run = _legal_fixture(
+        run_status=run_status,
+        run_role=AgentRunRole.SPECIALIST,
+        attempt_number=1,
+        max_attempts=2,
+    )
+    current_run_id = uuid4()
+    current_step = plan.steps[1]
+    current_step.latest_run_id = current_run_id
+    current_step.status = AgentPlanStepStatus.RUNNING
+    uow = _Uow(messages=[], queued=[], stale=[stale_run], plans=[plan])
+
+    result = await AnalysisRecoveryService(_Factory(uow), now=lambda: NOW).recover()
+
+    assert result.legal_runs_requeued == 0
+    assert result.legal_dead_lettered == 0
+    assert stale_run.status == AgentRunStatus.CANCELLED
+    assert stale_run.attempt_number == 1
+    assert plan.status == AgentExecutionPlanStatus.RUNNING
+    assert current_step.status == AgentPlanStepStatus.RUNNING
+    assert current_step.latest_run_id == current_run_id
+    assert uow.outbox_events.events == []
+    assert uow.audit_events.events[-1].event_type == "legal_agent_run_superseded"
+    if run_status == AgentRunStatus.RUNNING:
+        assert uow.agent_run_attempts.attempts[0].status == AgentAttemptStatus.EXPIRED

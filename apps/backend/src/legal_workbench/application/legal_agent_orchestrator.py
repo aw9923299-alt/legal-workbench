@@ -256,6 +256,8 @@ class LegalAgentOrchestrator:
             )
 
         step_results = await execute_plan_waves(plan, runner)
+        if self._has_pending_step_retry(step_results):
+            return self._pending_result(plan, step_results)
         await self._persist_skipped_steps(plan.id, step_results)
         return await self._synthesize(
             plan=plan,
@@ -383,6 +385,8 @@ class LegalAgentOrchestrator:
             runner,
             initial_results=initial_results,
         )
+        if self._has_pending_step_retry(step_results):
+            return self._pending_result(plan, step_results)
         await self._persist_skipped_steps(plan.id, step_results)
         synthesis_run = next(
             (
@@ -526,6 +530,8 @@ class LegalAgentOrchestrator:
             retry_of_run_id=step.latest_run_id,
             existing_run=rerun,
         )
+        if step_result.status == AgentPlanStepStatus.RUNNING:
+            return self._pending_result(plan, [step_result])
         await self._invalidate_stale_dependents(plan.id)
         all_results = await self._list_step_results(plan.id)
         by_step = {value.step_id: value for value in all_results}
@@ -837,7 +843,7 @@ class LegalAgentOrchestrator:
             execution = replace(execution, output=canonical_product)
         except (AgentRuntimeError, DomainValidationError) as exc:
             failure = self._runtime_failure(exc)
-            await self._fail_step(
+            retry_queued = await self._fail_step(
                 plan.id,
                 step.step_id,
                 run.id,
@@ -850,7 +856,11 @@ class LegalAgentOrchestrator:
                 step_id=step.step_id,
                 agent_key=step.agent_key,
                 run_id=run.id,
-                status=AgentPlanStepStatus.FAILED,
+                status=(
+                    AgentPlanStepStatus.RUNNING
+                    if retry_queued
+                    else AgentPlanStepStatus.FAILED
+                ),
                 failure_code=failure.code,
                 failure_message=str(failure),
                 source_refs=context.source_refs,
@@ -913,11 +923,10 @@ class LegalAgentOrchestrator:
         reserve_rerun: bool = False,
     ) -> AgentRun:
         async with self._uow_factory() as uow:
-            stored_plan = None
+            stored_plan = await uow.agent_execution_plans.get_for_update(plan.id)
+            if stored_plan is None:
+                raise EntityNotFoundError("Agent execution plan was not found.")
             if reserve_rerun:
-                stored_plan = await uow.agent_execution_plans.get_for_update(plan.id)
-                if stored_plan is None:
-                    raise EntityNotFoundError("Agent execution plan was not found.")
                 if stored_plan.status not in {
                     AgentExecutionPlanStatus.COMPLETED,
                     AgentExecutionPlanStatus.NEEDS_INFORMATION,
@@ -931,6 +940,17 @@ class LegalAgentOrchestrator:
                             "status": stored_plan.status.value,
                         },
                     )
+            elif stored_plan.status not in {
+                AgentExecutionPlanStatus.PLANNED,
+                AgentExecutionPlanStatus.RUNNING,
+            } or stored_plan.synthesis_run_id is not None:
+                raise InvalidStateTransitionError(
+                    "The Agent execution plan cannot start an initial Specialist Run.",
+                    details={
+                        "planId": str(stored_plan.id),
+                        "status": stored_plan.status.value,
+                    },
+                )
             stored_step = await uow.agent_execution_plans.get_step_for_update(
                 plan.id, step.step_id
             )
@@ -947,7 +967,6 @@ class LegalAgentOrchestrator:
                         "The requested Step rerun no longer targets the current Run.",
                         details={"planId": str(plan.id), "stepId": stored_step.step_id},
                     )
-                assert stored_plan is not None
                 steps_by_id = {value.step_id: value for value in stored_plan.steps}
                 current_dependencies: list[UUID] = []
                 for dependency_id in dict.fromkeys(stored_step.depends_on):
@@ -978,7 +997,7 @@ class LegalAgentOrchestrator:
             run = self._new_run(
                 definition_key=step.agent_key,
                 snapshot=snapshot,
-                plan=stored_plan or plan,
+                plan=stored_plan,
                 objective=stored_step.objective,
                 actor_id=trigger.actor_id,
                 role=AgentRunRole.SPECIALIST,
@@ -994,12 +1013,12 @@ class LegalAgentOrchestrator:
             stored_step.updated_at = utc_now()
             stored_step.version += 1
             await uow.agent_execution_plans.save_step(stored_step)
-            if stored_plan is not None:
-                stored_plan.status = AgentExecutionPlanStatus.RUNNING
+            stored_plan.status = AgentExecutionPlanStatus.RUNNING
+            if reserve_rerun:
                 stored_plan.synthesis_run_id = None
-                stored_plan.updated_at = utc_now()
-                stored_plan.version += 1
-                await uow.agent_execution_plans.save(stored_plan)
+            stored_plan.updated_at = utc_now()
+            stored_plan.version += 1
+            await uow.agent_execution_plans.save(stored_plan)
             await uow.commit()
         return run
 
@@ -1012,6 +1031,8 @@ class LegalAgentOrchestrator:
         step_results: list[SpecialistStepExecution],
         existing_run: AgentRun | None = None,
     ) -> LegalAgentOrchestrationResult:
+        if self._has_pending_step_retry(step_results):
+            return self._pending_result(plan, step_results)
         synthesis_run = existing_run or await self._start_synthesis_run(
             plan, snapshot, trigger
         )
@@ -1126,7 +1147,7 @@ class LegalAgentOrchestrator:
                 raise DomainValidationError("Butler synthesis returned the wrong contract.")
         except (AgentRuntimeError, DomainValidationError) as exc:
             failure = self._runtime_failure(exc)
-            await self._fail_run_and_plan(
+            retry_queued = await self._fail_run_and_plan(
                 plan.id,
                 synthesis_run.id,
                 synthesis_lease,
@@ -1138,9 +1159,13 @@ class LegalAgentOrchestrator:
             return LegalAgentOrchestrationResult(
                 plan_id=plan.id,
                 status=(
-                    AgentExecutionPlanStatus.PARTIAL
-                    if any(result.output is not None for result in step_results)
-                    else AgentExecutionPlanStatus.FAILED
+                    AgentExecutionPlanStatus.RUNNING
+                    if retry_queued
+                    else (
+                        AgentExecutionPlanStatus.PARTIAL
+                        if any(result.output is not None for result in step_results)
+                        else AgentExecutionPlanStatus.FAILED
+                    )
                 ),
                 planning_run_id=plan.planning_run_id,
                 synthesis_run_id=synthesis_run.id,
@@ -1350,7 +1375,7 @@ class LegalAgentOrchestrator:
         *,
         run_input: dict[str, object],
         working_directory: str,
-    ) -> None:
+    ) -> bool:
         async with self._uow_factory() as uow:
             run = await uow.agent_runs.get_for_update(run_id)
             step = await uow.agent_execution_plans.get_step_for_update(plan_id, step_id)
@@ -1372,6 +1397,7 @@ class LegalAgentOrchestrator:
             step.version += 1
             await uow.agent_execution_plans.save_step(step)
             await uow.commit()
+        return retry_queued
 
     async def _fail_run_and_plan(
         self,
@@ -1383,7 +1409,7 @@ class LegalAgentOrchestrator:
         input_payload: dict[str, object],
         working_directory: str,
         partial: bool = False,
-    ) -> None:
+    ) -> bool:
         async with self._uow_factory() as uow:
             run = await uow.agent_runs.get_for_update(run_id)
             plan = await uow.agent_execution_plans.get_for_update(plan_id)
@@ -1413,6 +1439,7 @@ class LegalAgentOrchestrator:
             plan.version += 1
             await uow.agent_execution_plans.save(plan)
             await uow.commit()
+        return retry_queued
 
     @staticmethod
     def _apply_run_failure(
@@ -2037,6 +2064,29 @@ class LegalAgentOrchestrator:
             str(error),
             retryable=False,
             validation_errors=(str(error),),
+        )
+
+    @staticmethod
+    def _has_pending_step_retry(
+        step_results: list[SpecialistStepExecution],
+    ) -> bool:
+        return any(
+            result.status == AgentPlanStepStatus.RUNNING for result in step_results
+        )
+
+    @staticmethod
+    def _pending_result(
+        plan: AgentExecutionPlan,
+        step_results: list[SpecialistStepExecution],
+    ) -> LegalAgentOrchestrationResult:
+        return LegalAgentOrchestrationResult(
+            plan_id=plan.id,
+            status=AgentExecutionPlanStatus.RUNNING,
+            planning_run_id=plan.planning_run_id,
+            synthesis_run_id=None,
+            artifact_id=None,
+            review_package_id=None,
+            step_results=tuple(step_results),
         )
 
     @staticmethod

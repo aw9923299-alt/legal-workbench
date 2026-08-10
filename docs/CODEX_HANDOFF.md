@@ -50,7 +50,7 @@ Candidate confirmed / Matter manual trigger
 | ContextSnapshot/AgentDefinition/AgentRun/Source/DraftArtifact | 已实现 |
 | `message_judgement` + `CodexCliRuntime` | 已实现，当前 Mac 已由 Workbench 隔离认证目录完成真实 AgentRun，并产生待人工确认 Candidate |
 | Codex 版本/隔离认证健康检查 | 已实现；宿主与 Worker 均为 0.146.0，显式隔离认证已验收；不得继承 ambient `CODEX_HOME` |
-| AgentRun 状态历史、租约与 PostgreSQL 恢复 | 已统一覆盖 message judgement、Butler planning、Specialist、Synthesis；Attempt 只有在数据库确认 lease 已过期且 lease token/current-attempt CAS 成功后才能失效。恢复扫描 CAS 失败时不再修改 Run/Step/Plan、审计或 Outbox；旧 owner、旧 Step Run 和旧 Synthesis Run 均不能提交有效结果 |
+| AgentRun 状态历史、租约与 PostgreSQL 恢复 | 已统一覆盖 message judgement、Butler planning、Specialist、Synthesis；Attempt 只有在数据库确认 lease 已过期且 lease token/current-attempt CAS 成功后才能失效。Legal recovery 重排前再次锁定 Plan/Step 并核验 current Run，superseded Run 只取消并审计、不产生恢复 Outbox；可重试 Specialist 保持 running 且阻断 dependency failure/synthesis，恢复完成后才继续。旧 owner、旧 Step Run 和旧 Synthesis Run 均不能提交有效结果、DraftArtifact 或 ReviewPackage |
 | Candidate 分析修订历史 | 已实现，旧修订不覆盖 |
 | MatterUpdateProposal 人工审核 | 已实现；Proposal/Matter 双版本锁、逐字段最终值、WorkItem/Deadline 同事务落库；409 刷新保留法务草稿 |
 | WorkItem 全生命周期 | 已实现；13 类领域动作、WorkItem/Dependency 双版本、审计/Outbox/幂等同事务；页面按状态展示合法操作并刷新相关队列 |

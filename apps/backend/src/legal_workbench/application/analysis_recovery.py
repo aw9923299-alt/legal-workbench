@@ -90,13 +90,21 @@ class AnalysisRecoveryService:
             for run in stale_queued:
                 if run.execution_plan_id is None:
                     continue
+                recovered_run = await uow.agent_runs.get_for_update(run.id)
+                if recovered_run is None or recovered_run.execution_plan_id is None:
+                    continue
+                if not await self._is_current_legal_run(uow, recovered_run):
+                    await self._cancel_superseded_legal_run(
+                        uow, recovered_run, now=now
+                    )
+                    continue
                 if await self._ensure_legal_recovery_event(
                     uow,
-                    plan_id=run.execution_plan_id,
-                    run_id=run.id,
-                    run_role=run.run_role,
+                    plan_id=recovered_run.execution_plan_id,
+                    run_id=recovered_run.id,
+                    run_role=recovered_run.run_role,
                     reason="stale_queued_agent_run",
-                    correlation_id=run.correlation_id,
+                    correlation_id=recovered_run.correlation_id,
                 ):
                     legal_runs_requeued += 1
 
@@ -200,12 +208,18 @@ class AnalysisRecoveryService:
                 recovered_run = await uow.agent_runs.get_for_update(candidate.id)
                 if recovered_run is None or recovered_run.execution_plan_id is None:
                     continue
+                current_lineage = await self._is_current_legal_run(uow, recovered_run)
                 attempt_expired = await AgentExecutionLeaseService(
                     uow.agent_run_attempts,
                     lease_seconds=self._stale_after_seconds,
                     now=self._now,
                 ).expire_current(recovered_run)
                 if not attempt_expired:
+                    continue
+                if not current_lineage:
+                    await self._cancel_superseded_legal_run(
+                        uow, recovered_run, now=now
+                    )
                     continue
                 recovered_run.failure_code = "AGENT_LEASE_EXPIRED"
                 recovered_run.failure_message = "Agent worker heartbeat lease expired."
@@ -258,6 +272,64 @@ class AnalysisRecoveryService:
             dead_lettered=dead_lettered,
             legal_runs_requeued=legal_runs_requeued,
             legal_dead_lettered=legal_dead_lettered,
+        )
+
+    async def _is_current_legal_run(
+        self,
+        uow: UnitOfWork,
+        run: AgentRun,
+    ) -> bool:
+        if run.execution_plan_id is None:
+            return False
+        plan = await uow.agent_execution_plans.get_for_update(run.execution_plan_id)
+        if plan is None:
+            return False
+        if run.run_role == AgentRunRole.BUTLER_PLANNING:
+            return plan.planning_run_id == run.id
+        if run.run_role == AgentRunRole.BUTLER_SYNTHESIS:
+            return plan.synthesis_run_id == run.id
+        if run.run_role != AgentRunRole.SPECIALIST or run.plan_step_id is None:
+            return False
+        matching = next(
+            (value for value in plan.steps if value.id == run.plan_step_id),
+            None,
+        )
+        if matching is None:
+            return False
+        step = await uow.agent_execution_plans.get_step_for_update(
+            plan.id, matching.step_id
+        )
+        return step is not None and step.latest_run_id == run.id
+
+    async def _cancel_superseded_legal_run(
+        self,
+        uow: UnitOfWork,
+        run: AgentRun,
+        *,
+        now: datetime,
+    ) -> None:
+        run.failure_code = "AGENT_RUN_SUPERSEDED"
+        run.failure_message = "A newer current Run owns this legal execution phase."
+        run.lease_expires_at = None
+        run.worker_id = None
+        run.transition_to(AgentRunStatus.CANCELLED, now=now)
+        await uow.agent_runs.save(run)
+        await uow.audit_events.add(
+            AuditEvent(
+                id=uuid4(),
+                aggregate_type="agent_run",
+                aggregate_id=run.id,
+                event_type="legal_agent_run_superseded",
+                actor_id="analysis-recovery",
+                actor_source="system",
+                payload={
+                    "planId": str(run.execution_plan_id),
+                    "runRole": run.run_role.value,
+                    "attemptNumber": run.attempt_number,
+                    "action": "cancelled_without_requeue",
+                },
+                correlation_id=run.correlation_id,
+            )
         )
 
     async def _mark_legal_phase_terminal(

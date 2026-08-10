@@ -11,6 +11,7 @@ import pytest
 from legal_workbench.agents.codex_cli import CodexCliRuntime
 from legal_workbench.agents.definitions import build_legal_agent_definitions
 from legal_workbench.agents.legal_contracts import ContractReviewProduct
+from legal_workbench.agents.professional import COMMON_LEGAL_PROMPT
 from legal_workbench.agents.runtime import AgentExecutionContext
 from legal_workbench.domain.entities import AgentRun, ContextSnapshot
 from legal_workbench.domain.enums import AgentRunRole, AgentRunStatus
@@ -70,6 +71,12 @@ def _contract_output() -> dict[str, object]:
         "fallbackPositions": ["排除间接损失"],
         "negotiationPoints": ["责任上限"],
     }
+
+
+def test_professional_prompt_keeps_historical_as_of_distinct_from_execution_date() -> None:
+    assert "analysisHistoricalAsOf 非空时" in COMMON_LEGAL_PROMPT
+    assert "effectiveDate 必须等于该历史适用时点" in COMMON_LEGAL_PROMPT
+    assert "否则必须等于 authorizedContext.analysisEffectiveDate" in COMMON_LEGAL_PROMPT
 
 
 @pytest.mark.asyncio

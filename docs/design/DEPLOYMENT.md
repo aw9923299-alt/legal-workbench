@@ -160,7 +160,7 @@ curl --cookie-jar /tmp/legal-workbench-cookie http://localhost:8000/api/v1/syste
 
 故障恢复验证应依次停止/恢复 Redis、Worker 和 API，并检查 PostgreSQL 中 queued 消息、AgentRun 租约、Outbox 和死信仍可由 scheduler 或 `/system/recover-pending-jobs` 恢复。Codex 进程终止测试必须得到明确失败码，不能以伪造成功结果完成。
 
-CI 除 `docker compose config --quiet` 外必须执行 `docker compose build api web`，真实构建生产 Backend/Web Dockerfile；只检查 Compose 语法不能作为生产镜像可构建证据。Python 以 `.python-version`、CI 和 Dockerfile 共同声明 3.12 minor policy，依赖由 uv 0.12.3 与 `uv.lock` 固化；不额外复制一个 Python patch 版本来源。
+CI 除 `docker compose config --quiet` 外必须执行 `docker compose build api web`，真实构建生产 Backend/Web Dockerfile，并在镜像内检查 Python/Codex 版本与 Nginx 配置；只检查 Compose 语法不能作为生产镜像可构建证据。Backend 测试填充数据库后还必须对最新迁移执行一次 `downgrade -1` / `upgrade head` 往返。Python 以 `.python-version`、CI 和 Dockerfile 共同声明 3.12 minor policy，依赖由 uv 0.12.3 与 `uv.lock` 固化；不额外复制一个 Python patch 版本来源。
 
 备份恢复演练应使用独立临时数据库，先对 `.dump` 执行 `pg_restore --list`，再恢复并验证 Alembic head、核心表数量和只追加审计；不得覆盖正在运行的业务库。诊断包只含 Docker/Compose/Git 状态、磁盘及脱敏运维元数据，不含 `.env`、数据库内容、飞书正文或附件。
 

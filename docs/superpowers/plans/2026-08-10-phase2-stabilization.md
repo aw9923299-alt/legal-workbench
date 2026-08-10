@@ -130,4 +130,3 @@
 3. Run Real Codex E2E only if all explicit credentials/runtime gates are available; otherwise report it as unrun without treating Fake Runtime as equivalent.
 4. Confirm no Communication bypass, no Redis business facts, no sensitive fixture/material, and no unrelated refactor.
 5. Review the final diff and issue `READY TO MERGE`, `READY AFTER FIXES`, or `NOT READY`. Do not merge.
-

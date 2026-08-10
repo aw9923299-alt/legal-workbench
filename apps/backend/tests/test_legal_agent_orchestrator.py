@@ -23,6 +23,7 @@ from legal_workbench.agents.legal_contracts import (
 from legal_workbench.agents.runtime import (
     AgentExecutionContext,
     AgentExecutionResult,
+    AgentRuntimeError,
 )
 from legal_workbench.application.analysis_recovery import AnalysisRecoveryService
 from legal_workbench.application.legal_agent_orchestrator import (
@@ -40,7 +41,10 @@ from legal_workbench.domain.enums import (
     MatterCategory,
     ReviewPackageStatus,
 )
-from legal_workbench.domain.errors import InvalidStateTransitionError
+from legal_workbench.domain.errors import (
+    InvalidStateTransitionError,
+    StaleAgentAttemptError,
+)
 
 SOURCE_REF = "knowledge:chunk:fixture-law"
 STALE_SUMMARY_SOURCE_REF = "knowledge:chunk:stale-summary-only"
@@ -189,16 +193,22 @@ class FakeLegalRuntime:
         self,
         *,
         crash_at: str | None = None,
+        retryable_failure_at: str | None = None,
         planning_requires_user_input: bool = False,
     ) -> None:
         self.calls: list[tuple[str, str]] = []
         self.upstream_by_key: dict[str, list[dict[str, object]]] = {}
         self.crash_at = crash_at
         self.crashed = False
+        self.retryable_failure_at = retryable_failure_at
+        self.retryable_failure_raised = False
         self.planning_requires_user_input = planning_requires_user_input
         self.block_next_specialist_key: str | None = None
         self.blocked_specialist_entered = asyncio.Event()
         self.release_blocked_specialist = asyncio.Event()
+        self.block_next_phase: str | None = None
+        self.blocked_phase_entered = asyncio.Event()
+        self.release_blocked_phase = asyncio.Event()
 
     async def execute(
         self,
@@ -211,6 +221,10 @@ class FakeLegalRuntime:
         assert context.heartbeat is not None
         await context.heartbeat()
         self.calls.append((key, phase))
+        if self.block_next_phase == phase:
+            self.block_next_phase = None
+            self.blocked_phase_entered.set()
+            await self.release_blocked_phase.wait()
         if phase == "specialist":
             upstream = (context.input_payload or {}).get("upstreamOutputs", {})
             assert isinstance(upstream, dict)
@@ -220,6 +234,13 @@ class FakeLegalRuntime:
                 self.blocked_specialist_entered.set()
                 await self.release_blocked_specialist.wait()
         marker = f"specialist:{key}" if phase == "specialist" else phase
+        if marker == self.retryable_failure_at and not self.retryable_failure_raised:
+            self.retryable_failure_raised = True
+            raise AgentRuntimeError(
+                "SYNTHETIC_RETRYABLE_FAILURE",
+                f"Synthetic retryable failure at {marker}.",
+                retryable=True,
+            )
         if marker == self.crash_at and not self.crashed:
             self.crashed = True
             raise RuntimeError(f"Synthetic worker crash at {marker}.")
@@ -626,6 +647,366 @@ async def test_multi_agent_orchestration_persists_lineage_draft_and_review() -> 
             [run for run in final_runs if run.run_role == AgentRunRole.BUTLER_SYNTHESIS]
         ) == 3
     finally:
+        await engine.dispose()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_retryable_specialist_failure_waits_for_recovery_before_synthesis() -> None:
+    if os.getenv("RUN_POSTGRES_INTEGRATION_TESTS") != "1":
+        pytest.skip("PostgreSQL integration tests are disabled")
+
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    from legal_workbench.domain.enums import AgentPlanStepStatus, AgentRunStatus
+    from legal_workbench.infrastructure.unit_of_work import SqlAlchemyUnitOfWorkFactory
+
+    engine = create_async_engine(os.environ["LEGAL_WORKBENCH_TEST_DATABASE_URL"])
+    factory = SqlAlchemyUnitOfWorkFactory(
+        async_sessionmaker(engine, expire_on_commit=False)
+    )
+    matter = LegalMatter.create(
+        title="Retryable specialist fixture",
+        primary_category=MatterCategory.CONTRACT,
+        secondary_categories=[MatterCategory.INTELLECTUAL_PROPERTY],
+        owner_id="user:fixture",
+        legal_risk=LegalRisk.HIGH,
+        business_impact=BusinessImpact.PROJECT,
+        confidentiality=Confidentiality.INTERNAL,
+        requester_ids=[],
+        summary="Synthetic retryable execution only.",
+        objective="Verify synthesis waits for durable Specialist recovery.",
+    )
+    snapshot = ContextSnapshot(
+        id=uuid4(),
+        source_type="retryable_specialist_fixture",
+        source_id=uuid4().hex,
+        source_ids=[],
+        message_ids=[],
+        file_ids=[],
+        relevant_matter_ids=[str(matter.id)],
+        participant_ids=[],
+        permission_snapshot={},
+        generated_at=datetime.now(UTC),
+        content_hash=uuid4().hex * 2,
+        content={"fixture": "retryable specialist"},
+    )
+    runtime = FakeLegalRuntime(
+        retryable_failure_at="specialist:contract_review"
+    )
+    orchestrator = LegalAgentOrchestrator(
+        factory,
+        runtime,
+        FakeContextBuilder(),
+        runs_root="/isolated/legal-agent-runs",
+        analysis_date_provider=lambda: date(2026, 8, 10),
+    )
+    try:
+        async with factory() as uow:
+            await uow.matters.add(matter)
+            await uow.context_snapshots.add(snapshot)
+            await uow.commit()
+
+        trigger = LegalAgentTrigger(
+            matter_id=matter.id,
+            context_snapshot_id=snapshot.id,
+            objective=matter.objective,
+            actor_id="user:fixture",
+            correlation_id=f"retryable-{uuid4().hex}",
+            idempotency_key=f"retryable-{uuid4().hex}",
+        )
+        pending = await orchestrator.execute(trigger)
+
+        assert pending.status == AgentExecutionPlanStatus.RUNNING
+        assert pending.synthesis_run_id is None
+        assert pending.artifact_id is None
+        assert pending.review_package_id is None
+        assert not any(phase == "synthesis" for _, phase in runtime.calls)
+        async with factory() as uow:
+            plan = await uow.agent_execution_plans.get(pending.plan_id)
+            runs = list(await uow.agent_runs.list_by_plan(pending.plan_id))
+        assert plan is not None
+        assert plan.status == AgentExecutionPlanStatus.RUNNING
+        contract_step = next(step for step in plan.steps if step.step_id == "contract")
+        summary_step = next(step for step in plan.steps if step.step_id == "summary")
+        retry_run = next(run for run in runs if run.id == contract_step.latest_run_id)
+        assert contract_step.status == AgentPlanStepStatus.RUNNING
+        assert summary_step.status == AgentPlanStepStatus.PENDING
+        assert retry_run.status == AgentRunStatus.QUEUED
+        assert retry_run.attempt_number == 2
+        replay = await orchestrator.execute(trigger)
+        assert replay.idempotent_replay is True
+        assert replay.status == AgentExecutionPlanStatus.RUNNING
+        assert replay.synthesis_run_id is None
+
+        recovered = await orchestrator.recover(plan_id=pending.plan_id)
+
+        assert recovered.status == AgentExecutionPlanStatus.COMPLETED
+        assert recovered.synthesis_run_id is not None
+        assert recovered.artifact_id is not None
+        assert recovered.review_package_id is not None
+        assert [phase for _, phase in runtime.calls].count("synthesis") == 1
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+@pytest.mark.parametrize("runtime_failure", [False, True])
+async def test_stale_specialist_cannot_persist_success_or_failure(
+    runtime_failure: bool,
+) -> None:
+    if os.getenv("RUN_POSTGRES_INTEGRATION_TESTS") != "1":
+        pytest.skip("PostgreSQL integration tests are disabled")
+
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    from legal_workbench.domain.enums import AgentAttemptStatus, AgentRunStatus
+    from legal_workbench.infrastructure.unit_of_work import SqlAlchemyUnitOfWorkFactory
+
+    engine = create_async_engine(os.environ["LEGAL_WORKBENCH_TEST_DATABASE_URL"])
+    factory = SqlAlchemyUnitOfWorkFactory(
+        async_sessionmaker(engine, expire_on_commit=False)
+    )
+    matter = LegalMatter.create(
+        title=f"Stale Specialist persistence fixture: {runtime_failure}",
+        primary_category=MatterCategory.CONTRACT,
+        secondary_categories=[MatterCategory.INTELLECTUAL_PROPERTY],
+        owner_id="user:fixture",
+        legal_risk=LegalRisk.HIGH,
+        business_impact=BusinessImpact.PROJECT,
+        confidentiality=Confidentiality.INTERNAL,
+        requester_ids=[],
+        summary="Synthetic stale Specialist persistence only.",
+        objective="Fence a superseded Specialist persistence transaction.",
+    )
+    snapshot = ContextSnapshot(
+        id=uuid4(),
+        source_type="stale_specialist_persistence_fixture",
+        source_id=uuid4().hex,
+        source_ids=[],
+        message_ids=[],
+        file_ids=[],
+        relevant_matter_ids=[str(matter.id)],
+        participant_ids=[],
+        permission_snapshot={},
+        generated_at=datetime.now(UTC),
+        content_hash=uuid4().hex * 2,
+        content={"fixture": "stale specialist persistence"},
+    )
+    runtime = FakeLegalRuntime(
+        retryable_failure_at=(
+            "specialist:contract_review" if runtime_failure else None
+        )
+    )
+    runtime.block_next_specialist_key = "contract_review"
+    orchestrator = LegalAgentOrchestrator(
+        factory,
+        runtime,
+        FakeContextBuilder(),
+        runs_root="/isolated/legal-agent-runs",
+    )
+    try:
+        async with factory() as uow:
+            await uow.matters.add(matter)
+            await uow.context_snapshots.add(snapshot)
+            await uow.commit()
+
+        execution = asyncio.create_task(
+            orchestrator.execute(
+                LegalAgentTrigger(
+                    matter_id=matter.id,
+                    context_snapshot_id=snapshot.id,
+                    objective=matter.objective,
+                    actor_id="user:fixture",
+                    correlation_id=f"stale-specialist-{uuid4().hex}",
+                    idempotency_key=f"stale-specialist-{uuid4().hex}",
+                )
+            )
+        )
+        await asyncio.wait_for(runtime.blocked_specialist_entered.wait(), timeout=5)
+        async with factory() as uow:
+            plans = list(await uow.agent_execution_plans.list_by_matter(matter.id))
+            assert len(plans) == 1
+            plan = await uow.agent_execution_plans.get_for_update(plans[0].id)
+            assert plan is not None and plan.planning_run_id is not None
+            contract_step = await uow.agent_execution_plans.get_step_for_update(
+                plan.id, "contract"
+            )
+            assert contract_step is not None and contract_step.latest_run_id is not None
+            stale_run_id = contract_step.latest_run_id
+            contract_step.latest_run_id = plan.planning_run_id
+            contract_step.version += 1
+            await uow.agent_execution_plans.save_step(contract_step)
+            await uow.commit()
+        runtime.release_blocked_specialist.set()
+
+        with pytest.raises(
+            BaseExceptionGroup, match="unhandled errors in a TaskGroup"
+        ) as exc_info:
+            await execution
+        assert any(
+            isinstance(error, StaleAgentAttemptError)
+            for error in exc_info.value.exceptions
+        )
+
+        async with factory() as uow:
+            stale_run = await uow.agent_runs.get(stale_run_id)
+            attempts = list(await uow.agent_run_attempts.list_by_run(stale_run_id))
+            runs = list(await uow.agent_runs.list_by_plan(plan.id))
+            persisted_plan = await uow.agent_execution_plans.get(plan.id)
+        assert stale_run is not None
+        assert stale_run.status == AgentRunStatus.RUNNING
+        assert stale_run.output_payload == {}
+        assert stale_run.failure_code is None
+        assert [attempt.status for attempt in attempts] == [AgentAttemptStatus.RUNNING]
+        assert persisted_plan is not None
+        persisted_contract = next(
+            step for step in persisted_plan.steps if step.step_id == "contract"
+        )
+        assert persisted_contract.latest_run_id == plan.planning_run_id
+        assert not any(run.run_role == AgentRunRole.BUTLER_SYNTHESIS for run in runs)
+        async with factory() as uow:
+            cleanup_runs = list(await uow.agent_runs.list_by_plan(plan.id))
+            for cleanup_candidate in cleanup_runs:
+                if cleanup_candidate.status not in {
+                    AgentRunStatus.QUEUED,
+                    AgentRunStatus.PREPARING,
+                    AgentRunStatus.RUNNING,
+                    AgentRunStatus.VALIDATING,
+                }:
+                    continue
+                cleanup_run = await uow.agent_runs.get_for_update(
+                    cleanup_candidate.id
+                )
+                assert cleanup_run is not None
+                cleanup_run.transition_to(AgentRunStatus.CANCELLED)
+                await uow.agent_runs.save(cleanup_run)
+            await uow.commit()
+    finally:
+        runtime.release_blocked_specialist.set()
+        await engine.dispose()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_stale_synthesis_cannot_persist_artifact_or_review_package() -> None:
+    if os.getenv("RUN_POSTGRES_INTEGRATION_TESTS") != "1":
+        pytest.skip("PostgreSQL integration tests are disabled")
+
+    from sqlalchemy import func, select
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    from legal_workbench.domain.enums import AgentAttemptStatus, AgentRunStatus
+    from legal_workbench.infrastructure.models import (
+        DraftArtifactModel,
+        ReviewPackageModel,
+    )
+    from legal_workbench.infrastructure.unit_of_work import SqlAlchemyUnitOfWorkFactory
+
+    engine = create_async_engine(os.environ["LEGAL_WORKBENCH_TEST_DATABASE_URL"])
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    factory = SqlAlchemyUnitOfWorkFactory(session_factory)
+    matter = LegalMatter.create(
+        title="Stale synthesis persistence fixture",
+        primary_category=MatterCategory.CONTRACT,
+        secondary_categories=[MatterCategory.INTELLECTUAL_PROPERTY],
+        owner_id="user:fixture",
+        legal_risk=LegalRisk.HIGH,
+        business_impact=BusinessImpact.PROJECT,
+        confidentiality=Confidentiality.INTERNAL,
+        requester_ids=[],
+        summary="Synthetic stale synthesis persistence only.",
+        objective="Fence superseded synthesis artifacts and review packages.",
+    )
+    snapshot = ContextSnapshot(
+        id=uuid4(),
+        source_type="stale_synthesis_persistence_fixture",
+        source_id=uuid4().hex,
+        source_ids=[],
+        message_ids=[],
+        file_ids=[],
+        relevant_matter_ids=[str(matter.id)],
+        participant_ids=[],
+        permission_snapshot={},
+        generated_at=datetime.now(UTC),
+        content_hash=uuid4().hex * 2,
+        content={"fixture": "stale synthesis persistence"},
+    )
+    runtime = FakeLegalRuntime()
+    runtime.block_next_phase = "synthesis"
+    orchestrator = LegalAgentOrchestrator(
+        factory,
+        runtime,
+        FakeContextBuilder(),
+        runs_root="/isolated/legal-agent-runs",
+    )
+    try:
+        async with factory() as uow:
+            await uow.matters.add(matter)
+            await uow.context_snapshots.add(snapshot)
+            await uow.commit()
+
+        execution = asyncio.create_task(
+            orchestrator.execute(
+                LegalAgentTrigger(
+                    matter_id=matter.id,
+                    context_snapshot_id=snapshot.id,
+                    objective=matter.objective,
+                    actor_id="user:fixture",
+                    correlation_id=f"stale-synthesis-{uuid4().hex}",
+                    idempotency_key=f"stale-synthesis-{uuid4().hex}",
+                )
+            )
+        )
+        await asyncio.wait_for(runtime.blocked_phase_entered.wait(), timeout=5)
+        async with factory() as uow:
+            plans = list(await uow.agent_execution_plans.list_by_matter(matter.id))
+            assert len(plans) == 1
+            plan = await uow.agent_execution_plans.get_for_update(plans[0].id)
+            assert plan is not None
+            assert plan.planning_run_id is not None
+            assert plan.synthesis_run_id is not None
+            stale_synthesis_run_id = plan.synthesis_run_id
+            plan.synthesis_run_id = plan.planning_run_id
+            plan.version += 1
+            await uow.agent_execution_plans.save(plan)
+            await uow.commit()
+        runtime.release_blocked_phase.set()
+
+        with pytest.raises(StaleAgentAttemptError):
+            await execution
+
+        async with factory() as uow:
+            stale_run = await uow.agent_runs.get(stale_synthesis_run_id)
+            attempts = list(
+                await uow.agent_run_attempts.list_by_run(stale_synthesis_run_id)
+            )
+        async with session_factory() as session:
+            artifact_count = await session.scalar(
+                select(func.count(DraftArtifactModel.id)).where(
+                    DraftArtifactModel.agent_run_id == stale_synthesis_run_id
+                )
+            )
+            review_count = await session.scalar(
+                select(func.count(ReviewPackageModel.id)).where(
+                    ReviewPackageModel.matter_id == matter.id
+                )
+            )
+        assert stale_run is not None
+        assert stale_run.status == AgentRunStatus.RUNNING
+        assert stale_run.output_payload == {}
+        assert [attempt.status for attempt in attempts] == [AgentAttemptStatus.RUNNING]
+        assert artifact_count == 0
+        assert review_count == 0
+        async with factory() as uow:
+            cleanup_run = await uow.agent_runs.get_for_update(stale_synthesis_run_id)
+            assert cleanup_run is not None
+            cleanup_run.transition_to(AgentRunStatus.CANCELLED)
+            await uow.agent_runs.save(cleanup_run)
+            await uow.commit()
+    finally:
+        runtime.release_blocked_phase.set()
         await engine.dispose()
 
 

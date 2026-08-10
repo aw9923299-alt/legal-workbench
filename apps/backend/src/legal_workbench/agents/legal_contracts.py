@@ -230,10 +230,7 @@ def validate_legal_work_product_sources(
     *,
     authorized_source_refs: set[str],
     internal_precedent_refs: set[str] | None = None,
-    source_authorities: Mapping[
-        str, SourceAuthorityMetadata | Mapping[str, object]
-    ]
-    | None = None,
+    source_authorities: Mapping[str, Mapping[str, object]] | None = None,
     analysis_effective_date: dt.date | None = None,
     historical_as_of: dt.date | None = None,
 ) -> LegalWorkProduct:
@@ -285,23 +282,19 @@ def validate_legal_work_product_sources(
                 raise ValueError(
                     f"Authority metadata is required for legal basis source: {source_ref}"
                 )
-            authority = (
-                metadata
-                if isinstance(metadata, SourceAuthorityMetadata)
-                else SourceAuthorityMetadata.model_validate(
-                    {
-                        key: metadata.get(key)
-                        for key in (
-                            "authorityType",
-                            "authorityRole",
-                            "authorityStatus",
-                            "metadataStatus",
-                            "jurisdiction",
-                            "effectiveFrom",
-                            "effectiveTo",
-                        )
-                    }
-                )
+            authority = SourceAuthorityMetadata.model_validate(
+                {
+                    key: metadata.get(key)
+                    for key in (
+                        "authorityType",
+                        "authorityRole",
+                        "authorityStatus",
+                        "metadataStatus",
+                        "jurisdiction",
+                        "effectiveFrom",
+                        "effectiveTo",
+                    )
+                }
             )
             if authority.authority_role != item.authority_role:
                 raise ValueError(

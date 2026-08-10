@@ -1,7 +1,8 @@
 # Phase 2 Stabilization / Production Hardening Design
 
-**Date:** 2026-08-10  
-**Status:** Approved  
+**Date:** 2026-08-10
+
+**Status:** Approved
 **Scope:** Reliability hardening of the existing Legal Butler / Specialist Agent system in PR #12
 
 ## Outcome
@@ -86,4 +87,3 @@ It asserts that no Communication is created. Real Codex remains a separate, cred
 - No Agent writes to formal Matter/WorkItem records.
 - No real legal-material scan or production token-budget calibration.
 - No merge.
-
