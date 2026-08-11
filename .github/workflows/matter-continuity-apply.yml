@@ -4,7 +4,7 @@ on:
   push:
     branches: [codex/matter-continuity-v1]
     paths:
-      - scripts/apply_matter_continuity_backend.py
+      - scripts/apply_matter_continuity_frontend.py
       - .github/workflows/matter-continuity-apply.yml
 
 permissions:
@@ -19,18 +19,13 @@ jobs:
         with:
           ref: codex/matter-continuity-v1
           fetch-depth: 0
-      - name: Apply deterministic patch
-        run: python scripts/apply_matter_continuity_backend.py
+      - name: Apply deterministic frontend patch
+        run: python scripts/apply_matter_continuity_frontend.py
       - name: Commit product changes
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add \
-            apps/backend/src/legal_workbench/infrastructure/repositories.py \
-            apps/backend/src/legal_workbench/application/context_snapshots.py \
-            apps/backend/src/legal_workbench/workers/tasks.py \
-            apps/backend/src/legal_workbench/application/message_analysis.py \
-            apps/backend/tests/test_matter_continuity.py
+          git add apps/web/src/pages/MessageDetailPage.tsx
           git diff --cached --check
-          git commit -m "feat: wire deterministic matter continuity"
+          git commit -m "feat: surface deterministic matter recommendations"
           git push origin HEAD:codex/matter-continuity-v1
