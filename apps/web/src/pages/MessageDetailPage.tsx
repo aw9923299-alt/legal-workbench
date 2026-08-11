@@ -27,6 +27,39 @@ interface HumanForm {
   nextAction: string;
 }
 
+interface RelatedMatterProposal {
+  matterId: string;
+  matterNumber: string;
+  title: string;
+  confidence: number;
+  signals: string[];
+  evidenceRefs: string[];
+}
+
+const continuitySignalLabels: Record<string, string> = {
+  reply_to_communication: '回复自已发送沟通',
+  same_thread_confirmed_link: '同一会话已有人工关联',
+};
+
+function relatedMatterProposals(values: Array<Record<string, unknown>> | undefined): RelatedMatterProposal[] {
+  if (!values) return [];
+  return values.flatMap((value) => {
+    const matterId = typeof value.matterId === 'string' ? value.matterId : '';
+    const matterNumber = typeof value.matterNumber === 'string' ? value.matterNumber : '';
+    const title = typeof value.title === 'string' ? value.title : '';
+    const confidence = typeof value.confidence === 'number' ? value.confidence : 0;
+    if (!matterId || !matterNumber || !title) return [];
+    return [{
+      matterId,
+      matterNumber,
+      title,
+      confidence,
+      signals: Array.isArray(value.signals) ? value.signals.filter((item): item is string => typeof item === 'string') : [],
+      evidenceRefs: Array.isArray(value.evidenceRefs) ? value.evidenceRefs.filter((item): item is string => typeof item === 'string') : [],
+    }];
+  });
+}
+
 export default function MessageDetailPage() {
   const { messageId = '' } = useParams();
   const navigate = useNavigate();
@@ -195,6 +228,22 @@ export default function MessageDetailPage() {
     setCreateOpen(true);
   };
 
+  const continuityProposals = relatedMatterProposals(candidate.data?.relatedMatterProposals);
+  const openLinkAction = (action: 'link_existing' | 'update_existing') => {
+    setMatterId(continuityProposals[0]?.matterId);
+    setLinkAction(action);
+  };
+  const recommendedMatterIds = new Set(continuityProposals.map((value) => value.matterId));
+  const matterOptions = [
+    ...continuityProposals.map((value) => ({
+      value: value.matterId,
+      label: `${value.matterNumber} · ${value.title}`,
+    })),
+    ...(matters.data ?? [])
+      .filter((value) => !recommendedMatterIds.has(value.id))
+      .map((value) => ({ value: value.id, label: `${value.matterNumber} · ${value.title}` })),
+  ];
+
   const result = analysis.data?.analysisResult as MessageJudgementResult | null | undefined;
   return <div className="page">
     <div className="page-title-row">
@@ -280,12 +329,34 @@ export default function MessageDetailPage() {
               </Descriptions>
               {result && <><EvidencePanels result={result} /><Divider>判断理由</Divider><List size="small" dataSource={result.reasons} renderItem={(value) => <List.Item>{value}</List.Item>} /></>}
             </> : <Alert type={analysis.data?.failureCode ? 'error' : 'info'} message={analysis.data?.failureCode ?? '尚未生成 AgentRun'} description={analysis.data?.failureMessage} />}
+            {continuityProposals.length > 0 && <>
+              <Divider>可能关联事项</Divider>
+              <Alert
+                type="info"
+                showIcon
+                message="以下建议只来自已发送沟通或同一会话的人工确认关系，系统不会自动关联 Matter。"
+                style={{ marginBottom: 12 }}
+              />
+              <List
+                size="small"
+                dataSource={continuityProposals}
+                renderItem={(proposal) => <List.Item>
+                  <Space direction="vertical" size={4} style={{ width: '100%' }}>
+                    <Text strong>{proposal.matterNumber} · {proposal.title}</Text>
+                    <Space wrap>
+                      <Tag color="blue">确定性置信度 {Math.round(proposal.confidence * 100)}%</Tag>
+                      {proposal.signals.map((signal) => <Tag key={signal}>{continuitySignalLabels[signal] ?? signal}</Tag>)}
+                    </Space>
+                  </Space>
+                </List.Item>}
+              />
+            </>}
             <Divider>法务人工动作</Divider>
             <Space wrap>
               {candidate.data?.status === 'pending_confirmation' && <>
                 <Button type="primary" onClick={openCreate}>创建新 Matter</Button>
-                <Button icon={<LinkOutlined />} onClick={() => setLinkAction('link_existing')}>关联已有 Matter</Button>
-                <Button onClick={() => setLinkAction('update_existing')}>更新已有 Matter</Button>
+                <Button icon={<LinkOutlined />} onClick={() => openLinkAction('link_existing')}>关联已有 Matter</Button>
+                <Button onClick={() => openLinkAction('update_existing')}>更新已有 Matter</Button>
                 <Button onClick={() => resolve.mutate({ action: 'information_only' })}>仅供知悉</Button>
                 <Button danger onClick={() => Modal.confirm({ title: '确认忽略？', content: '该决定会作为法务人工修改写入审计。', okButtonProps: { danger: true }, onOk: () => resolve.mutateAsync({ action: 'ignore' }) })}>忽略</Button>
               </>}
@@ -315,7 +386,7 @@ export default function MessageDetailPage() {
       else resolve.mutate({ action: linkAction, selectedMatter: matterId });
     }} okButtonProps={{ disabled: !matterId || (linkAction === 'update_existing' && !updateReason.trim()) }}>
       <Alert type="info" showIcon message={linkAction === 'update_existing' ? '只生成待法务审核的更新建议；不会在此步骤修改 Matter。' : '本操作建立可审计关联。'} />
-      <Select showSearch style={{ width: '100%', marginTop: 16 }} placeholder="选择 Matter" value={matterId} onChange={setMatterId} loading={matters.isLoading} options={matters.data?.map((matter) => ({ value: matter.id, label: `${matter.matterNumber} · ${matter.title}` }))} />
+      <Select showSearch style={{ width: '100%', marginTop: 16 }} placeholder="选择 Matter" value={matterId} onChange={setMatterId} loading={matters.isLoading} options={matterOptions} />
       {linkAction === 'update_existing' && <Input.TextArea style={{ marginTop: 16 }} rows={3} value={updateReason} onChange={(event) => setUpdateReason(event.target.value)} placeholder="说明为什么需要更新事项" />}
     </Modal>
   </div>;
