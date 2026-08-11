@@ -7,6 +7,7 @@ from hashlib import sha256
 from typing import TypedDict
 from uuid import UUID, uuid4
 
+from legal_workbench.application.matter_continuity import MatterContinuityResolver
 from legal_workbench.application.ports import UnitOfWorkFactory
 from legal_workbench.domain.entities import (
     ContextSnapshot,
@@ -67,6 +68,7 @@ class ContextSnapshotBuilder:
         max_single_attachment_segment_characters: int = 4000,
         builder_version: str = "2.0.0",
         selection_policy_version: str = "thread-v2",
+        matter_continuity_resolver: MatterContinuityResolver | None = None,
         now: Callable[[], datetime] | None = None,
     ) -> None:
         single_limit = max_single_message_characters or max_text_characters
@@ -90,6 +92,7 @@ class ContextSnapshotBuilder:
         )
         self._builder_version = builder_version
         self._selection_policy_version = selection_policy_version
+        self._matter_continuity_resolver = matter_continuity_resolver
         self._now = now or (lambda: datetime.now(UTC))
 
     async def build_for_feishu_message(self, message_id: UUID) -> ContextSnapshot:
@@ -110,6 +113,15 @@ class ContextSnapshotBuilder:
                 )
             )
             selected = self._select_messages(current, available)
+            continuity_proposals = (
+                await self._matter_continuity_resolver.resolve(
+                    uow, current=current, context_messages=selected
+                )
+                if self._matter_continuity_resolver is not None
+                else []
+            )
+            continuity_payload = [value.to_payload() for value in continuity_proposals]
+            relevant_matter_ids = [str(value.matter_id) for value in continuity_proposals]
             all_attachment_ids = _attachment_ids(selected)
             attachment_ids = all_attachment_ids[: self._max_attachments]
             attachment_by_file_key: dict[str, MessageAttachment] = {}
@@ -138,6 +150,7 @@ class ContextSnapshotBuilder:
                 current_message_id=current.message_id,
                 allowed_attachment_ids=set(attachment_ids),
             )
+            content["matterContinuityProposals"] = continuity_payload
             (
                 included_segments,
                 excluded_segments,
@@ -241,6 +254,7 @@ class ContextSnapshotBuilder:
                 "currentMessageVersion": current.version,
                 "attachmentVersionHash": attachment_version_hash,
                 "messageIds": [message.message_id for message in selected],
+                "relevantMatterIds": relevant_matter_ids,
                 "participantIds": participants,
                 "attachmentIds": attachment_ids,
                 "includedSegments": included_segments,
@@ -272,7 +286,7 @@ class ContextSnapshotBuilder:
                 attachment_ids=attachment_ids,
                 included_segments=included_segments,
                 excluded_segments=excluded_segments,
-                relevant_matter_ids=[],
+                relevant_matter_ids=relevant_matter_ids,
                 participant_ids=participants,
                 permission_snapshot=permission_snapshot,
                 thread_metadata=thread_metadata,

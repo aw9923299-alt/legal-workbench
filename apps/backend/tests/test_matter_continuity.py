@@ -7,6 +7,7 @@ from uuid import UUID, uuid4
 import pytest
 
 from legal_workbench.application.context_snapshots import ContextSnapshotBuilder
+from legal_workbench.application.matter_continuity import MatterContinuityResolver
 from legal_workbench.domain.entities import (
     Communication,
     ContextSnapshot,
@@ -226,6 +227,7 @@ async def test_snapshot_proposes_matter_when_message_replies_to_sent_communicati
         lambda: uow,
         max_messages=10,
         max_text_characters=5000,
+        matter_continuity_resolver=MatterContinuityResolver(),
     ).build_for_feishu_message(current.id)
 
     assert snapshot.relevant_matter_ids == [str(matter.id)]
@@ -260,6 +262,7 @@ async def test_snapshot_proposes_matter_from_confirmed_link_in_same_thread() -> 
         lambda: uow,
         max_messages=10,
         max_text_characters=5000,
+        matter_continuity_resolver=MatterContinuityResolver(),
     ).build_for_feishu_message(current.id)
 
     assert snapshot.relevant_matter_ids == [str(matter.id)]
@@ -286,6 +289,7 @@ async def test_snapshot_does_not_use_same_chat_only_as_matter_evidence() -> None
         lambda: uow,
         max_messages=10,
         max_text_characters=5000,
+        matter_continuity_resolver=MatterContinuityResolver(),
     ).build_for_feishu_message(current.id)
 
     assert snapshot.relevant_matter_ids == []
