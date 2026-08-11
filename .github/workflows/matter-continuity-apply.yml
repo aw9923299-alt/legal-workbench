@@ -5,6 +5,7 @@ on:
     branches: [codex/matter-continuity-v1]
     paths:
       - scripts/apply_matter_continuity_backend.py
+      - .github/workflows/matter-continuity-apply.yml
 
 permissions:
   contents: write
