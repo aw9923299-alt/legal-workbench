@@ -371,6 +371,37 @@ class SqlAlchemyMessageCandidateRepository:
         model = (await self._session.execute(statement)).scalar_one_or_none()
         return None if model is None else self._to_domain(model)
 
+    async def list_confirmed_matter_links_for_messages(
+        self, message_ids: Sequence[UUID]
+    ) -> Sequence[tuple[UUID, UUID]]:
+        if not message_ids:
+            return []
+        statement = (
+            select(
+                MessageCandidateModel.feishu_message_id,
+                CandidateMatterLinkModel.matter_id,
+            )
+            .join(
+                CandidateMatterLinkModel,
+                CandidateMatterLinkModel.candidate_id == MessageCandidateModel.id,
+            )
+            .where(
+                MessageCandidateModel.feishu_message_id.in_(list(message_ids)),
+                CandidateMatterLinkModel.confirmed_by.is_not(None),
+            )
+            .distinct()
+            .order_by(
+                MessageCandidateModel.feishu_message_id,
+                CandidateMatterLinkModel.matter_id,
+            )
+        )
+        rows = (await self._session.execute(statement)).all()
+        return [
+            (message_id, matter_id)
+            for message_id, matter_id in rows
+            if message_id is not None
+        ]
+
     async def append_revision(self, revision: CandidateRevision) -> None:
         self._session.add(
             CandidateRevisionModel(
@@ -2275,6 +2306,25 @@ class SqlAlchemyCommunicationRepository:
         )
         model = (await self._session.execute(statement)).scalar_one_or_none()
         return None if model is None else self._to_domain(model)
+
+    async def list_sent_by_external_message_ids(
+        self, external_message_ids: Sequence[str]
+    ) -> Sequence[Communication]:
+        if not external_message_ids:
+            return []
+        statement = (
+            select(CommunicationModel)
+            .where(
+                CommunicationModel.status == CommunicationStatus.SENT,
+                CommunicationModel.external_message_id.in_(list(external_message_ids)),
+            )
+            .order_by(
+                CommunicationModel.sent_at.desc().nullslast(),
+                CommunicationModel.id,
+            )
+        )
+        models = (await self._session.execute(statement)).scalars().all()
+        return [self._to_domain(model) for model in models]
 
     async def list(
         self, *, status: CommunicationStatus | None, limit: int

@@ -23,6 +23,7 @@ from legal_workbench.application.legal_agent_orchestrator import (
     LegalAgentTrigger,
 )
 from legal_workbench.application.legal_context import LegalContextBuilder
+from legal_workbench.application.matter_continuity import MatterContinuityResolver
 from legal_workbench.application.message_analysis import (
     AnalyseFeishuMessageCommand,
     AnalyseFeishuMessageHandler,
@@ -394,6 +395,7 @@ async def _analyse_feishu_message(
             ),
             builder_version=settings.context_builder_version,
             selection_policy_version=settings.context_selection_policy_version,
+            matter_continuity_resolver=MatterContinuityResolver(),
         ),
         runs_root=settings.codex_runs_root,
         manual_review_threshold=settings.message_analysis_manual_review_threshold,

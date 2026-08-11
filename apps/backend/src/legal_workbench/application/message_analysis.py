@@ -838,6 +838,10 @@ class AnalyseFeishuMessageHandler:
             message = await uow.feishu.get_message_for_update(run.feishu_message_id)
             if message is None:
                 raise RuntimeError("FeishuMessage disappeared before result persistence.")
+            snapshot = await uow.context_snapshots.get(run.context_snapshot_id)
+            if snapshot is None:
+                raise RuntimeError("ContextSnapshot disappeared before result persistence.")
+            related_matter_proposals = self._matter_continuity_proposals(snapshot)
             await AgentExecutionLeaseService(
                 uow.agent_run_attempts,
                 lease_seconds=self._lease_seconds,
@@ -927,7 +931,7 @@ class AnalyseFeishuMessageHandler:
                             value.model_dump(by_alias=True, mode="json")
                             for value in output.deadline_candidates
                         ],
-                        related_matter_proposals=[],
+                        related_matter_proposals=related_matter_proposals,
                         evidence_refs=self._evidence_refs(output),
                         agent_run_id=run.id,
                     )
@@ -966,6 +970,7 @@ class AnalyseFeishuMessageHandler:
                             value.model_dump(by_alias=True, mode="json")
                             for value in output.deadline_candidates
                         ],
+                        related_matter_proposals=related_matter_proposals,
                         evidence_refs=self._evidence_refs(output),
                         agent_run_id=run.id,
                         requires_manual_review=requires_manual_review,
@@ -1005,6 +1010,33 @@ class AnalyseFeishuMessageHandler:
                     message.transition_to(FeishuMessageStatus.CANDIDATE_CREATED)
                 else:
                     message.transition_to(FeishuMessageStatus.IGNORED)
+            if candidate_id is not None and related_matter_proposals:
+                await uow.audit_events.add(
+                    AuditEvent(
+                        id=uuid4(),
+                        aggregate_type="feishu_message",
+                        aggregate_id=message.id,
+                        event_type="matter_continuity_candidates_materialized",
+                        actor_id=command.actor_id,
+                        actor_source=command.actor_source,
+                        payload={
+                            "agentRunId": str(run.id),
+                            "contextSnapshotId": str(snapshot.id),
+                            "candidateId": str(candidate_id),
+                            "matterIds": [
+                                str(value.get("matterId"))
+                                for value in related_matter_proposals
+                                if value.get("matterId")
+                            ],
+                            "signals": {
+                                str(value.get("matterId")): value.get("signals", [])
+                                for value in related_matter_proposals
+                                if value.get("matterId")
+                            },
+                        },
+                        correlation_id=command.correlation_id,
+                    )
+                )
             revision_candidate_id = existing.id if existing is not None else candidate_id
             if revision_candidate_id is not None:
                 await self._append_candidate_revision(
@@ -1040,6 +1072,19 @@ class AnalyseFeishuMessageHandler:
                 candidate_id=candidate_id,
                 idempotent_replay=False,
             )
+
+    @staticmethod
+    def _matter_continuity_proposals(
+        snapshot: ContextSnapshot,
+    ) -> list[dict[str, object]]:
+        raw = snapshot.content.get("matterContinuityProposals", [])
+        if not isinstance(raw, list):
+            return []
+        return [
+            dict(value)
+            for value in raw
+            if isinstance(value, dict) and value.get("matterId")
+        ]
 
     @staticmethod
     async def _append_candidate_revision(
