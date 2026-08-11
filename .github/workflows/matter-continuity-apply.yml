@@ -1,0 +1,35 @@
+name: Matter Continuity Apply
+
+on:
+  push:
+    branches: [codex/matter-continuity-v1]
+    paths:
+      - scripts/apply_matter_continuity_backend.py
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: codex/matter-continuity-v1
+          fetch-depth: 0
+      - name: Apply deterministic patch
+        run: python scripts/apply_matter_continuity_backend.py
+      - name: Commit product changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add \
+            apps/backend/src/legal_workbench/infrastructure/repositories.py \
+            apps/backend/src/legal_workbench/application/context_snapshots.py \
+            apps/backend/src/legal_workbench/workers/tasks.py \
+            apps/backend/src/legal_workbench/application/message_analysis.py \
+            apps/backend/tests/test_matter_continuity.py
+          git diff --cached --check
+          git commit -m "feat: wire deterministic matter continuity"
+          git push origin HEAD:codex/matter-continuity-v1
