@@ -207,7 +207,7 @@ describe('Message detail Matter continuity', () => {
     expect(screen.getByText(/LW-20260811-AABBCCDD · 历史合同审核/)).toBeInTheDocument();
     expect(screen.getByText(/回复自已发送沟通/)).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole('button', { name: '关联已有 Matter' }));
+    fireEvent.click(screen.getByRole('button', { name: /关联已有 Matter/ }));
     const dialog = await screen.findByRole('dialog');
     expect(within(dialog).getByText('LW-20260811-AABBCCDD · 历史合同审核')).toBeInTheDocument();
   });
