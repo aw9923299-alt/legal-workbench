@@ -159,6 +159,7 @@ class MessageCandidate:
         title_proposal: str | None,
         category_proposals: list[dict[str, object]],
         deadline_proposals: list[dict[str, object]],
+        related_matter_proposals: list[dict[str, object]],
         evidence_refs: list[str],
         agent_run_id: UUID,
         requires_manual_review: bool,
@@ -183,6 +184,7 @@ class MessageCandidate:
         self.title_proposal = title_proposal.strip() if title_proposal else None
         self.category_proposals = category_proposals
         self.deadline_proposals = deadline_proposals
+        self.related_matter_proposals = related_matter_proposals
         self.evidence_refs = evidence_refs
         self.agent_run_id = agent_run_id
         self.requires_manual_review = requires_manual_review
